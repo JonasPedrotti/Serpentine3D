@@ -216,10 +216,12 @@ Commands that need a file open a filtered chooser by default. Append
 | `linetype` (`lt`, `setlinetype`) | Set the dash style of selected objects (Continuous/Dashed/…/ByLayer). |
 | `lock` | Lock |
 | `lockother` | Lock everything except what you picked, as Rhino's LockOther does. |
-| `matchprops` (`matchproperties`) | Copy layer, colour and material from one object to others. |
+| `matchprops` (`matchproperties`) | Copy an object's layer, colour, material, print width and hatch. |
 | `meshtobrep` | Convert mesh objects into exact BREP shells (slow for big meshes). |
 | `pointcloud` (`pc`) | Point clouds: `info` says what a scan holds; `subsample` keeps an |
+| `printwidth` (`plotweight`, `printweight`) | Set the pen width selected objects plot with, or ByLayer. |
 | `purge` | Remove empty layers and unused block definitions. |
+| `sectionhatch` (`sectionstyle`) | Set how a section cut through selected objects is filled. |
 | `sendbackward` (`sendbackwards`) | Nudge the selected objects one step towards the back. |
 | `sendtoback` (`sb`) | Draw the selected objects behind overlapping ones. |
 | `ungroup` | Ungroup objects and keep them selected. |

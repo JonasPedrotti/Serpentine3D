@@ -2326,7 +2326,7 @@ class Viewport(QOpenGLWidget):
                     # face edges: darkened object colour
                     edge_color = (line_color[0] * 0.35, line_color[1] * 0.35,
                                   line_color[2] * 0.35, 1.0)
-                lw = self.scene.layers.get(obj.layer_id).lineweight
+                lw = self.scene.screen_width_of(obj)
                 self._draw_edges(gpu, omvp, edge_color,
                                  2.2 if selected else lw)
 

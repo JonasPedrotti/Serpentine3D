@@ -52,6 +52,9 @@ KEYBOARD_ONLY = {
     ("layer", "Hatch spacing on paper (mm)"):
         "hatch density on the printed sheet, whatever the detail's scale, "
         "so no length in the model measures it",
+    ("sectionhatch", "Hatch spacing on paper (mm)"):
+        "hatch density on the printed sheet, whatever the detail's scale, "
+        "so no length in the model measures it",
     ("detailsection",
      "Cut plane distance from the detail target (toward the viewer)"):
         "you are inside a layout detail, so the cursor is on the paper "

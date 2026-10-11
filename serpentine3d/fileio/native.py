@@ -15,7 +15,7 @@ import base64
 import json
 
 from ..core import geometry
-from ..core.layers import DEFAULT_SCREEN_WIDTH, Layer
+from ..core.layers import DEFAULT_SCREEN_WIDTH, Layer, section_fill_dict
 
 # The newest version this reader understands. Anything newer is refused
 # with the version it asks for, never a traceback.
@@ -147,6 +147,9 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
                 "locked": obj.locked,
                 "linetype": obj.linetype,
                 "draw_order": obj.draw_order,
+                "print_width": obj.print_width,
+                "section_fill": (dict(obj.section_fill)
+                                 if obj.section_fill else None),
                 "group": obj.group_id,
                 "block": obj.block_id,
                 "brep": (None if obj.kind == "mesh" else
@@ -275,7 +278,7 @@ def load_scene(scene, path: str):
 
 _CARRIED_FIELDS = ("visible", "locked", "group_id", "block_id", "color",
                    "material", "clip_plane", "annotation", "linetype",
-                   "draw_order")
+                   "draw_order", "print_width", "section_fill")
 
 
 def merge_scene(scene, path: str) -> int:
@@ -485,6 +488,12 @@ def _load_doc(scene, doc: dict, blobs=None):
             updates["linetype"] = od["linetype"]
         if od.get("draw_order"):
             updates["draw_order"] = int(od["draw_order"])
+        if od.get("print_width") is not None:
+            updates["print_width"] = max(0.0, float(od["print_width"]))
+        if od.get("section_fill"):
+            updates["section_fill"] = section_fill_dict(**{
+                k: v for k, v in od["section_fill"].items()
+                if k in ("pattern", "angle", "spacing", "color")})
         if od.get("locked"):
             updates["locked"] = True
         if od.get("group"):

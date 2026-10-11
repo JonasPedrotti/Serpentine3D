@@ -53,6 +53,40 @@ def hatch_color_token(value) -> str:
     return HATCH_INK
 
 
+def hatch_token_rgb(token: str, layer_color):
+    """The (r, g, b) a hatch colour token draws in, or None for ink:
+    "layer" is the colour of the layer it is read against."""
+    if token == HATCH_LAYER_COLOR:
+        return tuple(layer_color)
+    if token.startswith("#"):
+        return tuple(int(token[i:i + 2], 16) / 255.0 for i in (1, 3, 5))
+    return None
+
+
+def _tidy_pattern(name) -> str:
+    """A fill this app can draw; anything else is the lines it always was."""
+    name = (name or "").strip().lower()
+    return name if name in SECTION_FILLS else "lines"
+
+
+def _tidy_angle(degrees) -> float:
+    """Lines at 225 degrees are lines at 45, so it is kept that way."""
+    return float(degrees) % 180.0
+
+
+def _tidy_spacing(mm) -> float:
+    return max(MIN_HATCH_SPACING, float(mm))
+
+
+def section_fill_dict(pattern="lines", angle=45.0, spacing=2.5,
+                      color=HATCH_INK) -> dict:
+    """A section hatch of an object's own, as the object keeps it: the
+    same four things a layer has, put right the way a layer's are."""
+    return {"pattern": _tidy_pattern(pattern), "angle": _tidy_angle(angle),
+            "spacing": _tidy_spacing(spacing),
+            "color": hatch_color_token(color)}
+
+
 def screen_width_for(print_mm: float) -> float:
     """The width, in pixels, a layer following its print width draws at.
     Never under a pixel: a thin pen still has to show."""
@@ -260,20 +294,16 @@ class LayerManager:
         hatch, or by a build that wrote "" for one nobody had set, or one
         naming a pattern this app has never heard of.
         """
-        name = (pattern or "").strip().lower()
-        self._layers[layer_id] = replace(
-            self._layers[layer_id],
-            hatch=name if name in SECTION_FILLS else "lines")
+        self._layers[layer_id] = replace(self._layers[layer_id],
+                                         hatch=_tidy_pattern(pattern))
 
     def set_hatch_angle(self, layer_id: str, degrees: float):
-        """Lines at 225 degrees are lines at 45, so it is kept that way."""
-        self._layers[layer_id] = replace(
-            self._layers[layer_id], hatch_angle=float(degrees) % 180.0)
+        self._layers[layer_id] = replace(self._layers[layer_id],
+                                         hatch_angle=_tidy_angle(degrees))
 
     def set_hatch_spacing(self, layer_id: str, mm: float):
-        self._layers[layer_id] = replace(
-            self._layers[layer_id],
-            hatch_spacing=max(MIN_HATCH_SPACING, float(mm)))
+        self._layers[layer_id] = replace(self._layers[layer_id],
+                                         hatch_spacing=_tidy_spacing(mm))
 
     def set_hatch_color(self, layer_id: str, color):
         self._layers[layer_id] = replace(
@@ -282,12 +312,7 @@ class LayerManager:
     def hatch_rgb(self, layer_id: str):
         """The (r, g, b) a layer's hatch is drawn in, or None for ink."""
         layer = self._layers[layer_id]
-        if layer.hatch_color == HATCH_LAYER_COLOR:
-            return tuple(layer.color)
-        if layer.hatch_color.startswith("#"):
-            value = layer.hatch_color[1:]
-            return tuple(int(value[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
-        return None
+        return hatch_token_rgb(layer.hatch_color, layer.color)
 
     def move_up(self, layer_id: str) -> bool:
         """Move a layer above the sibling in front of it, branch and all.

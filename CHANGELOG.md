@@ -35,6 +35,19 @@
   layer's look with `layers(action="style", style={...})`, and the scene
   info now reports each layer's linetype, widths and hatch.
 
+- **An object can have its own section hatch and print width (#40).**
+  Colour already worked this way: an object takes its layer's unless it
+  is given one. Now hatching and print width do too, so one column among
+  the walls can be cut solid, or plot heavier, without a layer made for
+  it. On a solid's Properties page, Section hatch says "By layer (Cross)"
+  until a pattern is chosen; the object's own hatch then starts from its
+  layer's angle, spacing and colour, which get rows of their own. Print
+  width takes By layer, Default or a width in millimetres, and an object
+  with its own print width draws its edges at the matching screen width
+  unless the layer's screen width was set by hand. Copies keep what the
+  original overrode. The new `printwidth` and `sectionhatch` commands set
+  them on a selection, and `matchprops` now copies both.
+
 - **Panel icons.** Properties and Layers now carry an icon at the left of
   their title bars, sliders and a stack of sheets, so the two stacked
   panels tell apart at a glance.

@@ -31,7 +31,7 @@ from serpentine3d.ui.properties import PropertiesPanel
 SQUARE = [(-10.0, -10.0), (10.0, -10.0), (10.0, 10.0), (-10.0, 10.0)]
 
 
-# -- the layer -----------------------------------------------------------------
+# -- the layer ----------------------------------------------------------------
 
 def test_a_layer_starts_at_45_degrees_2_5_mm_apart_in_ink():
     """What every cut was drawn with before, so no drawing changes."""
@@ -85,7 +85,7 @@ def test_what_a_cut_through_an_object_is_filled_with():
         == pytest.approx((1.0, 0.0, 0.0))
 
 
-# -- the file ------------------------------------------------------------------
+# -- the file -----------------------------------------------------------------
 
 def test_all_three_survive_the_file(tmp_path):
     scene = Scene()
@@ -118,7 +118,7 @@ def test_a_file_from_before_opens_at_the_old_hatch():
         == (45.0, 2.5, "ink")
 
 
-# -- the cut -------------------------------------------------------------------
+# -- the cut ------------------------------------------------------------------
 
 def _directions(segments):
     return {round(math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))) % 180
@@ -182,7 +182,8 @@ def test_the_plot_draws_a_cut_in_its_layer_s_colour():
         _region_fills=lambda d: [SectionFill("lines", color=(0.0, 0.0, 1.0))])
     rec = _Recorder()
     pdf._paint_detail_vector(rec, view, detail,
-                             SimpleNamespace(paper_h=200.0, paper_w=300.0), 1.0)
+                             SimpleNamespace(paper_h=200.0, paper_w=300.0),
+                             1.0)
     assert rec.pens and set(rec.pens) == {"#0000ff"}
 
 
@@ -211,11 +212,12 @@ def test_the_plot_outlines_a_coloured_flood_after_filling_it():
         _region_fills=lambda d: [SectionFill("solid", color=(0.2, 0.3, 0.5))])
     rec = _Sequence()
     pdf._paint_detail_vector(rec, view, detail,
-                             SimpleNamespace(paper_h=200.0, paper_w=300.0), 1.0)
+                             SimpleNamespace(paper_h=200.0, paper_w=300.0),
+                             1.0)
     assert rec.calls == ["flood", "outline"]
 
 
-# -- the layer page ------------------------------------------------------------
+# -- the layer page -----------------------------------------------------------
 
 def _page(*names):
     scene = Scene()
@@ -263,7 +265,8 @@ def test_the_page_shows_and_sets_angle_and_spacing():
 
 def test_angle_and_spacing_only_show_for_a_pattern_that_has_lines():
     scene, _h, props, (walls,) = _page("Walls")
-    for pattern, lined, filled in (("lines", True, True), ("cross", True, True),
+    for pattern, lined, filled in (("lines", True, True),
+                                   ("cross", True, True),
                                    ("solid", False, True),
                                    ("none", False, False)):
         props.layer_hatch.setCurrentIndex(props.layer_hatch.findData(pattern))
@@ -319,7 +322,7 @@ def test_layers_that_disagree_show_a_blank():
     assert props.layer_hatch_color.currentIndex() == -1
 
 
-# -- the commands --------------------------------------------------------------
+# -- the commands -------------------------------------------------------------
 
 def test_the_layer_command_asks_for_angle_and_spacing(env):
     scene, _sel, _hist, _ctx, proc = env
@@ -351,7 +354,7 @@ def test_a_hatch_drawn_on_a_sheet_starts_from_the_layer(env):
     assert proc.request.default == pytest.approx(30.0)
 
 
-# -- the API -------------------------------------------------------------------
+# -- the API ------------------------------------------------------------------
 
 def _api(scene):
     from serpentine3d.api import SerpApi
