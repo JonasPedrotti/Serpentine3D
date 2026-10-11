@@ -37,10 +37,7 @@ def cmd_box(ctx):
 
     # "or length" the way Rhino's box reads it: one number is a side and the
     # width is asked for next. The general rule for a point prompt — a number
-    # is how far along the way you are pointing — would make it the diagonal,
-    # and under ortho the cursor is square to the CPlane, so the base would
-    # come out a line and the complaint would be about a height nobody had
-    # been asked for.
+    # is how far along the way you are pointing — would make it the diagonal.
     c2 = yield PointReq("Opposite corner of base, or length", rubber_from=c1,
                         preview_fn=_rect_to, rubber_sides=_base_sides,
                         allow_number=True)

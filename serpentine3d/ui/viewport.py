@@ -1150,6 +1150,7 @@ class Viewport(QOpenGLWidget):
         self._active_snap = None            # (point, kind) under cursor
         self.snap_base = None               # reference point for perp snap
         self.point_axis = None              # (base, axis) while axis-locked
+        self.point_frame = False            # the pick drags out a frame
         self.dir_lock = None                # (base, dir) frozen by Tab/Ctrl
         # which point the lock was taken for. Tab's base *is* that point, but
         # the elevator stands its axis up somewhere else entirely, so the
@@ -3965,7 +3966,9 @@ class Viewport(QOpenGLWidget):
                          & Qt.KeyboardModifier.ShiftModifier)
             if self.snap_base is not None and (self.ortho != shift):
                 bx, by, _ = self.snap_base
-                if abs(x - bx) >= abs(y - by):
+                if self.point_frame:
+                    x, y = square_corner(bx, by, x, y)
+                elif abs(x - bx) >= abs(y - by):
                     y = by
                 else:
                     x = bx
@@ -4023,7 +4026,13 @@ class Viewport(QOpenGLWidget):
             # every coordinate but the driven one is the base's — `bw`,
             # not the hit's, or a line started on a snapped corner off
             # the plane runs level in this view and diagonal in the next
-            if abs(u - bu) >= abs(v - bv):
+            if self.point_frame:
+                # A frame's corner on an axis through its first one is a
+                # frame with no width, a line. Square for a frame is equal
+                # sides, as Shift gives in any drawing program.
+                hit = np.asarray(self.cplane.to_world(
+                    *square_corner(bu, bv, u, v), bw))
+            elif abs(u - bu) >= abs(v - bv):
                 hit = np.asarray(self.cplane.to_world(u, bv, bw))
             else:
                 hit = np.asarray(self.cplane.to_world(bu, v, bw))
@@ -5721,6 +5730,18 @@ def _side(a: np.ndarray, b: np.ndarray, p: np.ndarray) -> np.ndarray:
     """Which side of each 2D line a->b the point p falls; 0 is on it."""
     return ((b[:, 0] - a[:, 0]) * (p[1] - a[:, 1])
             - (b[:, 1] - a[:, 1]) * (p[0] - a[:, 0]))
+
+
+def square_corner(bu, bv, u, v):
+    """The far corner of a square dragged out from (bu, bv) toward (u, v).
+
+    Its sides are as long as the longer of the two the cursor spans, on
+    whichever side of the first corner the cursor is: the square grows to
+    meet the cursor rather than shrinking away from it.
+    """
+    side = max(abs(u - bu), abs(v - bv))
+    return (bu + math.copysign(side, u - bu),
+            bv + math.copysign(side, v - bv))
 
 
 def seen_edge_on(vertices, triangles, direction, slant=EDGE_ON_SLANT):

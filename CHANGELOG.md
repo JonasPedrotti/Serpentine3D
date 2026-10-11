@@ -162,6 +162,15 @@
   click that misses a face seen edge on now tries its edges, as a
   wireframe click does. The same went for any flat surface seen edge on.
 
+- **Shift draws a square frame.** Holding Shift on the second corner of a
+  rectangle, a box's base or a clipping plane flattened the frame onto a
+  line through the first corner: Shift is the momentary ortho override, and
+  ortho keeps a pick on an axis. A clipping plane drawn that way made
+  nothing, and only letting go of Shift made anything. On a frame, Shift
+  (or ortho left on) now draws a square, its side the longer of the two
+  the cursor spans, on the side the cursor is on, in the model and on a
+  sheet. Lines and every other pick still keep to an axis.
+
 - **Scaling a clipping plane keeps it cutting.** Scaled along one axis,
   with the gumball's handles or Scale1D, Scale2D or ScaleNU, a clipping
   plane became a NURBS surface: still flat, but no longer read as a
