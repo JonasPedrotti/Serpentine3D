@@ -8,6 +8,10 @@ GRID_MAJOR = (1.0, 1.0, 1.0, 0.11)
 GRID_AXIS_X = (0.75, 0.33, 0.32, 0.85)
 GRID_AXIS_Y = (0.38, 0.65, 0.36, 0.85)
 SELECTION_COLOR = (1.0, 0.78, 0.25)          # warm gold
+# The selection while Properties shows something else, a picked layer say:
+# still selected, still gold, but about half way back towards the background,
+# so full gold keeps meaning "this is what Properties is editing".
+HELD_SELECTION_COLOR = (0.62, 0.50, 0.22)
 ACCENT = "#d9a441"
 
 # Control points, when they are on. Cool, because everything else in the
@@ -45,6 +49,13 @@ ACCENT_DIM = "#8a6a2f"
 # named here because a widget that dims a row has to reach for it in
 # code, and Qt's own disabled grey is not what this window paints.
 TEXT_MUTED = "#9a9b9e"
+
+# Panel spacing, shared so Properties and Layers line up with each other and
+# with the layers mockup they were drawn from: a page stands this far in from
+# its sides, and a list row is this tall.
+PANEL_INSET = 10
+LIST_ROW_HEIGHT = 28
+SEAM = "#1b1c1f"               # the dark line between two parts of a panel
 
 # Shaded-mode lighting. SHADED_AMBIENT mirrors a constant hardcoded in
 # viewport.MESH_FRAG (`uColor * (0.30 + 0.70 * diff)`); a test pins the two
@@ -226,6 +237,11 @@ QLabel#commandPrompt {
     color: #d9a441;
     font-weight: bold;
 }
+QPushButton[link="true"] {
+    background: transparent; border: none; padding: 2px 0; min-height: 0;
+    color: #d9a441; text-align: left;
+}
+QPushButton[link="true"]:hover { color: #f0d9a8; text-decoration: underline; }
 QLabel#commandEcho {
     color: #85868a;
     font-family: monospace;

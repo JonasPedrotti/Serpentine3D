@@ -15,7 +15,7 @@ import base64
 import json
 
 from ..core import geometry
-from ..core.layers import Layer
+from ..core.layers import DEFAULT_SCREEN_WIDTH, Layer, section_fill_dict
 
 # The newest version this reader understands. Anything newer is refused
 # with the version it asks for, never a traceback.
@@ -122,7 +122,11 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
                 "lineweight": layer.lineweight,
                 "linetype": layer.linetype,
                 "print_width": layer.print_width,
+                "screen_pinned": layer.screen_pinned,
                 "hatch": layer.hatch,
+                "hatch_angle": layer.hatch_angle,
+                "hatch_spacing": layer.hatch_spacing,
+                "hatch_color": layer.hatch_color,
                 "parent": layer.parent,
             }
             for layer in scene.layers.all()
@@ -143,6 +147,9 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
                 "locked": obj.locked,
                 "linetype": obj.linetype,
                 "draw_order": obj.draw_order,
+                "print_width": obj.print_width,
+                "section_fill": (dict(obj.section_fill)
+                                 if obj.section_fill else None),
                 "group": obj.group_id,
                 "block": obj.block_id,
                 "brep": (None if obj.kind == "mesh" else
@@ -271,7 +278,7 @@ def load_scene(scene, path: str):
 
 _CARRIED_FIELDS = ("visible", "locked", "group_id", "block_id", "color",
                    "material", "clip_plane", "annotation", "linetype",
-                   "draw_order")
+                   "draw_order", "print_width", "section_fill")
 
 
 def merge_scene(scene, path: str) -> int:
@@ -299,10 +306,12 @@ def merge_scene(scene, path: str) -> int:
             found = scene.layers.create(source.name, source.color, parent=parent)
             scene.layers.set_visible(found.id, source.visible)
             scene.layers.set_locked(found.id, source.locked)
-            scene.layers.set_lineweight(found.id, source.lineweight)
             scene.layers.set_linetype(found.id, source.linetype)
             scene.layers.set_print_width(found.id, source.print_width)
+            if source.screen_pinned:
+                scene.layers.set_lineweight(found.id, source.lineweight)
             scene.layers.set_hatch(found.id, source.hatch)
+            _copy_hatch_look(scene.layers, found.id, vars(source))
         layer_for[layer_id] = found.id
         return found.id
 
@@ -356,6 +365,33 @@ def _check_version(doc: dict):
         raise ValueError(f"This file needs Serpentine3D {needs} or newer")
 
 
+def _copy_hatch_look(layers, layer_id: str, ld: dict):
+    """A layer's hatch angle, spacing and colour, or the 45 degrees,
+    2.5 mm and ink every cut had before a layer could say otherwise."""
+    layers.set_hatch_angle(layer_id, ld.get("hatch_angle", 45.0))
+    layers.set_hatch_spacing(layer_id, ld.get("hatch_spacing", 2.5))
+    layers.set_hatch_color(layer_id, ld.get("hatch_color", "ink"))
+
+
+def _restore_widths(layers, layer_id: str, ld: dict):
+    """A layer's two widths, put back the way the file left them.
+
+    The print width goes first, since a screen width that follows it is
+    worked out from it. A file written before screen widths followed
+    print widths has no word on which this is, so a screen width left at
+    the default follows and one somebody changed stays where they put it.
+    """
+    layers.set_print_width(layer_id, ld.get("print_width", 0.0))
+    lineweight = ld.get("lineweight", DEFAULT_SCREEN_WIDTH)
+    pinned = ld.get("screen_pinned")
+    if pinned is None:
+        pinned = abs(lineweight - DEFAULT_SCREEN_WIDTH) > 1e-6
+    if pinned:
+        layers.set_lineweight(layer_id, lineweight)
+    else:
+        layers.follow_print(layer_id)
+
+
 def _load_doc(scene, doc: dict, blobs=None):
     # "serpentine" is the pre-rebrand identifier; those files stay valid
     if doc.get("format") not in ("serpentine3d", "serpentine"):
@@ -369,19 +405,19 @@ def _load_doc(scene, doc: dict, blobs=None):
             layers.rename("default", ld["name"])
             layers.set_color("default", tuple(ld["color"]))
             layers.set_visible("default", ld.get("visible", True))
-            layers.set_lineweight("default", ld.get("lineweight", 1.4))
             layers.set_linetype("default", ld.get("linetype", "Continuous"))
-            layers.set_print_width("default", ld.get("print_width", 0.0))
+            _restore_widths(layers, "default", ld)
             layers.set_hatch("default", ld.get("hatch", ""))
+            _copy_hatch_look(layers, "default", ld)
             id_map[ld["id"]] = "default"
         else:
             layer = layers.create(ld["name"], tuple(ld["color"]))
             layers.set_visible(layer.id, ld.get("visible", True))
-            layers.set_lineweight(layer.id, ld.get("lineweight", 1.4))
             layers.set_linetype(layer.id, ld.get("linetype", "Continuous"))
             layers.set_locked(layer.id, ld.get("locked", False))
-            layers.set_print_width(layer.id, ld.get("print_width", 0.0))
+            _restore_widths(layers, layer.id, ld)
             layers.set_hatch(layer.id, ld.get("hatch", ""))
+            _copy_hatch_look(layers, layer.id, ld)
             id_map[ld["id"]] = layer.id
 
     # The file's order is the user's, arrows and all: Default is not
@@ -452,6 +488,12 @@ def _load_doc(scene, doc: dict, blobs=None):
             updates["linetype"] = od["linetype"]
         if od.get("draw_order"):
             updates["draw_order"] = int(od["draw_order"])
+        if od.get("print_width") is not None:
+            updates["print_width"] = max(0.0, float(od["print_width"]))
+        if od.get("section_fill"):
+            updates["section_fill"] = section_fill_dict(**{
+                k: v for k, v in od["section_fill"].items()
+                if k in ("pattern", "angle", "spacing", "color")})
         if od.get("locked"):
             updates["locked"] = True
         if od.get("group"):

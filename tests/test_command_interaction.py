@@ -49,6 +49,12 @@ KEYBOARD_ONLY = {
         "a style setting with no geometry on screen to drag against",
     ("layer", "Edge width on screen (pixels)"):
         "a width in screen pixels, which has no length in the model",
+    ("layer", "Hatch spacing on paper (mm)"):
+        "hatch density on the printed sheet, whatever the detail's scale, "
+        "so no length in the model measures it",
+    ("sectionhatch", "Hatch spacing on paper (mm)"):
+        "hatch density on the printed sheet, whatever the detail's scale, "
+        "so no length in the model measures it",
     ("detailsection",
      "Cut plane distance from the detail target (toward the viewer)"):
         "you are inside a layout detail, so the cursor is on the paper "

@@ -155,26 +155,32 @@ def _paint_detail_vector(painter, layout_view, detail, layout, k):
     if regions:
         # The same answer the screen draws, so a bore that is open on
         # screen is open on paper.
-        from ..core.layout import cut_hatching, cut_patterns
+        from ..core.layout import SectionFill, cut_patterns, section_drawing
         from PySide6.QtCore import QPointF
         from PySide6.QtGui import QPolygonF
-        fill, loops, solid = cut_hatching(regions, cx, cy, s,
-                                          patterns=cut_patterns(data))
-        painter.setPen(QPen(QColor(60, 62, 70), 0.15 * k))
-        for a, b in fill:
-            painter.drawLine(
-                QPointF(a[0] * k, (layout.paper_h - a[1]) * k),
-                QPointF(b[0] * k, (layout.paper_h - b[1]) * k))
+        region_fills = getattr(layout_view, "_region_fills", None)
+        fills = (region_fills(data) if region_fills is not None
+                 else [SectionFill(p or "lines") for p in cut_patterns(data)])
+        lines, loops, floods = section_drawing(regions, cx, cy, s, fills)
+        for color, segs in lines:
+            painter.setPen(QPen(QColor(60, 62, 70) if color is None
+                                else QColor.fromRgbF(*color[:3]), 0.15 * k))
+            for a, b in segs:
+                painter.drawLine(
+                    QPointF(a[0] * k, (layout.paper_h - a[1]) * k),
+                    QPointF(b[0] * k, (layout.paper_h - b[1]) * k))
+        # Under the outline, the way the hatching is: what is poched on a
+        # section is drawn behind its own edges, and a colour is opaque.
+        from ..ui import annot_paint
+        for color, rings in floods:
+            annot_paint.fill_cut_solid(
+                painter, lambda x, y: (x * k, (layout.paper_h - y) * k),
+                [rings], color)
         painter.setPen(QPen(QColor(10, 10, 12), 0.5 * k))
         for loop in loops:
             ring = list(loop) + [loop[0]]     # closed, or one side is missing
             painter.drawPolyline(QPolygonF(
                 [QPointF(x * k, (layout.paper_h - y) * k) for x, y in ring]))
-        # Over the outline, the way the hatching goes over it: what is
-        # poched on a section is drawn behind its own edges.
-        from ..ui import annot_paint
-        annot_paint.fill_cut_solid(
-            painter, lambda x, y: (x * k, (layout.paper_h - y) * k), solid)
     painter.restore()
 
 

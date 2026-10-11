@@ -112,6 +112,12 @@ class Leader:
 # list and cannot drift apart.
 HATCH_PATTERNS = ("lines", "cross", "solid")
 
+# What a layer's material can be filled with where a section cuts it: any
+# of the patterns, or none at all. None is a material's choice not to be
+# hatched, which a hatch drawn by hand cannot make, so layers offer it and
+# the hatch command does not.
+SECTION_FILLS = ("none", *HATCH_PATTERNS)
+
 
 @dataclass
 class Hatch:
@@ -121,6 +127,7 @@ class Hatch:
     pattern: str = "lines"                       # one of HATCH_PATTERNS
     angle: float = 45.0
     spacing: float = 3.0                         # mm
+    color: list | None = None                    # [r, g, b] 0..1; None: ink
 
 
 @dataclass
@@ -325,42 +332,80 @@ def cut_patterns(data: dict) -> list:
             for _oid, pattern, _region in (data.get("cut_by_obj") or [])]
 
 
-def cut_hatching(regions: list, cx: float, cy: float, s: float,
-                 angle: float = 45.0, spacing: float = 2.5,
-                 patterns: list | None = None) -> tuple:
-    """A detail's section cuts on the paper: what to fill, what to outline.
+@dataclass(frozen=True)
+class SectionFill:
+    """What a cut face is filled with: the pattern, the angle and spacing
+    of its lines on the paper (degrees, millimetres), and the colour they
+    are drawn in, as an (r, g, b) in 0..1, or None for the ink the rest of
+    the sheet is drawn in."""
+    pattern: str = "lines"
+    angle: float = 45.0
+    spacing: float = 2.5
+    color: tuple | None = None
+
+
+def section_drawing(regions: list, cx: float, cy: float, s: float,
+                    fills: list | None = None) -> tuple:
+    """A detail's section cuts on the paper, ready to draw.
 
     `regions` arrive in the detail's projector frame, in model units;
-    `cx`, `cy` and `s` place them on the sheet. Returns the hatch
-    segments for every region, the loops to draw a line around, and the
-    regions to flood rather than line, all in paper millimetres.
+    `cx`, `cy` and `s` place them on the sheet. `fills` is aligned with
+    `regions` and says how each cut face is filled, off whatever it was
+    cut from (`SectionFill`); a region with none gets plain lines.
 
-    `patterns` is aligned with `regions` and says what each cut face is
-    made of, off the layer it was cut from: "cross" goes over the face a
-    second time square to the first, "solid" fills it in instead, and
-    anything else (a layer with nothing to say, or a pattern out of a
-    file this build cannot draw) gets the plain lines it always got.
-    Solid comes back on its own because it is not a set of segments: it
-    is the rings themselves, holes and all, for a painter to flood.
+    Returns three things, all in paper millimetres:
+    - the hatch lines, as (colour, segments) with one entry per colour
+      in the order the colours first come up, so a painter changes pen
+      once a colour rather than once a face;
+    - the loops to draw a line round, every ring of every face;
+    - the faces to flood, as (colour, rings) with the bore among the
+      rings: solid is not a set of segments, it is the face itself.
 
-    The screen and the plot both draw this, and they used to work it out
-    separately. One of them was always going to be a version behind.
+    "cross" goes over a face a second time square to the first, "none"
+    leaves it outlined and empty, and anything else (no pattern, or one
+    out of a file this build cannot draw) gets the plain lines it always
+    got. The screen and the plot both draw this, and they used to work
+    it out separately: one of them was always going to be a version
+    behind.
     """
-    fill, loops, solid = [], [], []
+    fills = fills or []
+    lines: dict = {}
+    loops, floods = [], []
     for i, region in enumerate(regions):
         paper = [[(cx + px * s, cy + py * s) for px, py in ring]
                  for ring in region if len(ring) >= 3]
         if not paper:
             continue
-        pattern = patterns[i] if patterns and i < len(patterns) else ""
-        if pattern == "solid":
-            solid.append(paper)
-        else:
-            fill.extend(hatch_region(paper, angle, spacing))
-            if pattern == "cross":
-                fill.extend(hatch_region(paper, angle + 90.0, spacing))
+        fill = fills[i] if i < len(fills) else SectionFill()
+        if fill.pattern == "solid":
+            floods.append((fill.color, paper))
+        elif fill.pattern != "none":
+            segments = lines.setdefault(fill.color, [])
+            segments.extend(hatch_region(paper, fill.angle, fill.spacing))
+            if fill.pattern == "cross":
+                segments.extend(
+                    hatch_region(paper, fill.angle + 90.0, fill.spacing))
         loops.extend(paper)
-    return fill, loops, solid
+    return [(color, segs) for color, segs in lines.items() if segs], \
+        loops, floods
+
+
+def cut_hatching(regions: list, cx: float, cy: float, s: float,
+                 angle: float = 45.0, spacing: float = 2.5,
+                 patterns: list | None = None) -> tuple:
+    """A detail's section cuts on the paper, all in the one ink: the hatch
+    segments, the loops to outline and the faces to flood.
+
+    `patterns` is aligned with `regions` and names each face's pattern;
+    `angle` and `spacing` go for every face. `section_drawing` is the
+    same answer with each face's own angle, spacing and colour.
+    """
+    fills = [SectionFill(patterns[i] if patterns and i < len(patterns)
+                         else "", angle, spacing)
+             for i in range(len(regions))]
+    lines, loops, floods = section_drawing(regions, cx, cy, s, fills)
+    return ([seg for _color, segs in lines for seg in segs], loops,
+            [rings for _color, rings in floods])
 
 
 DEFAULT_STYLES = {

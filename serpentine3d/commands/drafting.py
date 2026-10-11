@@ -505,10 +505,13 @@ def _layer_pattern(ctx) -> str:
 
     A layer is a material and a material has a fill, so hatching a wall
     on the Concrete layer is a click and an Enter rather than the same
-    decision taken again on every region. A layer with nothing to say
-    leaves the command where it has always been, on lines.
+    decision taken again on every region. A layer whose material has no
+    fill leaves the command where it has always been, on lines: a hatch
+    drawn by hand is there to be seen.
     """
-    return (ctx.scene.layers.current.hatch or "lines").capitalize()
+    from ..core.layout import HATCH_PATTERNS
+    fill = ctx.scene.layers.current.hatch
+    return (fill if fill in HATCH_PATTERNS else "lines").capitalize()
 
 
 # "paper" still, though it hatches in the model too: the space only says what
@@ -531,20 +534,28 @@ def cmd_hatch(ctx):
                            "(or click inside detail linework)",
                            choices={"Mode": ["Corners", "Region"]})
     if ctx.opt("Mode", "Corners") == "Region":
-        found = _region_at(ctx, lay, first[0], first[1])
+        found = _region_and_fill_at(ctx, lay, first[0], first[1])
         if found is None:
             ctx.echo("No closed linework region found under that point.")
             return
-        poly, holes, material = found
+        poly, holes, material, fill = found
+        # Its lines lie the way the cut's already do, in the cut's
+        # colour; off a cut, the way the layer says.
+        look = fill if fill is not None else _layer_look(ctx)
         # The face is already drawn in its material, so that is what the
         # prompt opens on: hatching a cut for real should not change what
-        # the cut is made of. Off a cut, the layer answers as it always did.
-        pattern = yield OptionReq("Pattern", options=choices,
-                                  default=material.capitalize() or offered)
+        # the cut is made of. Off a cut, or on one left empty, the layer
+        # answers as it always did.
+        material = material.capitalize()
+        pattern = yield OptionReq(
+            "Pattern", options=choices,
+            default=material if material in choices else offered)
         lay.hatches.append(Hatch(points=[list(p) for p in poly],
                                  holes=[[list(p) for p in ring]
                                         for ring in holes],
-                                 pattern=pattern.lower()))
+                                 pattern=pattern.lower(),
+                                 angle=look.angle, spacing=look.spacing,
+                                 color=_color_list(look.color)))
         ctx.scene.notify()
         empty = f", {len(holes)} left empty" if holes else ""
         ctx.echo(f"Region hatched ({len(poly)} vertices{empty}).")
@@ -560,14 +571,15 @@ def cmd_hatch(ctx):
             break
         pts.append([p[0], p[1]])
     pattern = yield OptionReq("Pattern", options=choices, default=offered)
-    spacing = 3.0
-    angle = 45.0
+    look = _layer_look(ctx)
+    spacing, angle = look.spacing, look.angle
     if pattern != "Solid":
-        spacing = yield NumberReq("Line spacing (mm)", default=3.0,
+        spacing = yield NumberReq("Line spacing (mm)", default=look.spacing,
                                   minimum=0.2)
-        angle = yield NumberReq("Angle (degrees)", default=45.0)
+        angle = yield NumberReq("Angle (degrees)", default=look.angle)
     lay.hatches.append(Hatch(points=pts, pattern=pattern.lower(),
-                             angle=angle, spacing=spacing))
+                             angle=angle, spacing=spacing,
+                             color=_color_list(look.color)))
     ctx.scene.notify()
     ctx.echo(f"Hatch placed ({pattern.lower()}).")
 
@@ -799,8 +811,29 @@ def cmd_exportsvg(ctx):
     ctx.echo(f"Exported sheet '{lay.name}' to {path}.")
 
 
+def _layer_look(ctx):
+    """How the layer being drawn on hatches: its angle, its spacing on the
+    paper and its colour, the pattern aside (`_layer_pattern` has that)."""
+    layer = ctx.scene.layers.current
+    from ..core.layout import SectionFill
+    return SectionFill(layer.hatch, layer.hatch_angle, layer.hatch_spacing,
+                       ctx.scene.layers.hatch_rgb(layer.id))
+
+
+def _color_list(color):
+    """A colour as a paper hatch keeps it: [r, g, b], or None for ink."""
+    return None if color is None else [float(c) for c in color[:3]]
+
+
 def _region_at(ctx, lay, px, py):
-    """The closed area under a point, as (points, holes, material).
+    """The closed area under a point, as (points, holes, material); see
+    `_region_and_fill_at`, which has the fill as well."""
+    found = _region_and_fill_at(ctx, lay, px, py)
+    return None if found is None else found[:3]
+
+
+def _region_and_fill_at(ctx, lay, px, py):
+    """The closed area under a point, as (points, holes, material, fill).
 
     A section cut is a ring of material with the bore punched out of it,
     and a hatch dropped on the wall has to leave the bore alone. Any
@@ -809,7 +842,8 @@ def _region_at(ctx, lay, px, py):
     The material is the fill the face is already drawn in, off the layer
     it was cut from, so hatching a cut face for real does not change
     what it is made of. Linework that is not a cut has none, and neither
-    has the bore: a hole is not made of anything.
+    has the bore: a hole is not made of anything. The fill is the whole
+    of how the face is drawn (`SectionFill`), or None off a cut.
     """
     from ..core.layout import cut_patterns, enclosing_polygon
     detail = lay.detail_at(px, py)
@@ -837,11 +871,14 @@ def _region_at(ctx, lay, px, py):
     # holes. Land in one of the holes and that hole is what you pointed
     # at, so it is the region and it has nothing punched out of it.
     patterns = cut_patterns(data)
+    region_fills = getattr(view, "_region_fills", None)
+    fills = region_fills(data) if region_fills is not None else []
     for i, region in enumerate(regions):
         if found == region[0][:-1]:
             return (found, [loop[:-1] for loop in region[1:]],
-                    patterns[i] if i < len(patterns) else "")
-    return found, [], ""
+                    patterns[i] if i < len(patterns) else "",
+                    fills[i] if i < len(fills) else None)
+    return found, [], "", None
 
 
 def _layout_view(ctx):

@@ -153,7 +153,12 @@ TOOLS: list[dict] = [
         "description": (
             "Manage layers. action: 'list', 'create', 'rename', 'visible', "
             "'current', 'color' ([r,g,b] 0-1), 'assign' (move objects to a "
-            "layer), 'delete'. A layer can live under another: pass parent "
+            "layer), 'delete', 'style' (how a layer draws: style={linetype, "
+            "print_width mm (0 = printer default), screen_width px or "
+            "'from print', hatch none/lines/cross/solid, hatch_angle "
+            "degrees, hatch_spacing mm on paper, hatch_color "
+            "ink/layer/#rrggbb}). "
+            "A layer can live under another: pass parent "
             "to 'create', and name a layer by its path ('Walls::Interior') "
             "where two layers share a name."),
         "input_schema": _s(action={"type": "string"},
@@ -164,6 +169,7 @@ TOOLS: list[dict] = [
                            visible={"type": "boolean"},
                            objects=_NAMES,
                            parent={"type": "string"},
+                           style={"type": "object"},
                            _required=["action"]),
     },
     {
@@ -241,7 +247,8 @@ def dispatch(api, name: str, args: dict) -> str | ImageResult:
                              color=args.get("color"),
                              visible=args.get("visible"),
                              objects=args.get("objects"),
-                             parent=args.get("parent")))
+                             parent=args.get("parent"),
+                             style=args.get("style")))
     if name == "measure":
         return _j(api.measure(what=args["what"],
                               targets=args.get("targets"),

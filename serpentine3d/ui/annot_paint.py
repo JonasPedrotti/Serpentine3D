@@ -81,8 +81,10 @@ def draw_leader(painter, to_dev, k, leader):
     painter.drawText(int(tx), int(ty), leader.text)
 
 
-def fill_cut_solid(painter, to_dev, regions):
-    """Flood the cut faces of a section that name a solid material.
+def fill_cut_solid(painter, to_dev, regions, color=None, outline=None):
+    """Flood the cut faces of a section that name a solid material, in
+    `color` (r, g, b in 0..1) or, with none, the grey poché of ink, and
+    with an `outline` pen stroke each face's edge again over its flood.
 
     `regions` are the solid rings `cut_hatching` hands back, in paper
     millimetres: for each face the ring round the outside first and
@@ -98,8 +100,7 @@ def fill_cut_solid(painter, to_dev, regions):
     from PySide6.QtGui import QPainterPath
     if not regions:
         return
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(SOLID_FILL)
+    fill = SOLID_FILL if color is None else QColor.fromRgbF(*color[:3])
     for rings in regions:
         path = QPainterPath()
         path.setFillRule(Qt.OddEvenFill)      # the bore stays unpainted
@@ -107,7 +108,15 @@ def fill_cut_solid(painter, to_dev, regions):
             path.addPolygon(QPolygonF([QPointF(*to_dev(x, y))
                                        for x, y in ring]))
             path.closeSubpath()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(fill)
         painter.drawPath(path)
+        if outline is not None:
+            # A colour is opaque where the grey poché was not, so the
+            # outline drawn before it would be lost under it.
+            painter.setPen(outline)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(path)
     painter.setBrush(QColor(0, 0, 0, 0))
 
 
@@ -121,6 +130,8 @@ def draw_hatch(painter, to_dev, k, hatch):
                      if len(r) >= 3]
     polys = [QPolygonF([QPointF(*to_dev(p[0], p[1])) for p in ring])
              for ring in rings]
+    color = getattr(hatch, "color", None)
+    ink = HATCH_INK if color is None else QColor.fromRgbF(*color[:3])
     if hatch.pattern == "solid":
         from PySide6.QtGui import QPainterPath
         path = QPainterPath()
@@ -128,12 +139,12 @@ def draw_hatch(painter, to_dev, k, hatch):
         for poly in polys:
             path.addPolygon(poly)
             path.closeSubpath()
-        painter.setPen(QPen(HATCH_INK, 0))
-        painter.setBrush(SOLID_FILL)
+        painter.setPen(QPen(ink, 0))
+        painter.setBrush(SOLID_FILL if color is None else ink)
         painter.drawPath(path)
         painter.setBrush(QColor(0, 0, 0, 0))
         return
-    painter.setPen(QPen(HATCH_INK, max(0.15 * k, 1.0)))
+    painter.setPen(QPen(ink, max(0.15 * k, 1.0)))
     painter.setBrush(QColor(0, 0, 0, 0))
     for poly in polys:
         painter.drawPolygon(poly)

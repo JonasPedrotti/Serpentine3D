@@ -216,3 +216,43 @@ def test_a_flood_stays_inside_the_detail_it_belongs_to(cut_sheet):
     assert any(abs(c[0] - x0) <= 1 and abs(c[1] - y0) <= 1
                for c in clips if len(c) == 4), \
         f"the flood was drawn unclipped: {clips}"
+
+
+class Strokes(QPainter):
+    """A painter that notes, in order, whether each path it draws is a
+    flood (brush) or a stroke (pen), with the stroke's lightness."""
+
+    def __init__(self, device):
+        super().__init__(device)
+        self.calls = []
+
+    def drawPath(self, path):
+        brush = self.brush()
+        if brush.style() != Qt.BrushStyle.NoBrush and brush.color().alpha():
+            self.calls.append(("flood", None))
+        elif self.pen().style() != Qt.PenStyle.NoPen:
+            self.calls.append(("stroke", self.pen().color().lightness()))
+        super().drawPath(path)
+
+
+def test_a_coloured_flood_keeps_its_outline_on_screen(cut_sheet):
+    """The grey poché of ink lets the outline under it show through; a
+    colour picked for a layer does not, so the screen draws the edge again
+    over the flood."""
+    w, lv, _det, steel = cut_sheet
+    w.scene.layers.set_hatch(steel.id, "solid")
+    w.scene.layers.set_hatch_color(steel.id, "#3f5f8f")
+    lv._hlr_cache.clear()
+    image = QImage(1200, 800, QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.white)
+    painter = Strokes(image)
+    try:
+        lv.paint_overlay(painter)
+    finally:
+        painter.end()
+    w.mark_saved()
+    kinds = [kind for kind, _light in painter.calls]
+    assert "flood" in kinds
+    after = painter.calls[kinds.index("flood") + 1:]
+    assert any(kind == "stroke" and light < 60 for kind, light in after), \
+        f"nothing dark was drawn over the flood: {painter.calls}"

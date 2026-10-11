@@ -14,6 +14,19 @@ from . import fileio
 from .core import geometry as g
 
 
+# What `layers(action="style")` can set, in the order it sets them, and the
+# LayerManager setter each goes through.
+_LAYER_STYLE = {
+    "linetype": "set_linetype",
+    "print_width": "set_print_width",
+    "screen_width": "set_lineweight",
+    "hatch": "set_hatch",
+    "hatch_angle": "set_hatch_angle",
+    "hatch_spacing": "set_hatch_spacing",
+    "hatch_color": "set_hatch_color",
+}
+
+
 class ApiError(Exception):
     pass
 
@@ -129,7 +142,19 @@ class SerpApi:
                             if layer.parent else None),
                  "visible": layer.visible,
                  "shown": self.scene.layers.is_visible(layer.id),
+                 "locked": layer.locked,
                  "current": layer.id == self.scene.layers.current_id,
+                 # how it is drawn: widths in px on screen and mm on paper
+                 # (0 is the printer's default), and the screen width is
+                 # worked out from the print width unless pinned
+                 "linetype": layer.linetype,
+                 "print_width": layer.print_width,
+                 "screen_width": layer.lineweight,
+                 "screen_pinned": layer.screen_pinned,
+                 "hatch": {"pattern": layer.hatch,
+                           "angle": layer.hatch_angle,
+                           "spacing": layer.hatch_spacing,
+                           "color": layer.hatch_color},
                  "object_count": sum(1 for row in rows
                                      if row["layer"] == layer.name)}
                 for layer in self.scene.layers.all()
@@ -411,7 +436,8 @@ class SerpApi:
                new_name: str | None = None, color: list | None = None,
                visible: bool | None = None,
                objects: list[str] | None = None,
-               parent: str | None = None) -> dict:
+               parent: str | None = None,
+               style: dict | None = None) -> dict:
         mgr = self.scene.layers
         if action == "list":
             return {"layers": self.scene_info()["layers"]}
@@ -438,6 +464,8 @@ class SerpApi:
             self.history.checkpoint("assign layer")
             for ref in objects or []:
                 self.scene.update(self._obj(ref).id, layer_id=layer.id)
+        elif action == "style":
+            self._style_layer(layer.id, style or {})
         elif action == "delete":
             self.history.checkpoint("delete layer")
             for o in self.scene.all():
@@ -448,6 +476,43 @@ class SerpApi:
             raise ApiError(f"Unknown layer action '{action}'")
         self.scene.notify()
         return {"ok": True}
+
+    def _style_layer(self, layer_id: str, style: dict):
+        """Set how a layer draws, as the layer page in Properties does, in
+        one undo step. A key the layer has no use for, or a value it
+        cannot draw, is refused before anything changes."""
+        from .core.layers import HATCH_INK, hatch_color_token
+        from .core.layout import SECTION_FILLS
+        from .core.linetype import LINETYPES
+        unknown = sorted(set(style) - set(_LAYER_STYLE))
+        if unknown:
+            raise ApiError(f"Unknown layer style {', '.join(unknown)}; a "
+                           f"layer takes {', '.join(_LAYER_STYLE)}")
+        if "linetype" in style and style["linetype"] not in LINETYPES:
+            raise ApiError(f"Unknown linetype '{style['linetype']}'; "
+                           f"known: {', '.join(LINETYPES)}")
+        if "hatch" in style and \
+                str(style["hatch"]).lower() not in SECTION_FILLS:
+            raise ApiError(f"Unknown hatch '{style['hatch']}'; "
+                           f"known: {', '.join(SECTION_FILLS)}")
+        if "hatch_color" in style and \
+                hatch_color_token(style["hatch_color"]) == HATCH_INK and \
+                str(style["hatch_color"]).lower() != HATCH_INK:
+            raise ApiError("hatch_color is 'ink', 'layer', '#rrggbb' or "
+                           "[r, g, b] in 0..1")
+        mgr = self.scene.layers
+        self.history.checkpoint("layer style")
+        # print width first: a screen width that follows it is worked
+        # out from it
+        for key in _LAYER_STYLE:
+            if key not in style:
+                continue
+            value = style[key]
+            if key == "screen_width" and (
+                    value is None or str(value).lower() == "from print"):
+                mgr.follow_print(layer_id)
+            else:
+                getattr(mgr, _LAYER_STYLE[key])(layer_id, value)
 
     # -------------------------------------------------------------- file i/o
 

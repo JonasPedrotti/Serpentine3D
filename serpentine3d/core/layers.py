@@ -5,13 +5,94 @@ from __future__ import annotations
 import itertools
 from dataclasses import dataclass, replace
 
-from .layout import HATCH_PATTERNS
+from .layout import SECTION_FILLS
 
 DEFAULT_LAYER_ID = "default"
 
 # What a layer path is written with, the separator Rhino uses:
 # "Walls::Interior" is the layer Interior sitting under the layer Walls.
 PATH_SEPARATOR = "::"
+
+# A layer's width on screen comes from its width on paper unless somebody
+# sets it: 4 px a millimetre puts the 0.35 mm pen most drawings plot with
+# at the 1.4 px every layer has always drawn at, and a layer left on the
+# printer's default draws at that too.
+DEFAULT_SCREEN_WIDTH = 1.4
+SCREEN_PX_PER_MM = 4.0
+
+
+# The colour a layer's section hatch is drawn in: the ink the rest of a
+# sheet is drawn in, the layer's own colour, or one of its own as #rrggbb.
+HATCH_INK = "ink"
+HATCH_LAYER_COLOR = "layer"
+MIN_HATCH_SPACING = 0.2         # mm on paper: closer is a grey smear
+
+
+def hatch_color_token(value) -> str:
+    """A hatch colour as a layer keeps it: "ink", "layer" or "#rrggbb".
+
+    An (r, g, b) in 0..1 becomes its #rrggbb; anything else that is not
+    one of the three, a file's or a script's, is ink, which is what such
+    a cut was always drawn in.
+    """
+    if isinstance(value, (tuple, list)) and len(value) == 3:
+        try:
+            channels = [max(0.0, min(1.0, float(c))) for c in value]
+        except (TypeError, ValueError):
+            return HATCH_INK
+        return "#" + "".join(f"{round(c * 255):02x}" for c in channels)
+    text = (value or "").strip().lower() if isinstance(value, str) else ""
+    if text in (HATCH_INK, HATCH_LAYER_COLOR):
+        return text
+    if len(text) == 7 and text[0] == "#":
+        try:
+            int(text[1:], 16)
+            return text
+        except ValueError:
+            pass
+    return HATCH_INK
+
+
+def hatch_token_rgb(token: str, layer_color):
+    """The (r, g, b) a hatch colour token draws in, or None for ink:
+    "layer" is the colour of the layer it is read against."""
+    if token == HATCH_LAYER_COLOR:
+        return tuple(layer_color)
+    if token.startswith("#"):
+        return tuple(int(token[i:i + 2], 16) / 255.0 for i in (1, 3, 5))
+    return None
+
+
+def _tidy_pattern(name) -> str:
+    """A fill this app can draw; anything else is the lines it always was."""
+    name = (name or "").strip().lower()
+    return name if name in SECTION_FILLS else "lines"
+
+
+def _tidy_angle(degrees) -> float:
+    """Lines at 225 degrees are lines at 45, so it is kept that way."""
+    return float(degrees) % 180.0
+
+
+def _tidy_spacing(mm) -> float:
+    return max(MIN_HATCH_SPACING, float(mm))
+
+
+def section_fill_dict(pattern="lines", angle=45.0, spacing=2.5,
+                      color=HATCH_INK) -> dict:
+    """A section hatch of an object's own, as the object keeps it: the
+    same four things a layer has, put right the way a layer's are."""
+    return {"pattern": _tidy_pattern(pattern), "angle": _tidy_angle(angle),
+            "spacing": _tidy_spacing(spacing),
+            "color": hatch_color_token(color)}
+
+
+def screen_width_for(print_mm: float) -> float:
+    """The width, in pixels, a layer following its print width draws at.
+    Never under a pixel: a thin pen still has to show."""
+    if print_mm <= 0:
+        return DEFAULT_SCREEN_WIDTH
+    return max(1.0, round(print_mm * SCREEN_PX_PER_MM, 2))
 
 # muted but distinguishable object colors, dark-theme friendly
 _PALETTE = [
@@ -33,10 +114,14 @@ class Layer:
     color: tuple[float, float, float]
     visible: bool = True
     locked: bool = False
-    lineweight: float = 1.4        # on-screen edge width in pixels
+    lineweight: float = DEFAULT_SCREEN_WIDTH   # on-screen edge width, px
     linetype: str = "Continuous"   # dash-pattern name (core/linetype.py)
     print_width: float = 0.0       # plotted pen width in mm; 0 = device default
-    hatch: str = ""                # material fill (HATCH_PATTERNS); "" = none
+    screen_pinned: bool = False    # lineweight set by hand, not from print
+    hatch: str = "lines"           # fill where it is cut (SECTION_FILLS)
+    hatch_angle: float = 45.0      # degrees on the paper, within half a turn
+    hatch_spacing: float = 2.5     # mm on the paper between hatch lines
+    hatch_color: str = HATCH_INK   # "ink", "layer" or "#rrggbb"
     parent: str | None = None      # the layer this one sits under, if any
 
 
@@ -173,28 +258,61 @@ class LayerManager:
         self._layers[layer_id] = replace(self._layers[layer_id], color=color)
 
     def set_lineweight(self, layer_id: str, weight: float):
+        """Set the screen width by hand, which pins it: the print width
+        no longer moves it until follow_print lets go."""
         self._layers[layer_id] = replace(self._layers[layer_id],
-                                         lineweight=max(0.2, float(weight)))
+                                         lineweight=max(0.2, float(weight)),
+                                         screen_pinned=True)
+
+    def follow_print(self, layer_id: str):
+        """Let the screen width come from the print width again."""
+        layer = self._layers[layer_id]
+        self._layers[layer_id] = replace(
+            layer, lineweight=screen_width_for(layer.print_width),
+            screen_pinned=False)
 
     def set_linetype(self, layer_id: str, name: str):
         self._layers[layer_id] = replace(self._layers[layer_id],
                                          linetype=name or "Continuous")
 
     def set_print_width(self, layer_id: str, width: float):
-        self._layers[layer_id] = replace(self._layers[layer_id],
-                                         print_width=max(0.0, float(width)))
+        """Set the plotted pen width, and with it the screen width unless
+        that was set by hand."""
+        layer = self._layers[layer_id]
+        width = max(0.0, float(width))
+        self._layers[layer_id] = replace(
+            layer, print_width=width,
+            lineweight=(layer.lineweight if layer.screen_pinned
+                        else screen_width_for(width)))
 
     def set_hatch(self, layer_id: str, pattern: str):
-        """Say what this layer's material is hatched with, or nothing.
+        """Say what this layer's material is filled with where it is cut.
 
-        Anything the app cannot draw is nothing: a file can name a
-        pattern this app has never heard of, and a prompt offering a word
-        that fills no region is worse than the prompt offering lines.
+        "none" is a fill of its own: the cut is outlined and left empty.
+        Anything else the app cannot draw is lines, which is what such a
+        layer was always drawn with: a file written before layers had a
+        hatch, or by a build that wrote "" for one nobody had set, or one
+        naming a pattern this app has never heard of.
         """
-        name = (pattern or "").strip().lower()
+        self._layers[layer_id] = replace(self._layers[layer_id],
+                                         hatch=_tidy_pattern(pattern))
+
+    def set_hatch_angle(self, layer_id: str, degrees: float):
+        self._layers[layer_id] = replace(self._layers[layer_id],
+                                         hatch_angle=_tidy_angle(degrees))
+
+    def set_hatch_spacing(self, layer_id: str, mm: float):
+        self._layers[layer_id] = replace(self._layers[layer_id],
+                                         hatch_spacing=_tidy_spacing(mm))
+
+    def set_hatch_color(self, layer_id: str, color):
         self._layers[layer_id] = replace(
-            self._layers[layer_id],
-            hatch=name if name in HATCH_PATTERNS else "")
+            self._layers[layer_id], hatch_color=hatch_color_token(color))
+
+    def hatch_rgb(self, layer_id: str):
+        """The (r, g, b) a layer's hatch is drawn in, or None for ink."""
+        layer = self._layers[layer_id]
+        return hatch_token_rgb(layer.hatch_color, layer.color)
 
     def move_up(self, layer_id: str) -> bool:
         """Move a layer above the sibling in front of it, branch and all.

@@ -809,21 +809,34 @@ def cmd_layer(ctx):
             layers.set_linetype(layer.id, style)
             ctx.echo(f"Layer '{layer.name}' draws {style} lines.")
     elif action == "Hatch":
-        from ..core.layout import HATCH_PATTERNS
+        from ..core.layout import SECTION_FILLS
         name = yield TextReq("Layer name")
         layer = layers.find_by_name(name)
         if layer is None:
             ctx.echo(f"No layer named '{name}'.")
         else:
-            # What a hatch drawn on this layer starts out as. "None" is a
-            # material with no fill, which is most of them.
+            # What a section through this layer's material is filled
+            # with, and what a hatch drawn on it starts out as. "None"
+            # leaves a cut outlined and empty.
             fill = yield OptionReq(
                 "Hatch pattern",
-                options=["None", *(p.capitalize() for p in HATCH_PATTERNS)],
-                default=(layer.hatch or "none").capitalize())
+                options=[p.capitalize() for p in SECTION_FILLS],
+                default=layer.hatch.capitalize())
             layers.set_hatch(layer.id, fill)
-            drawn = layers.get(layer.id).hatch or "nothing in particular"
-            ctx.echo(f"Hatches on '{layer.name}' start out {drawn}.")
+            fill = layers.get(layer.id).hatch
+            if fill in ("lines", "cross"):
+                # the lines' angle and spacing, on the paper whatever the
+                # scale of the detail the cut is seen in
+                angle = yield NumberReq("Hatch angle (degrees)",
+                                        default=layer.hatch_angle)
+                layers.set_hatch_angle(layer.id, float(angle))
+                spacing = yield NumberReq("Hatch spacing on paper (mm)",
+                                          default=layer.hatch_spacing,
+                                          minimum=0.2)
+                layers.set_hatch_spacing(layer.id, float(spacing))
+            ctx.echo(f"Cuts through '{layer.name}' are left empty."
+                     if fill == "none" else
+                     f"Cuts through '{layer.name}' are filled with {fill}.")
     elif action == "Rename":
         old = yield TextReq("Layer to rename")
         layer = layers.find_by_name(old)

@@ -24,6 +24,8 @@ BORDER_COLOR = (0.25, 0.28, 0.32, 1.0)
 BORDER_ACTIVE = (0.85, 0.64, 0.25, 1.0)
 LINE_VISIBLE = (0.10, 0.10, 0.12, 1.0)
 LINE_HIDDEN = (0.45, 0.45, 0.5, 1.0)
+HATCH_INK = (0.25, 0.27, 0.32, 1.0)       # a cut's hatch lines, in ink
+CUT_OUTLINE = (0.05, 0.05, 0.07, 1.0)     # the heavy line round a cut face
 DIM_COLOR = (0.20, 0.30, 0.55, 1.0)
 POINT_MARK_PX = 4.0                     # half a point's cross, on screen
 ZOOM_PAD = 1.05                         # air around what a zoom was asked for
@@ -47,7 +49,8 @@ def point_marks(points, size: float) -> np.ndarray:
     return np.asarray(segs, np.float32).reshape(-1, 2, 3)
 
 
-def hlr_visible_segments(by_obj, to_paper, is_picked) -> list:
+def hlr_visible_segments(by_obj, to_paper, is_picked,
+                         picked_ink=None) -> list:
     """A detail's visible line work as (ink, segments), in the order to draw.
 
     `by_obj` is what the hidden-line pass carried out: one (object id,
@@ -79,7 +82,7 @@ def hlr_visible_segments(by_obj, to_paper, is_picked) -> list:
                 into.append(np.stack([p[:-1], p[1:]], axis=1))
     out = []
     for segs, ink in ((plain, LINE_VISIBLE),
-                      (gold, (*theme.SELECTION_COLOR, 1.0))):
+                      (gold, picked_ink or (*theme.SELECTION_COLOR, 1.0))):
         if segs:
             out.append((ink, np.concatenate(segs).astype(np.float32)))
     return out
@@ -712,22 +715,26 @@ class LayoutView:
         # Visible edges, in the inks they take: a hidden-line detail has no
         # faces to tint, so ink is the only way it can show what is picked.
         picked = self.vp.selection.is_selected
+        held = (*theme.HELD_SELECTION_COLOR, 1.0) \
+            if self.vp.selection.held else None
         for ink, segs in hlr_visible_segments(data.get("visible_by_obj", []),
-                                              to_paper, picked):
+                                              to_paper, picked, held):
             self._draw_segs(paper_mvp, segs, ink, 1.6)
-        # section-cut faces: heavy outline + 45-degree hatching
+        # section-cut faces: heavy outline, and each face hatched the way
+        # whatever it was cut from says
         regions = data.get("cut") or []
         if regions:
-            from ..core.layout import cut_hatching, cut_patterns
+            from ..core.layout import section_drawing
             # Solid comes back on its own and is flooded by the painter
             # afterwards, in `_paint_cut_fills`: GL has lines, and a face
             # with a bore in it is not a thing lines can fill.
-            fill, loops, _solid = cut_hatching(regions, cx, cy, s,
-                                               patterns=cut_patterns(data))
-            if fill:
+            lines, loops, _floods = section_drawing(
+                regions, cx, cy, s, self._region_fills(data))
+            for color, segs in lines:
                 self._draw_segs(paper_mvp, np.asarray(
-                    [[[a[0], a[1], 0], [b[0], b[1], 0]] for a, b in fill],
-                    np.float32), (0.25, 0.27, 0.32, 1.0), 1.0)
+                    [[[a[0], a[1], 0], [b[0], b[1], 0]] for a, b in segs],
+                    np.float32),
+                    HATCH_INK if color is None else (*color, 1.0), 1.0)
             outline = []
             for loop in loops:
                 ring = np.asarray([(x, y, 0.0) for x, y in loop] +
@@ -735,7 +742,7 @@ class LayoutView:
                 outline.append(np.stack([ring[:-1], ring[1:]], axis=1))
             if outline:
                 self._draw_segs(paper_mvp, np.concatenate(outline),
-                                (0.05, 0.05, 0.07, 1.0), 2.2)
+                                CUT_OUTLINE, 2.2)
         GL.glDisable(GL.GL_SCISSOR_TEST)
 
     # ------------------------------------------------------- QPainter texts
@@ -789,7 +796,7 @@ class LayoutView:
         so it comes back over here to the painter. Under the labels and
         the annotations, the way a detail's own ink is.
         """
-        from ..core.layout import cut_hatching, cut_patterns
+        from ..core.layout import section_drawing
         from . import annot_paint
         lay = self.layout
         details = list(lay.details)
@@ -802,20 +809,36 @@ class LayoutView:
                     or detail.section_offset is None:
                 continue
             data = self._detail_hlr(detail)
-            patterns = cut_patterns(data)
-            if "solid" not in patterns:
+            fills = self._region_fills(data)
+            if not any(f.pattern == "solid" for f in fills):
                 continue
-            _fill, _loops, solid = cut_hatching(
+            _lines, _loops, floods = section_drawing(
                 data.get("cut") or [], detail.x + detail.w / 2,
-                detail.y + detail.h / 2, 1.0 / detail.scale_denom,
-                patterns=patterns)
+                detail.y + detail.h / 2, 1.0 / detail.scale_denom, fills)
             x0, y0 = self.paper_to_screen(detail.x, detail.y + detail.h)
             x1, y1 = self.paper_to_screen(detail.x + detail.w, detail.y)
             painter.save()
             painter.setClipRect(int(x0), int(y0),
                                 int(x1 - x0), int(y1 - y0))
-            annot_paint.fill_cut_solid(painter, self.paper_to_screen, solid)
+            edge = QPen(QColor.fromRgbF(*CUT_OUTLINE[:3]), 2.2)
+            for color, rings in floods:
+                annot_paint.fill_cut_solid(painter, self.paper_to_screen,
+                                           [rings], color, edge)
             painter.restore()
+
+    def _region_fills(self, data) -> list:
+        """How each of a detail's cut faces is filled, aligned with its
+        `cut`: off the object the face was cut from, as the scene says
+        now. A face whose object has gone keeps the pattern it was cut
+        with and the rest of the defaults."""
+        from ..core.layout import SectionFill
+        scene = self.vp.scene
+        fills = []
+        for oid, pattern, _region in data.get("cut_by_obj") or []:
+            obj = scene.get(oid) if oid is not None else None
+            fills.append(scene.section_fill_of(obj) if obj is not None
+                         else SectionFill(pattern or "lines"))
+        return fills
 
     def _pools(self, lay) -> dict:
         """Where each kind of pickable thing lives on a sheet."""
