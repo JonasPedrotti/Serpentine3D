@@ -16,6 +16,7 @@ import numpy as np
 from . import geometry
 from .deferred import DeferredShape
 from .layers import DEFAULT_LAYER_ID, LayerManager
+from .layout import SectionFill
 from .tessellate import DisplayMesh, tessellate
 
 
@@ -516,6 +517,14 @@ class Scene:
         reads as concrete or as steel without anybody hatching it by hand.
         """
         return self.layers.get(obj.layer_id).hatch
+
+    def section_fill_of(self, obj: SceneObject):
+        """Everything a cut through this object is drawn with: the
+        pattern, its angle and spacing on the paper, and its colour."""
+        layer = self.layers.get(obj.layer_id)
+        return SectionFill(layer.hatch, layer.hatch_angle,
+                           layer.hatch_spacing,
+                           self.layers.hatch_rgb(layer.id))
 
     def render_color_of(self, obj: SceneObject) -> tuple[float, float, float]:
         """The colour rendered mode draws the object's surfaces in.

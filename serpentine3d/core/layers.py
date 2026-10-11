@@ -21,6 +21,38 @@ DEFAULT_SCREEN_WIDTH = 1.4
 SCREEN_PX_PER_MM = 4.0
 
 
+# The colour a layer's section hatch is drawn in: the ink the rest of a
+# sheet is drawn in, the layer's own colour, or one of its own as #rrggbb.
+HATCH_INK = "ink"
+HATCH_LAYER_COLOR = "layer"
+MIN_HATCH_SPACING = 0.2         # mm on paper: closer is a grey smear
+
+
+def hatch_color_token(value) -> str:
+    """A hatch colour as a layer keeps it: "ink", "layer" or "#rrggbb".
+
+    An (r, g, b) in 0..1 becomes its #rrggbb; anything else that is not
+    one of the three, a file's or a script's, is ink, which is what such
+    a cut was always drawn in.
+    """
+    if isinstance(value, (tuple, list)) and len(value) == 3:
+        try:
+            channels = [max(0.0, min(1.0, float(c))) for c in value]
+        except (TypeError, ValueError):
+            return HATCH_INK
+        return "#" + "".join(f"{round(c * 255):02x}" for c in channels)
+    text = (value or "").strip().lower() if isinstance(value, str) else ""
+    if text in (HATCH_INK, HATCH_LAYER_COLOR):
+        return text
+    if len(text) == 7 and text[0] == "#":
+        try:
+            int(text[1:], 16)
+            return text
+        except ValueError:
+            pass
+    return HATCH_INK
+
+
 def screen_width_for(print_mm: float) -> float:
     """The width, in pixels, a layer following its print width draws at.
     Never under a pixel: a thin pen still has to show."""
@@ -53,6 +85,9 @@ class Layer:
     print_width: float = 0.0       # plotted pen width in mm; 0 = device default
     screen_pinned: bool = False    # lineweight set by hand, not from print
     hatch: str = "lines"           # fill where it is cut (SECTION_FILLS)
+    hatch_angle: float = 45.0      # degrees on the paper, within half a turn
+    hatch_spacing: float = 2.5     # mm on the paper between hatch lines
+    hatch_color: str = HATCH_INK   # "ink", "layer" or "#rrggbb"
     parent: str | None = None      # the layer this one sits under, if any
 
 
@@ -229,6 +264,30 @@ class LayerManager:
         self._layers[layer_id] = replace(
             self._layers[layer_id],
             hatch=name if name in SECTION_FILLS else "lines")
+
+    def set_hatch_angle(self, layer_id: str, degrees: float):
+        """Lines at 225 degrees are lines at 45, so it is kept that way."""
+        self._layers[layer_id] = replace(
+            self._layers[layer_id], hatch_angle=float(degrees) % 180.0)
+
+    def set_hatch_spacing(self, layer_id: str, mm: float):
+        self._layers[layer_id] = replace(
+            self._layers[layer_id],
+            hatch_spacing=max(MIN_HATCH_SPACING, float(mm)))
+
+    def set_hatch_color(self, layer_id: str, color):
+        self._layers[layer_id] = replace(
+            self._layers[layer_id], hatch_color=hatch_color_token(color))
+
+    def hatch_rgb(self, layer_id: str):
+        """The (r, g, b) a layer's hatch is drawn in, or None for ink."""
+        layer = self._layers[layer_id]
+        if layer.hatch_color == HATCH_LAYER_COLOR:
+            return tuple(layer.color)
+        if layer.hatch_color.startswith("#"):
+            value = layer.hatch_color[1:]
+            return tuple(int(value[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+        return None
 
     def move_up(self, layer_id: str) -> bool:
         """Move a layer above the sibling in front of it, branch and all.

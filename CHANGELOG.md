@@ -20,6 +20,21 @@
   the header come from one description, so they always agree. That line
   replaces the Type row.
 
+- **A layer sets its hatch's angle, spacing and colour (#40).** A layer
+  used to name its section hatch's pattern and nothing else, so every cut
+  in a drawing was hatched at 45 degrees, 2.5 mm apart, in the one grey.
+  The layer page now has Hatch angle, Hatch spacing (millimetres on the
+  printed sheet, so a 1:50 and a 1:5 detail hatch alike) and Hatch colour:
+  Ink, the near black the rest of the sheet is drawn in, the layer's own
+  colour, or one chosen for it. Angle and spacing show only for Lines and
+  Cross, and the colour row hides for None. Screen and plot draw the same
+  thing, and a flood in a colour keeps its outline. The layer command asks
+  for angle and spacing after a line pattern; a hatch drawn by hand on a
+  sheet starts from the layer's, and one dropped on a cut takes the cut's
+  angle, spacing and colour. Scripts and the assistant can set all of a
+  layer's look with `layers(action="style", style={...})`, and the scene
+  info now reports each layer's linetype, widths and hatch.
+
 - **Panel icons.** Properties and Layers now carry an icon at the left of
   their title bars, sliders and a stack of sheets, so the two stacked
   panels tell apart at a glance.

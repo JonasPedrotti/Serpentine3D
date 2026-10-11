@@ -492,3 +492,13 @@ def switch_glyph(kind: str, state: str) -> QPixmap:
             drawer(p)
         _switches[key] = _mark_pixmap(inked)
     return _switches[key]
+
+
+def swatch(rgb) -> QIcon:
+    """A small rounded square of colour, for a drop-down entry that is a
+    colour: the Ink and Layer colour of a hatch, or one picked for it."""
+    def draw(p):
+        p.setPen(QPen(QColor(0, 0, 0, 110), 1))
+        p.setBrush(QColor.fromRgbF(*rgb[:3]))
+        p.drawRoundedRect(QRectF(2.5, 2.5, 11, 11), 2.5, 2.5)
+    return QIcon(_mark_pixmap(draw))

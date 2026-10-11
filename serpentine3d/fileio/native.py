@@ -124,6 +124,9 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
                 "print_width": layer.print_width,
                 "screen_pinned": layer.screen_pinned,
                 "hatch": layer.hatch,
+                "hatch_angle": layer.hatch_angle,
+                "hatch_spacing": layer.hatch_spacing,
+                "hatch_color": layer.hatch_color,
                 "parent": layer.parent,
             }
             for layer in scene.layers.all()
@@ -305,6 +308,7 @@ def merge_scene(scene, path: str) -> int:
             if source.screen_pinned:
                 scene.layers.set_lineweight(found.id, source.lineweight)
             scene.layers.set_hatch(found.id, source.hatch)
+            _copy_hatch_look(scene.layers, found.id, vars(source))
         layer_for[layer_id] = found.id
         return found.id
 
@@ -358,6 +362,14 @@ def _check_version(doc: dict):
         raise ValueError(f"This file needs Serpentine3D {needs} or newer")
 
 
+def _copy_hatch_look(layers, layer_id: str, ld: dict):
+    """A layer's hatch angle, spacing and colour, or the 45 degrees,
+    2.5 mm and ink every cut had before a layer could say otherwise."""
+    layers.set_hatch_angle(layer_id, ld.get("hatch_angle", 45.0))
+    layers.set_hatch_spacing(layer_id, ld.get("hatch_spacing", 2.5))
+    layers.set_hatch_color(layer_id, ld.get("hatch_color", "ink"))
+
+
 def _restore_widths(layers, layer_id: str, ld: dict):
     """A layer's two widths, put back the way the file left them.
 
@@ -393,6 +405,7 @@ def _load_doc(scene, doc: dict, blobs=None):
             layers.set_linetype("default", ld.get("linetype", "Continuous"))
             _restore_widths(layers, "default", ld)
             layers.set_hatch("default", ld.get("hatch", ""))
+            _copy_hatch_look(layers, "default", ld)
             id_map[ld["id"]] = "default"
         else:
             layer = layers.create(ld["name"], tuple(ld["color"]))
@@ -401,6 +414,7 @@ def _load_doc(scene, doc: dict, blobs=None):
             layers.set_locked(layer.id, ld.get("locked", False))
             _restore_widths(layers, layer.id, ld)
             layers.set_hatch(layer.id, ld.get("hatch", ""))
+            _copy_hatch_look(layers, layer.id, ld)
             id_map[ld["id"]] = layer.id
 
     # The file's order is the user's, arrows and all: Default is not

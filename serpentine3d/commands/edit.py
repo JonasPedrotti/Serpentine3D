@@ -824,6 +824,16 @@ def cmd_layer(ctx):
                 default=layer.hatch.capitalize())
             layers.set_hatch(layer.id, fill)
             fill = layers.get(layer.id).hatch
+            if fill in ("lines", "cross"):
+                # the lines' angle and spacing, on the paper whatever the
+                # scale of the detail the cut is seen in
+                angle = yield NumberReq("Hatch angle (degrees)",
+                                        default=layer.hatch_angle)
+                layers.set_hatch_angle(layer.id, float(angle))
+                spacing = yield NumberReq("Hatch spacing on paper (mm)",
+                                          default=layer.hatch_spacing,
+                                          minimum=0.2)
+                layers.set_hatch_spacing(layer.id, float(spacing))
             ctx.echo(f"Cuts through '{layer.name}' are left empty."
                      if fill == "none" else
                      f"Cuts through '{layer.name}' are filled with {fill}.")
