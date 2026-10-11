@@ -185,6 +185,30 @@ def test_the_scale_commands_keep_it_cutting_too(env, command, inputs):
     assert _cut_side(scene) == before, "scaling turned the cut round"
 
 
+@pytest.mark.parametrize("axis, factor", [(0, 2.0), (1, 0.5), (2, 3.0)])
+def test_the_gumball_s_scale_handles_keep_it_cutting_too(_qapp, axis,
+                                                         factor):
+    """What was reported: a scale handle on the gumball, one axis at a
+    time, each through the gumball's own drag. Seen at a slant, so no
+    handle points straight at the eye, which the gumball would refuse."""
+    from PySide6.QtCore import Qt
+    scene = Scene()
+    view = vp_mod.Viewport(scene, SelectionManager(scene))
+    view.resize(800, 600)
+    plane = _plane(scene, flipped=True)
+    view.zoom_extents()
+    before = _cut_side(scene)
+    view.selection.set([plane.id])
+    assert view.gumball.begin_drag(("scale", axis), view.width() / 2,
+                                   view.height() / 2,
+                                   Qt.KeyboardModifier.NoModifier)
+    view.gumball.apply_scalar(factor)
+    view.gumball.end_drag()
+    assert clip_plane_frames([scene.get(plane.id)]), \
+        "the scaled plane stopped cutting"
+    assert _cut_side(scene) == before, "scaling turned the cut round"
+
+
 def test_a_scaled_plane_is_still_a_plane():
     scaled = g.scale_along_axis(_rect(), (0, 0, 0), (1, 0, 0), 2.0)
     face = next(iter(g.faces_of(scaled)))
