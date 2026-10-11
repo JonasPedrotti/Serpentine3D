@@ -68,8 +68,27 @@ class Subject:
 
 
 # How far a page's contents stand in from its sides: the form rows'
-# margin, which the header and the buttons under it line up with.
-_INSET = 8
+# margin, which the header and the links under it line up with.
+_INSET = theme.PANEL_INSET
+
+
+def _seam() -> QWidget:
+    """The dark line that closes a page's header off from its fields."""
+    seam = QWidget()
+    seam.setObjectName("seam")
+    seam.setFixedHeight(1)
+    seam.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    seam.setStyleSheet(f"background: {theme.SEAM};")
+    return seam
+
+
+def _link(text: str = "") -> QPushButton:
+    """A push button drawn as a gold link, for an action that sits in a
+    line of text rather than standing on its own."""
+    button = QPushButton(text)
+    button.setProperty("link", True)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    return button
 
 
 class SubjectHeader(QWidget):
@@ -82,16 +101,21 @@ class SubjectHeader(QWidget):
         self._empty = (empty_title, empty_detail)
         self.mark = QLabel()
         self.kind = QLabel()
-        font = self.kind.font()
+        # The design system's app section label: monospace, capitals,
+        # tracked 1.5 px. Family and size go in the style sheet, which would
+        # override them from setFont; capitals and tracking it leaves alone.
+        font = QFont("monospace")
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        font.setPixelSize(11)
         font.setCapitalization(QFont.Capitalization.AllUppercase)
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.2)
-        font.setPointSizeF(font.pointSizeF() * 0.85)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
         self.kind.setFont(font)
-        self.kind.setStyleSheet(f"color: {theme.ACCENT};")
+        self.kind.setStyleSheet(f"color: {theme.ACCENT}; font-family: "
+                                "monospace; font-size: 11px;")
         self._kind_row = QWidget()
         row = QHBoxLayout(self._kind_row)
         row.setContentsMargins(_INSET, 8, _INSET, 0)
-        row.setSpacing(5)
+        row.setSpacing(6)
         row.addWidget(self.mark)
         row.addWidget(self.kind)
         row.addStretch(1)
@@ -119,8 +143,9 @@ class SubjectHeader(QWidget):
         # With no kind line above it, the name keeps that line's gap. Set in
         # the style sheet: setContentsMargins on a styled label replaces its
         # padding, sides and all, and the name slid out of line.
-        self.title.setStyleSheet("font-weight: bold; padding: %dpx %dpx 0;"
-                                 % (8 if subject is None else 2, _INSET))
+        self.title.setStyleSheet(
+            "font-weight: 600; font-size: 14px; padding: %dpx %dpx 0;"
+            % (8 if subject is None else 4, _INSET))
         if subject is None:
             self._kind_row.hide()
             self.title.setText(self._empty[0])
@@ -234,7 +259,7 @@ class PropertiesPanel(QWidget):
         self.measure_label.setWordWrap(True)
 
         self.form = form = QFormLayout()
-        form.setContentsMargins(8, 4, 8, 8)
+        form.setContentsMargins(_INSET, 8, _INSET, _INSET)
         form.setSpacing(6)
         form.addRow("Name", self.name_edit)
         form.addRow("Layer", self.layer_combo)
@@ -357,7 +382,10 @@ class PropertiesPanel(QWidget):
         self.object_page = QWidget()
         page = QVBoxLayout(self.object_page)
         page.setContentsMargins(0, 0, 0, 0)
+        page.setSpacing(0)
         page.addWidget(self.object_head)
+        page.addSpacing(6)
+        page.addWidget(_seam())
         page.addLayout(form)
         page.addStretch(1)
         self._build_layer_page()
@@ -687,15 +715,16 @@ class PropertiesPanel(QWidget):
         self.layer_page = QWidget()
         self.layer_head = SubjectHeader()
 
-        self.layer_select = QPushButton("Select objects")
+        self.layer_select = _link("Select objects")
         self.layer_select.setToolTip("Select everything on the picked layers")
         self.layer_select.clicked.connect(self._select_layer_objects)
-        self.layer_move_here = QPushButton()
+        self.layer_move_here = _link()
         self.layer_move_here.setToolTip(
             "Move the selected objects onto this layer")
         self.layer_move_here.clicked.connect(self._move_selection_here)
         acts = QHBoxLayout()
-        acts.setContentsMargins(_INSET, 2, _INSET, 4)
+        acts.setContentsMargins(_INSET, 2, _INSET, 6)
+        acts.setSpacing(16)
         acts.addWidget(self.layer_select)
         acts.addWidget(self.layer_move_here)
         acts.addStretch(1)
@@ -753,7 +782,7 @@ class PropertiesPanel(QWidget):
         state_widget.setLayout(state)
 
         self.layer_form = form = QFormLayout()
-        form.setContentsMargins(8, 4, 8, 8)
+        form.setContentsMargins(_INSET, 8, _INSET, _INSET)
         form.setSpacing(6)
         form.addRow("Name", self.layer_name)
         form.addRow("Colour", self.layer_color)
@@ -765,8 +794,10 @@ class PropertiesPanel(QWidget):
 
         page = QVBoxLayout(self.layer_page)
         page.setContentsMargins(0, 0, 0, 0)
+        page.setSpacing(0)
         page.addWidget(self.layer_head)
         page.addLayout(acts)
+        page.addWidget(_seam())
         page.addLayout(form)
         page.addStretch(1)
 

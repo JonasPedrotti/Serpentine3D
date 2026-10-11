@@ -6,7 +6,7 @@ from typing import NamedTuple
 
 from PySide6.QtCore import (QEvent, QItemSelectionModel, QPointF, QRect,
                             QRectF, Qt, QTimer, Signal)
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QColorDialog, QHBoxLayout,
     QHeaderView, QMenu, QPushButton, QStyle, QStyledItemDelegate,
@@ -27,10 +27,73 @@ _SWITCH_COLS = (_VISIBLE_COL, _LOCK_COL)
 
 # set on a lock cell whose layer is locked by a parent rather than by itself
 _INHERITED_ROLE = Qt.ItemDataRole.UserRole + 1
+# on a name cell: how many objects are on the layer, and whether it is the
+# layer new objects go on. The cell's text carries both as well, for the
+# code that reads it; the painter draws them apart from the name.
+_COUNT_ROLE = Qt.ItemDataRole.UserRole + 2
+_CURRENT_ROLE = Qt.ItemDataRole.UserRole + 3
+_MARK_W = 18          # the dot's column, before the name
 
 
 class _NameDelegate(QStyledItemDelegate):
-    """Give inline renaming the row's full height without input padding."""
+    """The name cell: a dot, the name, and the count at the far end.
+
+    The dot is gold on the layer new objects go on and an empty ring on the
+    rest, so the names line up whichever is current; the count is muted and
+    set right, where it reads as a number about the layer rather than part
+    of its name. Inline renaming gets the row's full height without input
+    padding.
+    """
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        size.setHeight(theme.LIST_ROW_HEIGHT)
+        return size
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        style = opt.widget.style() if opt.widget is not None \
+            else QApplication.style()
+        name = opt.text.lstrip("● ").split("  (")[0]
+        # the row's background and selection across the whole cell
+        back = QStyleOptionViewItem(opt)
+        back.text = ""
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, back,
+                          painter, opt.widget)
+        rect = option.rect
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        centre = QPointF(rect.x() + _MARK_W / 2, rect.center().y() + 0.5)
+        if index.data(_CURRENT_ROLE):
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(theme.ACCENT))
+            painter.drawEllipse(centre, 3.5, 3.5)
+        else:
+            painter.setPen(QPen(QColor("#55565e"), 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(centre, 3.0, 3.0)
+        count_w = 0
+        n = index.data(_COUNT_ROLE)
+        if n:
+            font = QFont("monospace")
+            font.setStyleHint(QFont.StyleHint.Monospace)
+            font.setPixelSize(11)
+            painter.setFont(font)
+            text = str(n)
+            count_w = painter.fontMetrics().horizontalAdvance(text) + 12
+            painter.setPen(QColor(theme.TEXT_MUTED))
+            painter.drawText(QRect(rect.right() - count_w, rect.y(),
+                                   count_w - 6, rect.height()),
+                             Qt.AlignmentFlag.AlignRight
+                             | Qt.AlignmentFlag.AlignVCenter, text)
+        painter.restore()
+        # the name, between the dot and the count
+        front = QStyleOptionViewItem(opt)
+        front.text = name
+        front.rect = rect.adjusted(_MARK_W - 3, 0, -count_w, 0)
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, front,
+                          painter, opt.widget)
 
     def createEditor(self, parent, option, index):
         editor = super().createEditor(parent, option, index)
@@ -250,6 +313,16 @@ class _LayerTree(QTreeWidget):
         self.viewport().update()
         super().dragLeaveEvent(event)
 
+    def drawRow(self, painter, option, index):
+        """A row, and the faint line under it that tells one from the next
+        across the whole width, branch arrows and switches included."""
+        super().drawRow(painter, option, index)
+        painter.save()
+        painter.setPen(QColor(0, 0, 0, 41))
+        y = option.rect.bottom()
+        painter.drawLine(0, y, self.viewport().width(), y)
+        painter.restore()
+
     def paintEvent(self, event):
         """The tree, and then the mark saying where the layer would land.
 
@@ -363,6 +436,9 @@ class LayersPanel(QWidget):
         # a tooltip and the name column takes all of any width the user
         # gives the dock.
         self.tree.setIndentation(12)
+        self.tree.setUniformRowHeights(True)
+        # edge to edge in its panel, the way the rows of Properties are
+        self.tree.setStyleSheet("QTreeWidget { border: none; }")
         self.tree.setDragEnabled(True)
         self.tree.setAcceptDrops(True)
         self.tree.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
@@ -492,6 +568,9 @@ class LayersPanel(QWidget):
             label = "● " + label
         item = QTreeWidgetItem([label, "", "", ""])
         item.setData(_NAME_COL, Qt.ItemDataRole.UserRole, layer.id)
+        item.setData(_NAME_COL, _COUNT_ROLE, n)
+        item.setData(_NAME_COL, _CURRENT_ROLE,
+                     layer.id == self.scene.layers.current_id)
         item.setToolTip(_NAME_COL, self.scene.layers.full_path(layer.id))
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
         # The layer's own switch, which is what the user set. Whether it is

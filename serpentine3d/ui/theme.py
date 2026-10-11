@@ -50,6 +50,13 @@ ACCENT_DIM = "#8a6a2f"
 # code, and Qt's own disabled grey is not what this window paints.
 TEXT_MUTED = "#9a9b9e"
 
+# Panel spacing, shared so Properties and Layers line up with each other and
+# with the layers mockup they were drawn from: a page stands this far in from
+# its sides, and a list row is this tall.
+PANEL_INSET = 10
+LIST_ROW_HEIGHT = 28
+SEAM = "#1b1c1f"               # the dark line between two parts of a panel
+
 # Shaded-mode lighting. SHADED_AMBIENT mirrors a constant hardcoded in
 # viewport.MESH_FRAG (`uColor * (0.30 + 0.70 * diff)`); a test pins the two
 # together. FILL_FLOOR is what a pure black object is shaded as, and colours
@@ -230,6 +237,11 @@ QLabel#commandPrompt {
     color: #d9a441;
     font-weight: bold;
 }
+QPushButton[link="true"] {
+    background: transparent; border: none; padding: 2px 0; min-height: 0;
+    color: #d9a441; text-align: left;
+}
+QPushButton[link="true"]:hover { color: #f0d9a8; text-decoration: underline; }
 QLabel#commandEcho {
     color: #85868a;
     font-family: monospace;

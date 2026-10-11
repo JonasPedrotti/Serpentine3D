@@ -39,6 +39,17 @@
   the parent in its tooltip. Like the eye, the padlock on a picked row
   switches every picked layer and keeps them picked.
 
+- **Properties and Layers share one spacing.** Set beside the layers
+  mockup they were drawn from, the panels now match it: layer rows are
+  28 px tall with a faint line between them and no frame round the list;
+  the layer new objects go on has a gold dot and the rest an empty ring,
+  so the names line up; the object count sits muted at the right end of
+  its row instead of in brackets after the name. In Properties the kind
+  line ("LAYER", "OBJECT") is a tracked monospace label, the name is a
+  step larger, a seam closes the header off from the fields, every page
+  stands 10 px in, and Select objects and Move selected here are gold
+  links rather than buttons.
+
 - **A layer's screen width follows its print width (#40).** The two
   widths used to know nothing of each other, so a wall given a 0.7 mm pen
   still drew on screen as thin as everything else. Now the screen width
