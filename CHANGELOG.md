@@ -48,6 +48,18 @@
   original overrode. The new `printwidth` and `sectionhatch` commands set
   them on a selection, and `matchprops` now copies both.
 
+- **A clipping plane closes the solids it cuts (#40).** A clipping plane
+  used to leave a solid hollow, showing the backs of its own faces where
+  it was cut. Now the cut face is capped and drawn the way the solid's
+  section is: a darker shade of the solid with its hatch's lines over it
+  in their colour, flooded for Solid, plain for None. The cap is worked
+  out on the graphics card every frame, so it follows a plane as it is
+  dragged, two planes trim each other's caps, and solids of one material
+  that overlap still cap as one. The hatch lines keep still on the cut
+  while the view turns, falling about as far apart as the layer's spacing
+  asks on screen. Caps show in the shaded, rendered and analysis modes,
+  not in wireframe or ghosted.
+
 - **Panel icons.** Properties and Layers now carry an icon at the left of
   their title bars, sliders and a stack of sheets, so the two stacked
   panels tell apart at a glance.
@@ -100,6 +112,45 @@
   the layer too.
 
 ### Fixed
+
+- **A clipping plane cuts the way you are looking.** Drawn in Top, a
+  clipping plane now cuts away what is above it and keeps what is below,
+  as Rhino 8 does: the side toward the view it is drawn in goes. It used
+  to face whichever way its rectangle was dragged, so one diagonal cut
+  down and the other cut up. Flip still turns it round.
+
+- **Seen head on, a clipping plane says which way it cuts.** From Top, a
+  clipping plane's arrow runs straight into the screen or out of it and
+  showed as a dot, so a plane cutting down looked the same as one cutting
+  up. A ring now stands at its middle: a cross in it when the arrow runs
+  into the screen, so the plane takes away what lies between you and it,
+  and a dot when it comes out, the drafting signs for an arrow square to
+  the drawing. The arrows and the ring are drawn at a true width; drivers
+  that cap lines at one pixel drew the arrow as a hairline.
+
+- **A clipping plane can be clicked from the side.** In a shaded view a
+  click asked only for an object's faces, and a plane seen edge on has
+  none on screen, so only a selection band over a corner caught it. A
+  click that misses a face seen edge on now tries its edges, as a
+  wireframe click does. The same went for any flat surface seen edge on.
+
+- **Shift draws a square frame.** Holding Shift on the second corner of a
+  rectangle, a box's base or a clipping plane flattened the frame onto a
+  line through the first corner: Shift is the momentary ortho override, and
+  ortho keeps a pick on an axis. A clipping plane drawn that way made
+  nothing, and only letting go of Shift made anything. On a frame, Shift
+  (or ortho left on) now draws a square, its side the longer of the two
+  the cursor spans, on the side the cursor is on, in the model and on a
+  sheet. Lines and every other pick still keep to an axis.
+
+- **Scaling a clipping plane keeps it cutting.** Scaled along one axis,
+  with the gumball's handles or Scale1D, Scale2D or ScaleNU, a clipping
+  plane became a NURBS surface: still flat, but no longer read as a
+  plane, so it stopped cutting and its arrow vanished. A flat face now
+  stays a true plane under any scale or shear, and keeps the side it
+  cuts. A plane saved after an earlier build scaled it cuts again, but
+  that build lost which way round it was: if it was flipped before it was
+  scaled, it now cuts the other way, and Flip turns it back.
 
 - **Panels start below their title bars.** Properties and Layers ran 5 px
   under their title bars, so the picked layer's highlight overlapped the

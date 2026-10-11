@@ -1,0 +1,251 @@
+"""Caps on model clipping planes: the face a plane leaves where it cuts a
+solid, filled and hatched the way the solid's section is (#40).
+
+A clipping plane used to leave a solid hollow. The shader drops whatever
+is past the plane, and what had been inside the solid showed as the backs
+of its own faces. A cap closes it, the way a section drawing closes a cut.
+
+It is worked out on the GPU each frame, so it follows a plane being
+dragged. For each live plane, and each look of cap: count on the stencil
+how many solids each pixel of the plane lies inside, with only that plane
+cutting, a solid's back faces adding one and its front faces taking one
+away; then lay a sheet over the plane where the count is not zero, cut by
+the other planes. Counting rather than flipping a bit keeps two touching
+solids of one material from cancelling where they overlap.
+
+The pure parts are here: which planes and which objects, the hatch's basis
+on the plane, the look of a cap and how far apart its lines fall. The
+viewport does the drawing with the programs below.
+"""
+
+from __future__ import annotations
+
+import math
+from typing import NamedTuple
+
+import numpy as np
+
+MAX_PLANES = 4                # what the shader clips with, and so caps
+
+# How a cap fills, as the cap shader reads it.
+PLAIN, LINES, CROSS, SOLID = 0, 1, 2, 3
+_PATTERN_CODES = {"none": PLAIN, "lines": LINES, "cross": CROSS,
+                  "solid": SOLID}
+
+CUT_SHADE = 0.55              # a cap is a darker shade of its object...
+POCHE_SHADE = 0.30            # ...and darker still poched in ink
+INK_ON_SCREEN = (0.07, 0.07, 0.08)   # ink, as hatch lines on screen
+LINE_ALPHA = 0.9
+# A hatch spaced 2.5 mm on paper falls about 7.5 px apart on screen, so a
+# layer's tighter or looser hatch keeps its character in the model too.
+CAP_PX_PER_MM = 3.0
+
+
+class CapPlane(NamedTuple):
+    origin: tuple
+    normal: tuple             # pointing at the half the plane takes away
+    u: np.ndarray             # the hatch's x on the plane: level if it can be
+    v: np.ndarray
+    equation: np.ndarray      # the clip vec4 the shader dots with
+
+
+class CapStyle(NamedTuple):
+    pattern: int              # PLAIN, LINES, CROSS or SOLID
+    fill: tuple               # (r, g, b) of the cap under any lines
+    line: tuple               # (r, g, b, a); a == 0 draws no lines
+    angle: float              # radians from the plane's u
+    spacing_mm: float         # the layer's spacing on paper
+
+
+def plane_axes(normal) -> tuple:
+    """Two unit axes in the plane, (u, v), right-handed seen from the cut
+    side (u x v is the normal), with u level wherever the plane allows:
+    on a wall's cut, u runs along the floor the way a section is read."""
+    n = np.asarray(normal, float)
+    n = n / np.linalg.norm(n)
+    u = np.cross((0.0, 0.0, 1.0), n)
+    if np.linalg.norm(u) < 1e-6:              # a level plane: x is x
+        u = np.array([1.0, 0.0, 0.0]) - n * n[0]
+    u = u / np.linalg.norm(u)
+    return u, np.cross(n, u)
+
+
+def cap_planes(frames) -> list:
+    """The planes that cap: the live ones, in the order and number the
+    viewport clips with, so plane i caps where clip i cuts."""
+    from .viewport import clip_equation
+    planes = []
+    for origin, normal, on in frames:
+        if not on:
+            continue
+        u, v = plane_axes(normal)
+        planes.append(CapPlane(tuple(origin), tuple(normal), u, v,
+                               clip_equation(origin, normal)))
+        if len(planes) == MAX_PLANES:
+            break
+    return planes
+
+
+def straddling(lows, highs, origin, normal) -> np.ndarray:
+    """Which of many boxes a plane passes through, all at once: (N, 3)
+    lows and highs in, a boolean per box out. Every frame asks this of
+    every solid in view, so it is one sum over arrays rather than eight
+    corners an object. A box's corners lie within its half-extent, read
+    along the normal, of the distance to its middle; the plane passes
+    through when that span has the plane strictly inside it. One that only
+    touches a face cuts nothing away and caps nothing."""
+    lows = np.asarray(lows, float).reshape(-1, 3)
+    highs = np.asarray(highs, float).reshape(-1, 3)
+    n = np.asarray(normal, float)
+    middle = (lows + highs) / 2.0
+    reach = np.abs(n) @ ((highs - lows) / 2.0).T
+    across = (middle - np.asarray(origin, float)) @ n
+    slack = 1e-9 * np.maximum(np.abs(across) + reach, 1e-9)
+    return (across - reach < -slack) & (across + reach > slack)
+
+
+def straddles(bounds, origin, normal) -> bool:
+    """Whether a plane passes through one box, (low, high)."""
+    low, high = bounds
+    return bool(straddling([low], [high], origin, normal)[0])
+
+
+def cap_style(fill, display_rgb) -> CapStyle:
+    """How a cap through an object looks, from its section fill (pattern,
+    angle, spacing, colour or None for ink) and the colour it shows in.
+
+    On screen a cut has to read against the model's own faces, not against
+    paper: the cap is a darker shade of the object, lines go over it in
+    their colour, solid floods it in its colour or a darker poché, and
+    None leaves it plain. None leaves a cut empty on paper, but in the
+    model the solid still has to look solid."""
+    pattern = _PATTERN_CODES.get(fill.pattern, LINES)
+    shade = tuple(float(c) * CUT_SHADE for c in display_rgb[:3])
+    if pattern == SOLID:
+        flood = (tuple(float(c) for c in fill.color[:3]) if fill.color
+                 else tuple(float(c) * POCHE_SHADE for c in display_rgb[:3]))
+        return CapStyle(SOLID, flood, (0.0, 0.0, 0.0, 0.0), 0.0,
+                        fill.spacing)
+    if pattern == PLAIN:
+        return CapStyle(PLAIN, shade, (0.0, 0.0, 0.0, 0.0), 0.0, fill.spacing)
+    ink = (tuple(float(c) for c in fill.color[:3]) if fill.color
+           else INK_ON_SCREEN)
+    return CapStyle(pattern, shade, (*ink, LINE_ALPHA),
+                    math.radians(fill.angle), fill.spacing)
+
+
+def group_by_style(items) -> list:
+    """[(style, [ids])] for (id, style) pairs, in the order styles first
+    come up: one stencil pass for every cap that looks the same."""
+    groups: dict = {}
+    for oid, style in items:
+        groups.setdefault(style, []).append(oid)
+    return list(groups.items())
+
+
+def pixels_per_unit(mvp, point, direction, width_px, height_px) -> float:
+    """How many pixels one model unit along `direction` takes up on screen
+    at `point`. Zero where it cannot be read, behind the eye."""
+    m = np.asarray(mvp, float)
+    a = m @ np.array([*point, 1.0], float)
+    b = m @ np.array([*(np.asarray(point, float)
+                        + np.asarray(direction, float)), 1.0], float)
+    if a[3] <= 1e-12 or b[3] <= 1e-12:
+        return 0.0
+    da = a[:2] / a[3]
+    db = b[:2] / b[3]
+    dx = (db[0] - da[0]) * width_px / 2.0
+    dy = (db[1] - da[1]) * height_px / 2.0
+    return float(math.hypot(dx, dy))
+
+
+def hatch_period(spacing_mm: float, px_per_unit: float):
+    """The distance between a cap's hatch lines, in model units: about
+    CAP_PX_PER_MM pixels for each paper millimetre of the hatch's spacing,
+    rounded to a power of two. The lines are fixed to the plane, so they
+    keep still while the view turns, and a period that only ever doubles
+    or halves keeps them from crawling while it zooms."""
+    if px_per_unit <= 0 or spacing_mm <= 0:
+        return None
+    units = spacing_mm * CAP_PX_PER_MM / px_per_unit
+    return float(2.0 ** round(math.log2(units)))
+
+
+def cap_quad(extent: float) -> np.ndarray:
+    """The sheet laid over a plane, as two triangles in (u, v, 0) about its
+    origin, `extent` out each way; the stencil keeps only what is cut."""
+    e = float(extent)
+    return np.array([(-e, -e), (e, -e), (e, e), (-e, -e), (e, e), (-e, e)],
+                    np.float32)
+
+
+# The stencil pass: positions only, cut by one plane, nothing written to
+# colour or depth. Its own program, so nothing the mesh shader grows later
+# (a discard, say) can quietly stop it counting.
+COUNT_VERT = """
+#version 330 core
+layout(location=0) in vec3 pos;
+uniform mat4 uMVP;
+uniform vec4 uClips[4];
+uniform int uClipCount;
+out float gl_ClipDistance[4];
+void main() {
+    gl_Position = uMVP * vec4(pos, 1.0);
+    for (int i = 0; i < uClipCount; ++i)
+        gl_ClipDistance[i] = dot(uClips[i], vec4(pos, 1.0));
+}
+"""
+
+COUNT_FRAG = """
+#version 330 core
+out vec4 frag;
+void main() { frag = vec4(0.0); }
+"""
+
+# The cap: a sheet on the plane, positions given as (u, v) about the
+# plane's origin and placed by uOrigin, uU and uV, so a model far from the
+# world's origin is still drawn in small float32 numbers.
+CAP_VERT = """
+#version 330 core
+layout(location=0) in vec2 uv;
+uniform mat4 uMVP;
+uniform vec3 uU;
+uniform vec3 uV;
+uniform vec4 uClips[4];
+uniform int uClipCount;
+out vec2 vUV;
+out float gl_ClipDistance[4];
+void main() {
+    vec3 pos = uU * uv.x + uV * uv.y;
+    gl_Position = uMVP * vec4(pos, 1.0);
+    for (int i = 0; i < uClipCount; ++i)
+        gl_ClipDistance[i] = dot(uClips[i], vec4(pos, 1.0));
+    vUV = uv;
+}
+"""
+
+CAP_FRAG = """
+#version 330 core
+in vec2 vUV;
+uniform vec3 uFill;
+uniform vec4 uLine;
+uniform int uPattern;
+uniform float uPeriod;
+uniform float uAngle;
+out vec4 frag;
+float lines(float t) {
+    float d = abs(fract(t / uPeriod + 0.5) - 0.5) * uPeriod;
+    float w = max(fwidth(t), 1e-6);
+    return 1.0 - smoothstep(0.25 * w, w, d);    // a hairline, smoothed
+}
+void main() {
+    vec3 col = uFill;
+    if (uPattern == 1 || uPattern == 2) {
+        float m = lines(dot(vUV, vec2(-sin(uAngle), cos(uAngle))));
+        if (uPattern == 2)
+            m = max(m, lines(dot(vUV, vec2(cos(uAngle), sin(uAngle)))));
+        col = mix(col, uLine.rgb, m * uLine.a);
+    }
+    frag = vec4(col, 1.0);
+}
+"""
