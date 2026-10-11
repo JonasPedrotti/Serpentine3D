@@ -139,6 +139,11 @@
   layer first and the selection after; selecting something else lets go of
   the layer too.
 
+- **The Linux build ships what the tests ran on.** The AppImage used to
+  take the newest version of every library on the day it was built, so it
+  shipped Qt 6.12 while the tests still ran on 6.11. It now installs the
+  exact versions the lock file pins, and the lock is on Qt 6.12.
+
 ### Fixed
 
 - **A clipping plane cuts the way you are looking.** Drawn in Top, a

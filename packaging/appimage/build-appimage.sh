@@ -50,6 +50,31 @@ EOF
 # no spaces: python-appimage word-splits requirement lines when invoking pip
 printf 'serpentine3d@file://%s\n' "$ROOT" > "$RECIPE/requirements.txt"
 
+# Pin everything to uv.lock, the versions CI tested. Unpinned, pip takes
+# whatever PyPI has newest that day: the AppImage once shipped Qt 6.12 while
+# CI still ran 6.11, and a dock bug only Qt 6.12 had could not be reproduced
+# anywhere else. The lock is resolved for this one target (CPython $PYVER on
+# x86_64 Linux, glibc 2.34 as PySide6's wheels need), which settles every
+# marker. It goes to pip as a constraints file rather than as requirements:
+# python-appimage installs requirement lines one at a time, so pins listed
+# there arrive after our package has already pulled in the newest of
+# everything, and pip refuses the downgrades. A constraint holds at every
+# step, transitive dependencies included.
+if command -v uv > /dev/null 2>&1; then
+    PINS="$DIST/pins"
+    mkdir -p "$PINS"
+    ( cd "$ROOT" && uv export --frozen --no-dev --no-hashes --no-emit-project \
+        --no-annotate --no-header ) > "$PINS/locked.txt"
+    uv pip compile "$PINS/locked.txt" --python-version "$PYVER" \
+        --python-platform x86_64-manylinux_2_34 --no-deps --no-header \
+        --no-annotate -q -o "$PINS/pinned.txt"
+    export PIP_CONSTRAINT="$PINS/pinned.txt"
+    echo "Pinned to uv.lock: $(wc -l < "$PINS/pinned.txt") packages"
+else
+    echo "WARNING: uv not found, so the AppImage takes PyPI's newest" \
+         "versions rather than the ones uv.lock pins" >&2
+fi
+
 if command -v uvx > /dev/null 2>&1; then
     BUILDER=(uvx python-appimage)
 else
