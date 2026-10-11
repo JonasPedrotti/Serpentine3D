@@ -416,8 +416,35 @@ def _pointer(p):
     p.restore()
 
 
+def _page(p):
+    """Sheets: one page standing up, its corner folded, and the lines of
+    its title block along the foot."""
+    path = QPainterPath()
+    path.moveTo(3.5, 1.5)
+    path.lineTo(9.5, 1.5)
+    path.lineTo(12.5, 4.5)
+    path.lineTo(12.5, 14.5)
+    path.lineTo(3.5, 14.5)
+    path.closeSubpath()
+    p.save()
+    p.setBrush(QBrush(_FILL))
+    p.drawPath(path)
+    p.restore()
+    p.drawLine(QPointF(9.5, 1.5), QPointF(9.5, 4.5))
+    p.drawLine(QPointF(9.5, 4.5), QPointF(12.5, 4.5))
+    p.drawLine(QPointF(5.5, 11.5), QPointF(10.5, 11.5))
+
+
+def sheet_mark() -> QIcon:
+    """A sheet's tab mark in Properties: the Sheets list's own glyph."""
+    return QIcon(_mark_pixmap(_page))
+
+
 def panel_icon(name: str) -> QPixmap:
-    """The mark at the left of a panel's title: "properties" or "layers"."""
+    """The mark at the left of a panel's title: "properties", "layers" or
+    "sheets"."""
+    if name == "sheets":
+        return _mark_pixmap(_page)
     if name == "layers":
         return _mark_pixmap(lambda p: _sheets(p, _FILL))
     return _mark_pixmap(_sliders)

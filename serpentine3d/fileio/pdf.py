@@ -7,7 +7,7 @@ shaded details are rendered to an image via an offscreen framebuffer.
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QPointF, QSizeF, Qt
+from PySide6.QtCore import QMarginsF, QPointF, QSizeF, Qt
 from PySide6.QtGui import (
     QColor, QFont, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen,
     QPolygonF,
@@ -26,23 +26,39 @@ def export_layouts_pdf(window, layouts: list, path: str):
         raise ValueError("No layouts to export")
     writer = QPdfWriter(path)
     writer.setResolution(600)
-    first = layouts[0]
-    writer.setPageSize(QPageSize(QSizeF(first.paper_w, first.paper_h),
-                                 QPageSize.Unit.Millimeter, name="",
-                                 matchPolicy=QPageSize.SizeMatchPolicy.ExactMatch))
-    painter = QPainter(writer)
+    paint_layouts(writer, window, layouts)
+
+
+def page_layout(layout) -> QPageLayout:
+    """A sheet's page: its paper, landscape or portrait, no margins (the
+    sheet draws its own). A standard size is named as one, so a printer is
+    asked for A3 turned on its side rather than for a 420 x 297 custom."""
+    w, h = layout.paper_w, layout.paper_h
+    turn = (QPageLayout.Orientation.Landscape if w > h
+            else QPageLayout.Orientation.Portrait)
+    size = QPageSize(QSizeF(min(w, h), max(w, h)),
+                     QPageSize.Unit.Millimeter, name="",
+                     matchPolicy=QPageSize.SizeMatchPolicy.FuzzyMatch)
+    return QPageLayout(size, turn, QMarginsF(0, 0, 0, 0),
+                       QPageLayout.Unit.Millimeter)
+
+
+def paint_layouts(device, window, layouts: list) -> int:
+    """Paint sheets onto a paged device, a page each, each page laid out
+    for its own sheet: a PDF writer, or a printer. Returns the pages."""
+    if not layouts:
+        return 0
+    device.setPageLayout(page_layout(layouts[0]))
+    painter = QPainter(device)
     try:
         for i, lay in enumerate(layouts):
             if i > 0:
-                writer.setPageSize(QPageSize(
-                    QSizeF(lay.paper_w, lay.paper_h),
-                    QPageSize.Unit.Millimeter, name="",
-                    matchPolicy=QPageSize.SizeMatchPolicy.ExactMatch))
-                writer.newPage()
-            _paint_layout(painter, window, lay,
-                          writer.resolution() / 25.4)
+                device.setPageLayout(page_layout(lay))
+                device.newPage()
+            _paint_layout(painter, window, lay, device.resolution() / 25.4)
     finally:
         painter.end()
+    return len(layouts)
 
 
 def _paint_layout(painter: QPainter, window, layout, k: float):

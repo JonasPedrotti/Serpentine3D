@@ -362,7 +362,22 @@ def cmd_make2d(ctx):
              "individual curves.")
 
 
-@command("exportpdf", aliases=("print", "pdf"), mutates=False)
+@command("printsheets", aliases=("print", "plot"), mutates=False)
+def cmd_printsheets(ctx):
+    """Print sheets, or save them as one PDF, choosing them from the set.
+
+    With a window this is the print dialog (#38). Scripts and a headless
+    run have no dialog to show, so they get exportpdf's prompts instead."""
+    win = _window(ctx)
+    if win is None or not hasattr(win, "print_sheets"):
+        yield from cmd_exportpdf(ctx)
+        return
+    win.print_sheets()
+    return
+    yield  # pragma: no cover
+
+
+@command("exportpdf", aliases=("pdf",), mutates=False)
 def cmd_exportpdf(ctx):
     lay = _active_layout(ctx)
     if lay is None:

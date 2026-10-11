@@ -138,12 +138,13 @@ Commands that need a file open a filtered chooser by default. Append
 | `dimstyle` (`textstyle`) | Create or edit a named annotation style (text height, arrows). |
 | `dot` (`annotationdot`) | Model-space annotation dots: a label bubble anchored to a 3D point. |
 | `exportdxf` | Export the active layout sheet (or the model) to DXF. |
-| `exportpdf` (`print`, `pdf`) | Exportpdf |
+| `exportpdf` (`pdf`) | Exportpdf |
 | `exportsvg` | Exportsvg |
 | `hatch` | Hatch |
 | `layout` | Layout |
 | `leader` | Leader |
 | `make2d` | Make2d |
+| `printsheets` (`print`, `plot`) | Print sheets, or save them as one PDF, choosing them from the set. |
 | `revision` | Add a row to this sheet's revision table (drawn by the title block). |
 | `scalebar` | Scalebar |
 | `sheetindex` | Place an index of all sheets as a note on the current layout. |

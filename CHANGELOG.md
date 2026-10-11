@@ -60,6 +60,34 @@
   asks on screen. Caps show in the shaded, rendered and analysis modes,
   not in wireframe or ghosted.
 
+- **A Sheets list, beside Layers (#38).** The layouts were a strip of tabs
+  along the bottom, which is lost once a set runs to dozens. The panel
+  under Properties now has two tabs, Layers and Sheets. Sheets lists the
+  set the way it is bound: a number on each sheet (A-101), sheets in
+  groups that can sit inside each other, dragged to reorder or regroup,
+  in the order they print in, which is also the order of the tabs along
+  the bottom (now labelled with their numbers). A click picks a sheet and
+  Properties shows it, with its number, name, paper, orientation and
+  group, and links to open it and print it; a double-click opens it, and
+  the sheet on screen has the gold dot the current layer has in Layers.
+  Picking a sheet lets go of a picked layer, and the other way round.
+
+- **A detail can leave layers out (#38).** Each detail now has its own
+  list of layers it hides, as Rhino, Revit and Archicad set visibility
+  per view: a plan and an enlarged detail on one sheet can show different
+  layers, and the model and every other detail keep showing them. Pick a
+  detail and its Properties page lists the layers hidden in it, with Show
+  beside each and a list to hide another; a sublayer goes with its
+  parent. The screen, the PDF, the plot and the DXF all leave them out.
+
+- **Print sheets from a dialog (#38).** `print` (also on a sheet's page
+  and in the Sheets list's menu) opens a dialog listing the set with a
+  box for every sheet and group, starting with the sheets picked or the
+  one open, and prints them to a PDF file or to a printer, each sheet on
+  its own paper size and orientation. Scripts typing `print` with no
+  window still get `exportpdf`'s prompts; `exportpdf` keeps `pdf` as its
+  short name.
+
 - **Panel icons.** Properties and Layers now carry an icon at the left of
   their title bars, sliders and a stack of sheets, so the two stacked
   panels tell apart at a glance.

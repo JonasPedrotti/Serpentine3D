@@ -96,3 +96,33 @@ class DockTitleBar(QWidget):
                 & QDockWidget.DockWidgetFeature.DockWidgetFloatable):
             self._dock.setFloating(not self._dock.isFloating())
         ev.accept()
+
+
+class TabbedTitleBar(DockTitleBar):
+    """A title for a dock holding more than one panel, each a tab in the
+    bar: Layers and Sheets share a dock, the way the mockup has them, so
+    the column keeps the room Properties needs. `pages` is a list of
+    (icon, title) for the stack's pages, in order; the icon at the left is
+    the page on show."""
+
+    def __init__(self, pages, stack, dock=None):
+        super().__init__(pages[0][0], pages[0][1], dock)
+        from PySide6.QtWidgets import QTabBar
+        self._pages = pages
+        self._stack = stack
+        self.title.hide()
+        self.tabs = QTabBar()
+        self.tabs.setDrawBase(False)
+        self.tabs.setExpanding(False)
+        for _icon, title in pages:
+            self.tabs.addTab(title)
+        self.tabs.currentChanged.connect(self._show_page)
+        self.add_widget(self.tabs)
+
+    def _show_page(self, index: int):
+        if 0 <= index < len(self._pages):
+            self._stack.setCurrentIndex(index)
+            self.icon.setPixmap(self._pages[index][0])
+
+    def show_page(self, index: int):
+        self.tabs.setCurrentIndex(index)
