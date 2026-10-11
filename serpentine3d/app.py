@@ -3059,6 +3059,39 @@ def _offer_default_app(window):
         window.cfg.set("file_assoc", "asked", True)
 
 
+# How long after the window is up to look for the viewport's context: long
+# enough for a slow window manager to map it and Qt to make one, short enough
+# that a blank window is explained before anybody gives up on it.
+OPENGL_CHECK_MS = 2000
+
+_OPENGL_FAILED = (
+    "Serpentine3D could not get OpenGL from the graphics driver, so the "
+    "drawing area cannot be shown.\n\n"
+    "If the graphics driver has just been updated, restart the computer: "
+    "the new driver only works once the old one is no longer loaded. "
+    "Otherwise, reinstall or update the graphics driver.")
+
+
+def warn_if_opengl_failed(window, splash=None) -> bool:
+    """Say so when the viewport never got an OpenGL context.
+
+    A driver that refuses a context leaves a window that never paints, the
+    windows behind it showing through, and the reason only in the system
+    log. Returns whether it failed. The box needs no OpenGL; headless, the
+    reason goes to stderr only, so nothing waits on a box nobody sees. The
+    splash goes first: it waits for the window to paint, which it never
+    will, and would sit there saying Ready.
+    """
+    if window.viewport.isValid():
+        return False
+    if splash is not None:
+        splash.close()
+    print(f"serp3d: {_OPENGL_FAILED}", file=sys.stderr)
+    if QApplication.platformName() not in ("offscreen", "minimal", "vnc"):
+        QMessageBox.warning(window, "OpenGL could not start", _OPENGL_FAILED)
+    return True
+
+
 def run_app(app, splash=None):
     """Build the main window and run the event loop.
 
@@ -3102,6 +3135,8 @@ def run_app(app, splash=None):
     window.show()
     if splash:
         splash.finish(window)
+    QTimer.singleShot(OPENGL_CHECK_MS,
+                      lambda: warn_if_opengl_failed(window, splash))
     window.offer_recovery()
 
     for arg in app.arguments()[1:]:

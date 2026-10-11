@@ -202,6 +202,14 @@
   viewports never filled. The viewports now stay in their own area, so the
   panel edge is the viewports' edge again and they follow it both ways.
 
+- **The app says when OpenGL fails.** When the graphics driver gave no
+  OpenGL context, after a driver update that needs a restart for example,
+  Serpentine3D opened a window that never painted: other windows showed
+  through it and the splash stayed up saying Ready, with the reason only
+  in the system log. Now a message says the drawing area cannot be shown
+  and what usually fixes it, the splash closes, and the reason is written
+  to stderr as well.
+
 ## 0.10.9 (2026-10-07)
 
 ### Added
