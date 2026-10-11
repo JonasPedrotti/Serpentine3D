@@ -141,6 +141,13 @@
 
 ### Fixed
 
+- **A clipping plane cuts the way you are looking.** Drawn in Top, a
+  clipping plane now cuts away what is above it and keeps what is below,
+  its arrow pointing into the screen, as Rhino 8 does: the side toward the
+  view it is drawn in goes. It used to face whichever way its rectangle
+  was dragged, so one diagonal cut down and the other cut up. Flip still
+  turns it round.
+
 - **Panels start below their title bars.** Properties and Layers ran 5 px
   under their title bars, so the picked layer's highlight overlapped the
   Layers bar and the gold kind line sat hard against the Properties bar.
