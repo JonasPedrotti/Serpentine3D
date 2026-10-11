@@ -526,8 +526,7 @@ def cmd_rectangle(ctx):
     # "or length" the way Rhino's rectangle reads it: one number is a side and
     # the width is asked for next. The general rule for a point prompt — a
     # number is how far along the way you are pointing — would make it the
-    # diagonal, and under ortho the cursor is square to the plane, so the
-    # rectangle would come out a line.
+    # diagonal.
     c2 = yield PointReq("Opposite corner, or length", rubber_from=c1,
                         preview_fn=_rect_to, rubber_sides=frame_sides(c1, cp),
                         allow_number=True)

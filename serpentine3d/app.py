@@ -1222,6 +1222,9 @@ class MainWindow(QMainWindow):
                 vp.set_point_mode(True)
                 vp.snap_base = base
                 vp.point_axis = req.axis_lock
+                # a prompt that drags out sides is a frame, which ortho
+                # squares rather than flattening onto an axis
+                vp.point_frame = req.rubber_sides is not None
                 vp.pending_points = pending
                 vp.picked_points = picked
                 vp.point_space = space
@@ -1231,6 +1234,7 @@ class MainWindow(QMainWindow):
                 vp.set_point_mode(False)
                 vp.snap_base = None
                 vp.point_axis = None
+                vp.point_frame = False
                 vp.pending_points = []
                 vp.picked_points = []
                 vp.point_space = "model"
