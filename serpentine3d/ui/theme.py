@@ -90,6 +90,47 @@ def shaded_fill(color):
     lift = FILL_FLOOR * (1.0 - v / FILL_KNEE)
     return (min(1.0, r + lift), min(1.0, g + lift), min(1.0, b + lift))
 
+
+# Fixed-pitch faces to name in a style sheet where the "monospace" alias names
+# nothing, each platform's own coding font first.
+MONO_FAMILIES = ("Menlo", "SF Mono", "Consolas", "Cascadia Mono",
+                 "DejaVu Sans Mono", "Liberation Mono", "Courier New")
+
+
+def _monospace_alias():
+    """The installed family the "monospace" alias comes to, or None.
+
+    Linux has fontconfig's alias, which someone may have pointed at a face
+    of their own. Windows has no font by that name, and Qt's stand-in there
+    is the proportional default, so it counts only when it is fixed pitch.
+    """
+    from PySide6.QtGui import QFont, QFontDatabase, QFontInfo
+    asked = QFont("monospace")
+    asked.setStyleHint(QFont.StyleHint.Monospace)
+    found = QFontInfo(asked)
+    if found.fixedPitch() and QFontDatabase.hasFamily(found.family()):
+        return found.family()
+    return None
+
+
+def mono_family() -> str:
+    """An installed fixed-pitch family, for a style sheet's font-family.
+
+    A style sheet that says `font-family: monospace` drew in the proportional
+    default on Windows: the alias names nothing there, and a style sheet
+    carries no style hint for Qt to fall back on. A family that is really
+    installed is matched exactly everywhere.
+    """
+    from PySide6.QtGui import QFontDatabase
+    alias = _monospace_alias()
+    if alias:
+        return alias
+    for family in MONO_FAMILIES:
+        if (QFontDatabase.hasFamily(family)
+                and QFontDatabase.isFixedPitch(family)):
+            return family
+    return "monospace"
+
 QSS = """
 * { outline: none; }
 

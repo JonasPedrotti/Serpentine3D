@@ -140,7 +140,7 @@ Commands that need a file open a filtered chooser by default. Append
 | `exportdxf` | Export the active layout sheet (or the model) to DXF. |
 | `exportpdf` (`pdf`) | Exportpdf |
 | `exportsvg` | Exportsvg |
-| `hatch` | Hatch |
+| `hatch` | Fill a region with a pattern, on a sheet or in the model, starting from its layer's hatch. |
 | `layout` | Layout |
 | `leader` | Leader |
 | `make2d` | Make2d |
@@ -160,7 +160,7 @@ Commands that need a file open a filtered chooser by default. Append
 | `delete` (`del`, `erase`) | Delete |
 | `dir` | Show which way curves run and which way surfaces face. |
 | `explode` (`x`) | Explode |
-| `fillet` | Fillet |
+| `fillet` | Round two curves, or edges of a selected solid/surface. |
 | `flip` | Turn curves round and surfaces inside out, as Rhino's Flip does. |
 | `hide` | Hide |
 | `insertknot` (`insertcontrolpoint`) | Add a control point to a curve without moving the curve. |
@@ -180,7 +180,7 @@ Commands that need a file open a filtered chooser by default. Append
 | `show` (`unhide`) | Show |
 | `smooth` | Relax a curve's control points toward their neighbours. |
 | `split` | Split |
-| `trim` (`tr`) | Trim |
+| `trim` (`tr`) | Cut objects with the cutters and take away the part clicked. |
 | `undo` | Undo |
 
 ## Files
@@ -239,6 +239,7 @@ Commands that need a file open a filtered chooser by default. Append
 | `seldup` | Select later duplicates of identical, identically-placed objects. |
 | `selfilter` (`selectionfilter`) | Restrict viewport picking to one kind of object (Off = anything). |
 | `selfiltertoggle` (`sft`) | Pause/resume the selection filter without changing its kind. |
+| `selhatch` (`selhatches`) | Select every hatch. |
 | `sellast` | Sellast |
 | `sellayer` | Sellayer |
 | `selname` | Select objects whose name contains the given text. |
@@ -299,7 +300,7 @@ Commands that need a file open a filtered chooser by default. Append
 | `shell` | Shell |
 | `sweep1` (`sweep`) | Sweep1 |
 | `sweep2` | Sweep2 |
-| `textobject` (`textcurves`) | Textobject |
+| `textobject` (`textcurves`) | Place editable model text or grouped letter outline curves. |
 | `unrollsrf` (`unroll`) | Unrollsrf |
 | `untrim` | Untrim |
 

@@ -20,6 +20,7 @@ remappable in *Settings → Shortcuts* and *Settings → Mouse*.
 | ++home++ / ++end++ | Undo / redo camera changes, without undoing model edits |
 | ++f7++ | Toggle grid |
 | ++f8++ | Toggle Ortho (constrain picked points to construction-plane axes) |
+| Hold ++shift++ while picking | Ortho while held, or free if Ortho is on: points keep to an axis, and a rectangle's second corner makes a square |
 | ++f9++ | Toggle grid snap |
 
 F8 and F9 can change drawing constraints while a command is waiting for a

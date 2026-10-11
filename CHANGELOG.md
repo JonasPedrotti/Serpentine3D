@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 (2026-10-11)
 
 ### Added
 
@@ -138,6 +138,10 @@
   still means "this is what Properties is editing". Escape lets go of the
   layer first and the selection after; selecting something else lets go of
   the layer too.
+
+- **macOS 14 or newer.** The Mac disk image is built on Qt 6.12, which
+  needs macOS 14 Sonoma; 0.10.9 ran on macOS 13. Opened on an older Mac,
+  the app now says which version it needs instead of failing to start.
 
 - **The Linux build ships what the tests ran on.** The AppImage used to
   take the newest version of every library on the day it was built, so it

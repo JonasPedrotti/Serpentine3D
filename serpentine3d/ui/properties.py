@@ -369,14 +369,17 @@ class SubjectHeader(QWidget):
         # The design system's app section label: monospace, capitals,
         # tracked 1.5 px. Family and size go in the style sheet, which would
         # override them from setFont; capitals and tracking it leaves alone.
-        font = QFont("monospace")
+        # The family is one really installed: "monospace" names no font on
+        # Windows, where the label drew in the proportional default.
+        mono = theme.mono_family()
+        font = QFont(mono)
         font.setStyleHint(QFont.StyleHint.Monospace)
         font.setPixelSize(11)
         font.setCapitalization(QFont.Capitalization.AllUppercase)
         font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
         self.kind.setFont(font)
-        self.kind.setStyleSheet(f"color: {theme.ACCENT}; font-family: "
-                                "monospace; font-size: 11px;")
+        self.kind.setStyleSheet(f'color: {theme.ACCENT}; font-family: '
+                                f'"{mono}"; font-size: 11px;')
         self._kind_row = QWidget()
         row = QHBoxLayout(self._kind_row)
         row.setContentsMargins(_INSET, 8, _INSET, 0)

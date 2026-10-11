@@ -54,14 +54,14 @@ app = BUNDLE(
     name="Serpentine3D.app",
     icon="serp3d.icns",
     bundle_identifier="com.chisomobanzi.serpentine3d",
-    version="0.10.9",
+    version="0.11.0",
     info_plist={
         "CFBundleName": "Serpentine3D",
         "CFBundleDisplayName": "Serpentine3D",
-        "CFBundleShortVersionString": "0.10.9",
-        "CFBundleVersion": "0.10.9",
+        "CFBundleShortVersionString": "0.11.0",
+        "CFBundleVersion": "0.11.0",
         "NSHighResolutionCapable": True,
-        "LSMinimumSystemVersion": "11.0",
+        "LSMinimumSystemVersion": "14.0",
         "LSApplicationCategoryType": "public.app-category.graphics-design",
         "NSHumanReadableCopyright": "MIT License · Chisomo Banzi",
         # Claim .serp so Finder offers (and can default to) this app.
