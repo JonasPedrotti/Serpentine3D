@@ -206,7 +206,8 @@ def test_display_does_not_take_space_from_properties_and_layers(win):
     for title, panel in (("Properties", win.properties),
                          ("Layers", win.layers_panel)):
         dock = next(dock for dock in docks if dock.windowTitle() == title)
-        assert dock.widget() is panel
+        # Layers shares its dock with Sheets, a page each of a stack (#38)
+        assert dock.isAncestorOf(panel)
         assert win.dockWidgetArea(dock) == Qt.DockWidgetArea.RightDockWidgetArea
     assert win.centralWidget() is win.viewport_area
     assert len(win.aux_viewports) == 3

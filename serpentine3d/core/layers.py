@@ -167,6 +167,16 @@ class LayerManager:
             out.extend(self.descendants(child.id))
         return out
 
+    def with_descendants(self, layer_ids) -> set:
+        """These layers and everything under them: what hiding them hides.
+        Ids no longer in the table are let go."""
+        out = set()
+        for layer_id in layer_ids:
+            if layer_id in self._layers:
+                out.add(layer_id)
+                out.update(la.id for la in self.descendants(layer_id))
+        return out
+
     def ancestors(self, layer_id: str) -> list[Layer]:
         """Every layer above this one, nearest first.
 

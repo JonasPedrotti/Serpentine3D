@@ -193,6 +193,7 @@ class Scene:
         # drawing, not about the pane you happened to ask in.
         self.dir_enabled: set[str] = set()
         self.layouts: list = []         # drafting sheets (core/layout.py)
+        self.sheet_groups: list = []    # SheetGroups the sheets sit in
         self.units: str = "mm"          # document units (utils/units.py)
         self.block_defs: dict = {}      # id -> {"name", "shapes": [TopoDS]}
         self.annot_styles: dict = {}    # name -> text/dim style overrides
@@ -467,6 +468,11 @@ class Scene:
                 self.update(obj_id, **fields)
         return len(ids)
 
+    def get_layout(self, layout_id: str):
+        """The sheet with this id, or None."""
+        return next((lay for lay in self.layouts if lay.id == layout_id),
+                    None)
+
     def get(self, obj_id: str) -> SceneObject | None:
         return self.objects.get(obj_id)
 
@@ -577,6 +583,7 @@ class Scene:
         self.layers.on_shown = self.realise_layer
         self.named_views = {}
         self.layouts = []
+        self.sheet_groups = []
         self.block_defs = {}
         self.annot_styles = {}
         self.image_planes = []
@@ -609,6 +616,7 @@ class Scene:
             "layers": self.layers.snapshot(),
             "named_views": copy.deepcopy(self.named_views),
             "layouts": [lay.clone() for lay in self.layouts],
+            "sheet_groups": copy.deepcopy(self.sheet_groups),
             "block_defs": {k: dict(v) for k, v in self.block_defs.items()},
             "annot_styles": {k: dict(v) for k, v in self.annot_styles.items()},
             "image_planes": copy.deepcopy(self.image_planes),
@@ -629,6 +637,7 @@ class Scene:
         self.layers.restore(snap["layers"])
         self.named_views = copy.deepcopy(snap.get("named_views", {}))
         self.layouts = [lay.clone() for lay in snap.get("layouts", [])]
+        self.sheet_groups = copy.deepcopy(snap.get("sheet_groups", []))
         self.block_defs = {k: dict(v) for k, v in
                            snap.get("block_defs", {}).items()}
         self.annot_styles = {k: dict(v) for k, v in

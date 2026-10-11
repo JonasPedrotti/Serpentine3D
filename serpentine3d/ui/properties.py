@@ -27,8 +27,8 @@ from PySide6.QtWidgets import (
 from ..core import geometry as g
 from ..core.layers import (HATCH_INK, HATCH_LAYER_COLOR, MIN_HATCH_SPACING,
                            PATH_SEPARATOR, section_fill_dict)
-from ..core.layout import (SECTION_FILLS, DetailView, PaperObject, TextNote,
-                           parse_scale)
+from ..core.layout import (PAPER_SIZES, SECTION_FILLS, DetailView,
+                           PaperObject, TextNote, parse_scale, sheet_label)
 from ..core.text import TextShape
 from ..core.linetype import LINETYPES
 from . import icons, theme
@@ -247,6 +247,110 @@ class _HatchLook:
         self._offer("color", token)
 
 
+def _paper_and_turn(layout) -> tuple:
+    """("A3", "Landscape") for a sheet, or (None, turn) for a size that is
+    not one of the standard ones."""
+    w, h = layout.paper_w, layout.paper_h
+    turn = "Landscape" if w >= h else "Portrait"
+    long_side, short_side = max(w, h), min(w, h)
+    for name, (pw, ph) in PAPER_SIZES.items():
+        if abs(long_side - max(pw, ph)) < 0.5 \
+                and abs(short_side - min(pw, ph)) < 0.5:
+            return name, turn
+    return None, turn
+
+
+def _paper_name(w: float, h: float) -> str:
+    """A3 landscape, or the size in millimetres when it is not a standard."""
+    class _Sheet:
+        paper_w, paper_h = w, h
+    name, turn = _paper_and_turn(_Sheet)
+    return (f"{name} {turn.lower()}" if name
+            else f"{w:g} × {h:g} mm {turn.lower()}")
+
+
+class _DetailLayers(QWidget):
+    """The layers a detail leaves out: each with Show beside it, a list to
+    leave another out, and Show all. `edit(hidden)` is told the new list."""
+
+    def __init__(self, edit):
+        super().__init__()
+        self._edit = edit
+        self._hidden: list = []
+        self._names: dict = {}
+        self._rows = QVBoxLayout()
+        self._rows.setContentsMargins(0, 0, 0, 0)
+        self._rows.setSpacing(2)
+        self.none_label = QLabel("None: it shows what the model shows")
+        self.none_label.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+        self.none_label.setWordWrap(True)
+        self.add = QComboBox()
+        self.add.setToolTip("Leave a layer out of this detail only; the "
+                            "model and other details keep it")
+        self.add.activated.connect(self._chosen)
+        self.show_all_link = _link("Show all")
+        self.show_all_link.clicked.connect(self.show_all)
+        column = QVBoxLayout(self)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(4)
+        column.addWidget(self.none_label)
+        column.addLayout(self._rows)
+        column.addWidget(self.add)
+        column.addWidget(self.show_all_link)
+
+    def show_for(self, detail, layers):
+        known = {la.id for la in layers.all()}
+        self._hidden = [i for i in detail.hidden_layers if i in known]
+        self._names = {la.id: layers.full_path(la.id) for la in layers.all()}
+        while self._rows.count():
+            row = self._rows.takeAt(0)
+            if row.widget() is not None:
+                row.widget().deleteLater()
+        for layer_id in self._hidden:
+            row = QWidget()
+            line = QHBoxLayout(row)
+            line.setContentsMargins(0, 0, 0, 0)
+            line.addWidget(QLabel(self._names[layer_id]), 1)
+            show = _link("Show")
+            show.setToolTip("Show this layer in this detail again")
+            show.clicked.connect(lambda _c=False, i=layer_id:
+                                 self.show_layer(i))
+            line.addWidget(show)
+            self._rows.addWidget(row)
+        self.none_label.setVisible(not self._hidden)
+        self.show_all_link.setVisible(len(self._hidden) > 1)
+        self.add.blockSignals(True)
+        self.add.clear()
+        self.add.addItem("Hide a layer here…", None)
+        for la in layers.all():
+            if la.id not in self._hidden:
+                self.add.addItem(self._names[la.id], la.id)
+        self.add.setCurrentIndex(0)
+        self.add.blockSignals(False)
+
+    def hidden_names(self) -> list:
+        return [self._names[i] for i in self._hidden]
+
+    def offered(self) -> list:
+        return [self.add.itemText(i) for i in range(1, self.add.count())]
+
+    def hide_layer(self, layer_id):
+        if layer_id not in self._hidden:
+            self._edit(self._hidden + [layer_id])
+
+    def show_layer(self, layer_id):
+        self._edit([i for i in self._hidden if i != layer_id])
+
+    def show_all(self):
+        if self._hidden:
+            self._edit([])
+
+    def _chosen(self, index: int):
+        layer_id = self.add.itemData(index)
+        if layer_id is not None:
+            self.hide_layer(layer_id)
+
+
 def _show_common_text(combo, values):
     """An editable drop-down showing the one value shared, or blank."""
     combo.setEditText(next(iter(values)) if len(values) == 1 else "")
@@ -456,6 +560,9 @@ class PropertiesPanel(QWidget):
         form.addRow("Lineweight", self.lineweight_edit)
         form.addRow("View", self.detail_view_combo)
         form.addRow("Scale", self.scale_combo)
+        # a detail only: the layers it leaves out (#38)
+        self.detail_layers = _DetailLayers(self._set_detail_layers)
+        form.addRow("Hidden here", self.detail_layers)
         form.addRow("Info", self.measure_label)
         self.text_content = QPlainTextEdit()
         self.text_content.setObjectName("text_content")
@@ -577,9 +684,11 @@ class PropertiesPanel(QWidget):
         page.addLayout(form)
         page.addStretch(1)
         self._build_layer_page()
+        self._build_sheet_page()
         self.pages = QStackedWidget()
         self.pages.addWidget(self.object_page)
         self.pages.addWidget(self.layer_page)
+        self.pages.addWidget(self.sheet_page)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -588,6 +697,7 @@ class PropertiesPanel(QWidget):
         # Which subject the user last chose to see, "objects" or "layers";
         # shown() falls back to whatever is live when it is not.
         self._layers_panel = None
+        self._sheets_panel = None
         self._chosen = "objects"
         self._picks_seen = self._objects_signature()
         self._letting_go = False
@@ -667,6 +777,7 @@ class PropertiesPanel(QWidget):
         if detail is not None:
             self._show_scale(detail)
             self._show_detail_view(detail)
+            self._show_detail_layers(detail)
         self._show_hatch()
         editable = self._editable_text()
         editable_id = editable.id if editable is not None else None
@@ -712,15 +823,23 @@ class PropertiesPanel(QWidget):
         panel.pickedChanged.connect(self._layers_picked)
         self._sync_subject()
 
+    def follow_sheets(self, panel):
+        """Show the sheets picked in this Sheets list as well (#38)."""
+        self._sheets_panel = panel
+        panel.pickedChanged.connect(self._sheets_picked)
+        self._sync_subject()
+
     def subjects(self) -> list[str]:
         """What could be shown, in tab order: "objects" while anything is
-        selected (in the model or on a sheet), "layers" while any are
-        picked in the Layers list."""
+        selected (in the model or on a sheet), then "layers" or "sheets",
+        whichever is picked in its list: one look at a time."""
         out = []
         if any(self._objects_signature()):
             out.append("objects")
         if self._picked_layers():
             out.append("layers")
+        elif self._picked_sheets():
+            out.append("sheets")
         return out
 
     def shown(self) -> str | None:
@@ -746,6 +865,8 @@ class PropertiesPanel(QWidget):
         """
         if subject == "layers":
             return self._describe_layers()
+        if subject == "sheets":
+            return self._describe_sheets()
         return self._describe_selection()
 
     def _describe_selection(self) -> Subject | None:
@@ -830,6 +951,54 @@ class PropertiesPanel(QWidget):
                        icons.layer_mark(_MIXED_MARK), title,
                        f"Layers: {names}")
 
+    def _describe_sheets(self) -> Subject | None:
+        sheets = self._picked_sheets()
+        if not sheets:
+            return None
+        if len(sheets) == 1:
+            lay = sheets[0]
+            n = len(lay.details)
+            parts = [_paper_name(lay.paper_w, lay.paper_h),
+                     "no details" if n == 0 else
+                     f"{n} detail{'s' if n != 1 else ''}"]
+            path = self._group_path(lay.group)
+            if path:
+                parts.append(f"in {path}")
+            label = sheet_label(lay)
+            return Subject("Sheet", label, " · ".join(parts),
+                           icons.sheet_mark(), label, f"Sheet: {label}")
+        title = f"{len(sheets)} sheets"
+        names = ", ".join(sheet_label(lay) for lay in sheets)
+        return Subject("Sheets", title, names, icons.sheet_mark(), title,
+                       f"Sheets: {names}")
+
+    def _group_path(self, group_id) -> str:
+        """Plans › Level 1, for a group; "" for none."""
+        by_id = {gr.id: gr for gr in self.scene.sheet_groups}
+        names, seen = [], set()
+        while group_id in by_id and group_id not in seen:
+            seen.add(group_id)
+            names.append(by_id[group_id].name)
+            group_id = by_id[group_id].parent
+        return " › ".join(reversed(names))
+
+    def _picked_sheets(self) -> list:
+        """The picked sheets in the set's order, the ones that still exist."""
+        if self._sheets_panel is None:
+            return []
+        ids = set(self._sheets_panel.picked_sheet_ids())
+        return [lay for lay in self.scene.layouts if lay.id in ids]
+
+    def _sheets_picked(self):
+        """A sheet picked is a look, as a layer is, and one at a time."""
+        if self._picked_sheets():
+            self._chosen = "sheets"
+            if self._layers_panel is not None and self._picked_layers():
+                self._layers_panel.clear_picked()
+        elif self._chosen == "sheets":
+            self._chosen = "objects"
+        self._sync_subject()
+
     def _count_on(self, layer_ids: set) -> int:
         return sum(1 for o in self.scene.all() if o.layer_id in layer_ids)
 
@@ -848,8 +1017,14 @@ class PropertiesPanel(QWidget):
 
     def _layers_picked(self):
         """Rows picked are what you asked to see; none picked hands the
-        panel back to the objects."""
-        self._chosen = "layers" if self._picked_layers() else "objects"
+        panel back to the objects. One look at a time: a layer picked lets
+        go of a picked sheet."""
+        if self._picked_layers():
+            self._chosen = "layers"
+            if self._sheets_panel is not None and self._picked_sheets():
+                self._sheets_panel.clear_picked()
+        elif self._chosen == "layers":
+            self._chosen = "objects"
         self._sync_subject()
 
     def _let_go_if_moved_on(self):
@@ -858,12 +1033,15 @@ class PropertiesPanel(QWidget):
         nor is a command handing back the selection it was given."""
         seen, self._picks_seen = self._picks_seen, self._objects_signature()
         if (self._picks_seen == seen or not any(self._picks_seen)
-                or self._letting_go or not self._picked_layers()):
+                or self._letting_go
+                or not (self._picked_layers() or self._picked_sheets())):
             return
         self._letting_go = True
         try:
             self._chosen = "objects"
-            self._layers_panel.clear_picked()
+            for panel in (self._layers_panel, self._sheets_panel):
+                if panel is not None:
+                    panel.clear_picked()
         finally:
             self._letting_go = False
 
@@ -875,13 +1053,16 @@ class PropertiesPanel(QWidget):
         if shown == "layers":
             self._refresh_layer_page()
             self.pages.setCurrentWidget(self.layer_page)
+        elif shown == "sheets":
+            self._refresh_sheet_page()
+            self.pages.setCurrentWidget(self.sheet_page)
         else:
             self.pages.setCurrentWidget(self.object_page)
         self.subjectsChanged.emit()
         # Only while the panel can be seen: with Properties closed nothing
         # on screen says why the selection went dim.
         self.selection.set_held(
-            shown == "layers" and bool(self.selection.ids)
+            shown in ("layers", "sheets") and bool(self.selection.ids)
             and self.isVisible())
 
     def showEvent(self, ev):
@@ -892,6 +1073,176 @@ class PropertiesPanel(QWidget):
         super().hideEvent(ev)
         if not ev.spontaneous():        # not for a minimised window
             self.selection.set_held(False)
+
+    # ------------------------------------------------------------ sheet page
+
+    def _build_sheet_page(self):
+        """A sheet: its number and name, its paper and which group it is
+        in, and links to open it and to print it."""
+        self._sheet_updating = False
+        self.sheet_page = QWidget()
+        self.sheet_head = SubjectHeader()
+        self.sheet_open = _link("Open sheet")
+        self.sheet_open.setToolTip("Open the sheet to draw on it")
+        self.sheet_open.clicked.connect(self._open_picked_sheet)
+        self.sheet_print = _link("Print…")
+        self.sheet_print.setToolTip("Print the picked sheets, or make a PDF")
+        self.sheet_print.clicked.connect(self._print_picked_sheets)
+        acts = QHBoxLayout()
+        acts.setContentsMargins(_INSET, 2, _INSET, 6)
+        acts.setSpacing(16)
+        acts.addWidget(self.sheet_open)
+        acts.addWidget(self.sheet_print)
+        acts.addStretch(1)
+
+        self.sheet_number = QLineEdit()
+        self.sheet_number.setPlaceholderText("A-101")
+        self.sheet_number.setToolTip("The sheet number, the way a set is "
+                                     "referenced")
+        self.sheet_number.editingFinished.connect(self._set_sheet_number)
+        self.sheet_name = QLineEdit()
+        self.sheet_name.editingFinished.connect(self._set_sheet_name)
+        self.sheet_paper = QComboBox()
+        self.sheet_paper.addItems(list(PAPER_SIZES))
+        self.sheet_paper.currentTextChanged.connect(self._set_sheet_paper)
+        self.sheet_orientation = QComboBox()
+        self.sheet_orientation.addItems(["Landscape", "Portrait"])
+        self.sheet_orientation.currentTextChanged.connect(
+            self._set_sheet_orientation)
+        self.sheet_group = QComboBox()
+        self.sheet_group.setToolTip("The group the sheet sits in, in the "
+                                    "Sheets list")
+        self.sheet_group.currentIndexChanged.connect(self._set_sheet_group)
+
+        self.sheet_form = form = QFormLayout()
+        form.setContentsMargins(_INSET, 8, _INSET, _INSET)
+        form.setSpacing(6)
+        form.addRow("Number", self.sheet_number)
+        form.addRow("Name", self.sheet_name)
+        form.addRow("Paper", self.sheet_paper)
+        form.addRow("Orientation", self.sheet_orientation)
+        form.addRow("Group", self.sheet_group)
+
+        page = QVBoxLayout(self.sheet_page)
+        page.setContentsMargins(0, 0, 0, 0)
+        page.setSpacing(0)
+        page.addWidget(self.sheet_head)
+        page.addLayout(acts)
+        page.addWidget(_seam())
+        page.addLayout(form)
+        page.addStretch(1)
+
+    def _refresh_sheet_page(self):
+        sheets = self._picked_sheets()
+        if not sheets:
+            return
+        self._sheet_updating = True
+        try:
+            one = sheets[0] if len(sheets) == 1 else None
+            self.sheet_head.show_subject(self.describe("sheets"))
+            self.sheet_open.setVisible(one is not None)
+            for edit, value in ((self.sheet_number, "number"),
+                                (self.sheet_name, "name")):
+                edit.setEnabled(one is not None)
+                edit.setText(getattr(one, value) if one is not None else "")
+            self.sheet_name.setPlaceholderText(
+                "" if one is not None else f"{len(sheets)} sheets")
+            papers = {_paper_and_turn(lay)[0] for lay in sheets}
+            turns = {_paper_and_turn(lay)[1] for lay in sheets}
+            paper = next(iter(papers)) if len(papers) == 1 else None
+            self.sheet_paper.setCurrentIndex(
+                self.sheet_paper.findText(paper) if paper else -1)
+            turn = next(iter(turns)) if len(turns) == 1 else None
+            self.sheet_orientation.setCurrentIndex(
+                self.sheet_orientation.findText(turn) if turn else -1)
+            combo = self.sheet_group
+            combo.clear()
+            combo.addItem("None", None)
+            for group in self.scene.sheet_groups:
+                combo.addItem(self._group_path(group.id), group.id)
+            groups = {lay.group for lay in sheets}
+            combo.setCurrentIndex(combo.findData(next(iter(groups)))
+                                  if len(groups) == 1 else -1)
+        finally:
+            self._sheet_updating = False
+
+    def _edit_sheets(self, label: str, apply):
+        """One undo step for a change to every picked sheet."""
+        if self._sheet_updating:
+            return
+        sheets = self._picked_sheets()
+        if not sheets:
+            return
+        self.history.checkpoint(label)
+        for lay in sheets:
+            apply(lay)
+        self.scene.notify("layouts")
+
+    def _set_sheet_number(self):
+        sheets = self._picked_sheets()
+        text = self.sheet_number.text().strip()
+        if len(sheets) == 1 and text != sheets[0].number:
+            self._edit_sheets("sheet number",
+                              lambda lay: setattr(lay, "number", text))
+
+    def _set_sheet_name(self):
+        sheets = self._picked_sheets()
+        text = self.sheet_name.text().strip()
+        if len(sheets) == 1 and text and text != sheets[0].name:
+            self._edit_sheets("rename sheet",
+                              lambda lay: setattr(lay, "name", text))
+
+    def _set_sheet_paper(self, name: str):
+        if name not in PAPER_SIZES:
+            return
+
+        def apply(lay):
+            w, h = PAPER_SIZES[name]
+            if _paper_and_turn(lay)[1] == "Portrait":
+                w, h = h, w
+            lay.paper_w, lay.paper_h = float(w), float(h)
+        self._edit_sheets("sheet paper", apply)
+
+    def _set_sheet_orientation(self, turn: str):
+        if turn not in ("Landscape", "Portrait"):
+            return
+
+        def apply(lay):
+            long_side = max(lay.paper_w, lay.paper_h)
+            short_side = min(lay.paper_w, lay.paper_h)
+            lay.paper_w, lay.paper_h = ((long_side, short_side)
+                                        if turn == "Landscape"
+                                        else (short_side, long_side))
+        self._edit_sheets("sheet orientation", apply)
+
+    def _set_sheet_group(self, index: int):
+        if index < 0 or self._sheet_updating:
+            return
+        group = self.sheet_group.itemData(index)
+        if {lay.group for lay in self._picked_sheets()} == {group}:
+            return
+        self._edit_sheets("sheet group",
+                          lambda lay: setattr(lay, "group", group))
+
+    def _open_picked_sheet(self):
+        sheets = self._picked_sheets()
+        if len(sheets) == 1 and self._sheets_panel is not None:
+            self._sheets_panel.openRequested.emit(sheets[0].id)
+
+    def _print_picked_sheets(self):
+        sheets = self._picked_sheets()
+        if sheets and self._sheets_panel is not None:
+            self._sheets_panel.printRequested.emit([s.id for s in sheets])
+
+    def _show_detail_layers(self, detail):
+        self.form.setRowVisible(self.detail_layers, True)
+        self.detail_layers.show_for(detail, self.scene.layers)
+
+    def _set_detail_layers(self, hidden: list):
+        detail = self._detail_pick()
+        if detail is not None and list(detail.hidden_layers) != hidden:
+            self._paper_edit("detail layers", detail,
+                             hidden_layers=list(hidden))
 
     # ------------------------------------------------------------ layer page
 
@@ -1307,6 +1658,8 @@ class PropertiesPanel(QWidget):
         self.form.setRowVisible(self.lineweight_edit, paper)
         self.form.setRowVisible(self.scale_combo, detail)
         self.form.setRowVisible(self.detail_view_combo, detail)
+        # one detail's own; refresh shows it again for a single detail
+        self.form.setRowVisible(self.detail_layers, False)
         # a model object's own, which _refresh_model shows when there is one
         self.form.setRowVisible(self.print_width_combo, False)
         self.form.setRowVisible(self.section_hatch, False)

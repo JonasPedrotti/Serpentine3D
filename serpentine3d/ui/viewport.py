@@ -2180,11 +2180,13 @@ class Viewport(QOpenGLWidget):
         return self._curv_range_cache[1]
 
     def _draw_objects(self, mvp, view, mode_override=None,
-                      light_background=False):
+                      light_background=False, hidden_layers=()):
+        """Draw the scene. `hidden_layers` are left out on top of what is
+        hidden anyway, with what is under them: a detail's own (#38)."""
         clips = self._clip_vectors() if self.space == "model" else []
         try:
             self._draw_objects_with_clips(mvp, view, clips, mode_override,
-                                          light_background)
+                                          light_background, hidden_layers)
         finally:
             # Qt also draws in this context. Leaving clip distances enabled
             # after a failed upload makes its shaders' unwritten distances
@@ -2192,7 +2194,7 @@ class Viewport(QOpenGLWidget):
             self._end_clips(clips)
 
     def _draw_objects_with_clips(self, mvp, view, clips, mode_override=None,
-                                light_background=False):
+                                light_background=False, hidden_layers=()):
         # The matrices arrive float64 and stay that way until each
         # object's anchor is folded in: the fold is the whole fix for
         # far geometry swimming, and it only works before the cast.
@@ -2212,6 +2214,9 @@ class Viewport(QOpenGLWidget):
         # keep insertion order (unchanged default behaviour).
         objects = sorted(self.scene.visible_objects(),
                          key=lambda o: -getattr(o, "draw_order", 0))
+        if hidden_layers:
+            left_out = self.scene.layers.with_descendants(hidden_layers)
+            objects = [o for o in objects if o.layer_id not in left_out]
         # A locked layer greys what is on it, as a locked object is greyed.
         # Worked out once a frame over the layers, not once per object.
         layers = self.scene.layers
@@ -3775,7 +3780,8 @@ class Viewport(QOpenGLWidget):
             mvp64 = proj @ view
             self._draw_objects(mvp64, view,
                                mode_override=detail.display_mode,
-                               light_background=True)
+                               light_background=True,
+                               hidden_layers=detail.hidden_layers)
             img = fbo.toImage()
             fbo.release()
             ratio = self.devicePixelRatioF()

@@ -594,7 +594,8 @@ class LayoutView:
         proj, view = self.detail_matrices(detail, pw, ph)
         mvp64 = proj @ view
         vp._draw_objects(mvp64, view, mode_override=mode,
-                         light_background=True)
+                         light_background=True,
+                         hidden_layers=detail.hidden_layers)
         GL.glDisable(GL.GL_SCISSOR_TEST)
         GL.glViewport(0, 0, int(vp.width() * ratio),
                       int(vp.height() * ratio))
@@ -603,15 +604,18 @@ class LayoutView:
         vp = self.vp
         key = (vp.scene.revision, round(detail.azimuth, 6),
                round(detail.elevation, 6), tuple(detail.target),
-               detail.perspective, detail.section_offset)
+               detail.perspective, detail.section_offset,
+               tuple(detail.hidden_layers))
         cached = self._hlr_cache.get(detail.id)
         if cached is not None and cached[0] == key:
             return cached[1]
         d, right, up = detail_direction(detail)
         from ..core.mesh import MeshShape
         from ..core.pointcloud import PointCloudShape
+        left_out = vp.scene.layers.with_descendants(detail.hidden_layers)
         objs = [o for o in vp.scene.visible_objects()
-                if not isinstance(o.shape, (MeshShape, PointCloudShape))]
+                if not isinstance(o.shape, (MeshShape, PointCloudShape))
+                and o.layer_id not in left_out]
         shapes = [o.shape for o in objs]
         layer_types = vp._layer_linetypes()                 # once, not per object
         lts = [vp._effective_linetype(o, layer_types)

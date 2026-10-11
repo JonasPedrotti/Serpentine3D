@@ -50,6 +50,9 @@ class DetailView:
     show_border: bool = True
     show_label: bool = True
     section_offset: float | None = None   # cut plane distance from target
+    # layers this detail leaves out, as Rhino's per-detail visibility does
+    # (a sublayer goes with its parent); the model itself is untouched
+    hidden_layers: list = field(default_factory=list)
 
     def contains(self, px: float, py: float) -> bool:
         return (self.x <= px <= self.x + self.w
@@ -1044,6 +1047,8 @@ def enclosing_polygon(polylines: list, px: float, py: float):
 class Layout:
     id: str = field(default_factory=_uid)
     name: str = "Layout"
+    number: str = ""                     # the sheet number, A-101; may be ""
+    group: str | None = None             # the SheetGroup it sits in, if any
     paper_w: float = 420.0
     paper_h: float = 297.0
     margin: float = 10.0
@@ -1063,7 +1068,8 @@ class Layout:
     _counters: dict = field(default_factory=dict, repr=False, compare=False)
 
     # the sheet itself, as against anything put on it
-    _PAPER = ("id", "name", "paper_w", "paper_h", "margin", "_counters")
+    _PAPER = ("id", "name", "number", "group", "paper_w", "paper_h",
+              "margin", "_counters")
 
     def is_empty(self) -> bool:
         """True if nothing has been drawn or placed on the paper.
@@ -1127,6 +1133,84 @@ class Layout:
 
     def clone(self) -> "Layout":
         return copy.deepcopy(self)
+
+
+@dataclass
+class SheetGroup:
+    """A group of sheets, the way a set of drawings is bound: Plans,
+    Sections, and groups inside those (#38)."""
+    id: str = field(default_factory=_uid)
+    name: str = "Group"
+    parent: str | None = None            # the group this one sits in
+
+
+def sheet_tree(layouts: list, groups: list) -> list:
+    """The sheets and their groups as a tree, in the sheets' own order.
+
+    [(kind, item, children)], kind "group" or "sheet" (children [] for a
+    sheet). The order is `layouts`', the tab strip's and the print's: a
+    group sits where its first sheet does, so moving a group is moving its
+    sheets, and an empty group comes at the end of where it was made. A
+    sheet whose group is gone stands on its own, and a group that turns
+    out to sit inside itself is taken to sit at the top.
+    """
+    by_id = {g.id: g for g in groups}
+    entries: dict = {None: []}
+    placed: set = set()
+
+    def parent_of(group, seen):
+        parent = group.parent
+        if parent not in by_id or parent in seen:
+            return None
+        return parent
+
+    def place(gid, seen=()):
+        if gid in placed:
+            return
+        seen = set(seen) | {gid}
+        parent = parent_of(by_id[gid], seen)
+        if parent is not None:
+            place(parent, seen)
+        placed.add(gid)
+        entries.setdefault(parent, []).append(("group", by_id[gid]))
+        entries.setdefault(gid, [])
+
+    for lay in layouts:
+        gid = lay.group if lay.group in by_id else None
+        if gid is not None:
+            place(gid)
+        entries.setdefault(gid, []).append(("sheet", lay))
+    for group in groups:
+        place(group.id)
+
+    def build(key):
+        return [(kind, item, build(item.id) if kind == "group" else [])
+                for kind, item in entries.get(key, [])]
+    return build(None)
+
+
+def flatten_sheets(tree: list) -> list:
+    """The sheets of a `sheet_tree`, depth first: the order they go in."""
+    out = []
+    for kind, item, children in tree:
+        if kind == "group":
+            out.extend(flatten_sheets(children))
+        else:
+            out.append(item)
+    return out
+
+
+def sheet_label(layout) -> str:
+    """How a sheet is named in a list: its number, then its name."""
+    return f"{layout.number}  {layout.name}" if layout.number else layout.name
+
+
+def sheet_groups_to_json(groups: list) -> list:
+    return [vars(g).copy() for g in groups]
+
+
+def sheet_groups_from_json(data: list) -> list:
+    return [_rebuild(SheetGroup, d) for d in data or []]
 
 
 def unique_layout_name(layouts, base: str) -> str:
@@ -1199,6 +1283,7 @@ def layouts_to_json(layouts: list) -> list:
     for lay in layouts:
         out.append({
             "id": lay.id, "name": lay.name,
+            "number": lay.number, "group": lay.group,
             "paper_w": lay.paper_w, "paper_h": lay.paper_h,
             "margin": lay.margin,
             "details": [vars(d).copy() for d in lay.details],
@@ -1220,6 +1305,8 @@ def layouts_from_json(data: list) -> list:
     layouts = []
     for ld in data or []:
         lay = Layout(id=ld.get("id", _uid()), name=ld.get("name", "Layout"),
+                     number=str(ld.get("number") or ""),
+                     group=ld.get("group") or None,
                      paper_w=ld.get("paper_w", 420.0),
                      paper_h=ld.get("paper_h", 297.0),
                      margin=ld.get("margin", 10.0))
