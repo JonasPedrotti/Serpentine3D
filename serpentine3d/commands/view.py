@@ -166,10 +166,11 @@ def cmd_viewcapturetoclipboard(ctx):
 @command("clippingplane", aliases=("clip",))
 def cmd_clippingplane(ctx):
     """Place a rectangular clipping plane parallel to the CPlane through
-    the first corner: geometry on its normal side is hidden in shaded
-    viewports. Move or rotate the plane
-    object to move the cut; Flip reverses the kept side. The purple arrow
-    points toward the visible side, following Rhino's convention."""
+    the first corner. It cuts away the side toward the view it is drawn
+    in, as Rhino 8 does: drawn in Top it takes what is above and keeps what
+    is below, the way you are looking. Move or rotate the plane object to
+    move the cut; Flip reverses the kept side. The purple arrow points
+    toward the visible side, following Rhino's convention."""
     c1 = yield PointReq("First corner of clipping plane")
 
     def _rect(p):
@@ -189,12 +190,43 @@ def cmd_clippingplane(ctx):
     if face is None:
         ctx.echo("Degenerate rectangle — no clipping plane created.")
         return
+    # The side to cut away is the viewer's. The rectangle's own winding,
+    # which follows the way it was dragged, used to decide it, so one drag
+    # cut down and the next cut up.
+    away = _toward_viewer(ctx, c1, ctx.cplane.normal)
     if ctx.opt("Flip", "No") == "Yes":
+        away = [-c for c in away]
+    normal = g.face_normal(next(iter(g.faces_of(face))))
+    if sum(a * b for a, b in zip(normal, away)) < 0:
         face = g.mirror(face, tuple(c1), tuple(ctx.cplane.normal))
     obj = ctx.scene.add(face, name=_next_clip_name(ctx.scene))
     ctx.scene.update(obj.id, clip_plane={"enabled": True})
     ctx.echo(f"Created {obj.name}. The purple arrow points toward the visible "
              "side. 'disableclippingplane' pauses it.")
+
+
+def _toward_viewer(ctx, point, normal) -> list:
+    """The one of `normal` and its reverse that faces whoever is drawing.
+
+    A parallel view (Top, Front) is looked at along its direction wherever
+    its eye happens to sit, so a plane drawn above that eye is still seen
+    from above; a perspective view is looked at from its eye. With no view
+    at all, a script's, the construction plane's normal stands, and that
+    faces the viewer in every standard view.
+    """
+    n = [float(c) for c in normal]
+    cam = getattr(getattr(ctx, "viewport", None), "camera", None)
+    if cam is None:
+        return n
+    eye = [float(c) for c in cam.position]
+    if getattr(cam, "projection", "perspective") == "parallel":
+        target = [float(c) for c in cam.target]
+        toward = [e - t for e, t in zip(eye, target)]
+    else:
+        toward = [e - float(p) for e, p in zip(eye, point)]
+    if sum(a * b for a, b in zip(n, toward)) < 0:
+        return [-c for c in n]
+    return n
 
 
 def _next_clip_name(scene) -> str:
