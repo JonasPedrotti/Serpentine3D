@@ -132,13 +132,14 @@ def test_with_no_camera_it_cuts_the_construction_plane_s_side(env):
     assert _cuts(scene, (0, 0, 3)) and not _cuts(scene, (0, 0, -3))
 
 
-def test_the_arrow_points_into_the_screen_in_top(env):
-    from serpentine3d.ui.viewport import clip_normal_arrows
+def test_in_top_its_mark_says_the_arrow_runs_into_the_screen(env):
+    """Seen head on the arrow is a dot, so a ring stands in for it: a
+    cross, the tail of an arrow running away into the screen."""
+    from serpentine3d.ui.viewport import clip_end_on_marks
     scene, _sel, _h, ctx, proc = env
     _view(ctx, "top")
     _draw(proc, *DRAGS[1])
     frames = clip_plane_frames([o for o in scene.all() if o.clip_plane])
-    (segments, _color), = clip_normal_arrows(frames, ctx.viewport.camera,
-                                             800, 600)
-    base, tip = segments[0], segments[1]
-    assert tip[2] < base[2], "the arrow points out of the screen"
+    (kind, _segments, _color), = clip_end_on_marks(
+        frames, ctx.viewport.camera, 800, 600)
+    assert kind == "cross", "the arrow runs out of the screen"

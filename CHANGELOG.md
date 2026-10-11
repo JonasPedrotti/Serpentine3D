@@ -143,10 +143,33 @@
 
 - **A clipping plane cuts the way you are looking.** Drawn in Top, a
   clipping plane now cuts away what is above it and keeps what is below,
-  its arrow pointing into the screen, as Rhino 8 does: the side toward the
-  view it is drawn in goes. It used to face whichever way its rectangle
-  was dragged, so one diagonal cut down and the other cut up. Flip still
-  turns it round.
+  as Rhino 8 does: the side toward the view it is drawn in goes. It used
+  to face whichever way its rectangle was dragged, so one diagonal cut
+  down and the other cut up. Flip still turns it round.
+
+- **Seen head on, a clipping plane says which way it cuts.** From Top, a
+  clipping plane's arrow runs straight into the screen or out of it and
+  showed as a dot, so a plane cutting down looked the same as one cutting
+  up. A ring now stands at its middle: a cross in it when the arrow runs
+  into the screen, so the plane takes away what lies between you and it,
+  and a dot when it comes out, the drafting signs for an arrow square to
+  the drawing. The arrows and the ring are drawn at a true width; drivers
+  that cap lines at one pixel drew the arrow as a hairline.
+
+- **A clipping plane can be clicked from the side.** In a shaded view a
+  click asked only for an object's faces, and a plane seen edge on has
+  none on screen, so only a selection band over a corner caught it. A
+  click that misses a face seen edge on now tries its edges, as a
+  wireframe click does. The same went for any flat surface seen edge on.
+
+- **Scaling a clipping plane keeps it cutting.** Scaled along one axis,
+  with the gumball's handles or Scale1D, Scale2D or ScaleNU, a clipping
+  plane became a NURBS surface: still flat, but no longer read as a
+  plane, so it stopped cutting and its arrow vanished. A flat face now
+  stays a true plane under any scale or shear, and keeps the side it
+  cuts. A plane saved after an earlier build scaled it cuts again, but
+  that build lost which way round it was: if it was flipped before it was
+  scaled, it now cuts the other way, and Flip turns it back.
 
 - **Panels start below their title bars.** Properties and Layers ran 5 px
   under their title bars, so the picked layer's highlight overlapped the

@@ -3172,6 +3172,9 @@ def _gtransform(shape, gtrsf) -> TopoDS_Shape:
         return shape.transformed(_transform_matrix(gtrsf))
     from OCP.BRepTools import BRepTools
     BRepTools.Clean_s(shape)
+    flat = _gtransform_flat_face(shape, gtrsf)
+    if flat is not None:
+        return flat
     result = BRepBuilderAPI_GTransform(shape, gtrsf, True)
     if not result.IsDone():
         raise GeometryError("Non-uniform transform failed")
@@ -3179,6 +3182,61 @@ def _gtransform(shape, gtrsf) -> TopoDS_Shape:
     if _has_null_surface(out):
         raise GeometryError("Non-uniform transform produced degenerate "
                             "geometry")
+    return out
+
+
+def _gtransform_flat_face(shape, gtrsf):
+    """A single plane face under a linear map, kept a true plane; None for
+    anything else.
+
+    BRepBuilderAPI_GTransform turns every surface into NURBS. A plane comes
+    out still flat but no longer a plane to anything that asks for one: a
+    clipping plane stretched along one axis stopped cutting and lost its
+    arrow, and the normal read off the NURBS surface cannot be trusted
+    either, since a plane that has been mirrored to flip it keeps the old
+    parameter directions and would quietly turn back round. So the outline
+    alone is mapped, and laid back on a plane whose normal is carried across
+    the way a plane's normal is, by the inverse transpose, sense and all.
+    One hole or more and it is left to the general transform.
+    """
+    import numpy as np
+    from OCP.BRepTools import BRepTools
+    if shape.IsNull() or shape.ShapeType() != occ.FACE:
+        return None
+    face = occ.to_face(shape)
+    try:
+        normal = np.asarray(face_normal(face), float)
+    except GeometryError:
+        return None                       # not a plane: nothing to keep
+    wires = TopExp_Explorer(face, occ.WIRE)
+    count = 0
+    while wires.More():
+        count += 1
+        wires.Next()
+    if count != 1:
+        return None
+    m = np.array([[gtrsf.Value(r, c) for c in (1, 2, 3)] for r in (1, 2, 3)],
+                 float)
+    if abs(np.linalg.det(m)) < 1e-12:
+        return None
+    turned = np.linalg.inv(m).T @ normal
+    turned /= np.linalg.norm(turned)
+    moved = BRepBuilderAPI_GTransform(BRepTools.OuterWire_s(face), gtrsf,
+                                      True)
+    if not moved.IsDone():
+        return None
+    wire = occ.to_wire(moved.Shape())
+    origin = np.asarray(centroid(face), float)
+    t = np.array([gtrsf.Value(r, 4) for r in (1, 2, 3)], float)
+    at = m @ origin + t
+    from OCP.gp import gp_Pln
+    built = BRepBuilderAPI_MakeFace(
+        gp_Pln(gp_Pnt(*at), gp_Dir(*turned)), wire, True)
+    if not built.IsDone():
+        return None
+    out = built.Face()
+    if float(np.dot(face_normal(out), turned)) < 0:
+        out = occ.to_face(out.Reversed())
     return out
 
 

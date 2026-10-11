@@ -226,7 +226,6 @@ def test_a_failed_draw_releases_clipping_before_qt_draws(pane, monkeypatch):
 
 
 def test_repainting_the_arrow_does_not_repeat_native_geometry_reads(pane, monkeypatch):
-    from types import SimpleNamespace
     from serpentine3d.ui import viewport
 
     obj = pane.scene.add(_rect_on_xy())
@@ -241,9 +240,8 @@ def test_repainting_the_arrow_does_not_repeat_native_geometry_reads(pane, monkey
     monkeypatch.setattr(g, "face_normal", counted)
     monkeypatch.setattr(viewport.GL, "glDisable", lambda *_: None)
     monkeypatch.setattr(viewport.GL, "glEnable", lambda *_: None)
-    pane._preview = SimpleNamespace(update=lambda *_: None)
     pane._frame_anchor = None
-    monkeypatch.setattr(pane, "_draw_lines", lambda *_: None)
+    monkeypatch.setattr(pane, "_draw_thick_segments", lambda *_: None)
     pane._clip_vectors()
     pane._draw_clip_normals(np.eye(4))
     pane._draw_clip_normals(np.eye(4))
