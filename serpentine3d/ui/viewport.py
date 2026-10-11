@@ -39,6 +39,9 @@ from .camera import (
 )
 
 PICK_RADIUS_PX = 7.0
+# How nearly a face's plane must run along the sight line before a click
+# that misses it may try its edges instead: the sine of about six degrees.
+EDGE_ON_SLANT = 0.1
 # How long the left button has to sit still before the objects under it are
 # offered as a list instead of picked. Long enough that no ordinary click
 # ever reaches it, short enough that you do not wonder whether it is coming.
@@ -138,6 +141,15 @@ ARROW_PX = 22.0
 # a property of the whole plane rather than of the edge it happens to start
 # near, and fixed on the glass for the same reason theirs is.
 CLIP_ARROW_PX = 52.0
+# Seen head on, the clipping plane's arrow runs into the glass and shows as
+# a dot, so a ring with a cross or a dot in it stands in for it, this many
+# pixels in radius. It comes in once the arrow is within about twenty degrees
+# of the line of sight and the arrow goes out within about fifteen, so as a
+# view turns there is always one or the other, and briefly both.
+CLIP_MARK_PX = 16.0
+CLIP_MARK_LINE_PX = 2.5
+CLIP_MARK_SLANT = 0.35
+CLIP_ARROW_MIN_SLANT = 0.25
 ARROW_COUNT = 12
 ARROW_HEAD = 0.34
 ARROW_BARB = 0.17
@@ -602,7 +614,13 @@ def clip_plane_frames(objects):
             continue
         try:
             face = next(iter(g.faces_of(obj.shape)))
-            n = np.asarray(g.face_normal(face), float)
+            try:
+                n = np.asarray(g.face_normal(face), float)
+            except g.GeometryError:
+                # A plane an earlier build turned to NURBS by scaling it,
+                # saved that way: still flat, so it still cuts, read off
+                # the surface itself rather than dropped.
+                n = np.asarray(g.face_point_normal(face)[1], float)
             o = np.asarray(g.centroid(obj.shape), float)
         except Exception:                                  # noqa: BLE001
             continue
@@ -624,6 +642,36 @@ def clip_equation(origin, normal):
     return np.array([-n[0], -n[1], -n[2], float(np.dot(n, o))], np.float32)
 
 
+def _sight_lines(camera, points):
+    """The way the eye looks at each point, unit length (N, 3).
+
+    A parallel view looks along its own direction wherever the point is; a
+    perspective one looks from its eye, so a plane off to one side is seen
+    at a slant even when the view is square to it.
+    """
+    pts = np.asarray(points, float).reshape(-1, 3)
+    eye = np.asarray(camera.position, float)
+    if camera.projection == "parallel":
+        d = np.broadcast_to(np.asarray(camera.target, float) - eye, pts.shape)
+    else:
+        d = pts - eye
+    return d / np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-12)
+
+
+def _clip_arrow_slants(frames, camera):
+    """For each plane, its arrow (toward the visible half), how far that
+    arrow leans off the line of sight (the sine, 0 head on, 1 across the
+    glass), and whether it runs away from the eye."""
+    if not frames:
+        return np.zeros((0, 3)), np.zeros(0), np.zeros(0, bool)
+    arrows = -np.array([f[1] for f in frames], float)
+    arrows /= np.maximum(np.linalg.norm(arrows, axis=1, keepdims=True), 1e-12)
+    sight = _sight_lines(camera, [f[0] for f in frames])
+    slant = np.linalg.norm(np.cross(arrows, sight), axis=1)
+    away = np.einsum("ij,ij->i", arrows, sight) > 0
+    return arrows, slant, away
+
+
 def clip_normal_arrows(frames, camera, width, height):
     """The arrows for a set of clipping planes, as (segments, colour) passes.
 
@@ -631,13 +679,17 @@ def clip_normal_arrows(frames, camera, width, height):
     two planes lie on top of each other the live arrow is the one you see.
     Like the direction arrows, the length is fixed on the glass rather than
     in the model, so a plane far away is still readable and a near one does
-    not throw a spike across the whole viewport.
+    not throw a spike across the whole viewport. An arrow running nearly
+    straight at the glass is left out: it would show as a dot, and
+    `clip_end_on_marks` says it better.
     """
     right, up = camera.right_up()
     fwd = np.cross(right, up)
+    _arrows, slant, _away = _clip_arrow_slants(frames, camera)
     passes = []
     for enabled in (False, True):
-        here = [f for f in frames if f[2] is enabled]
+        here = [f for f, s in zip(frames, slant)
+                if f[2] is enabled and s >= CLIP_ARROW_MIN_SLANT]
         if not here:
             continue
         at = np.array([f[0] for f in here], float)
@@ -647,6 +699,50 @@ def clip_normal_arrows(frames, camera, width, height):
                        theme.CLIP_NORMAL if enabled
                        else theme.CLIP_NORMAL_PAUSED))
     return passes
+
+
+def clip_end_on_marks(frames, camera, width, height):
+    """What stands in for a clipping plane's arrow when you look along it.
+
+    Head on, the arrow points straight into the glass or straight out of it
+    and shows as a dot, so nothing said which half the plane takes away:
+    from Top, a plane cutting downward looked the same as one cutting up.
+    The mark is the drafting sign for a vector square to the drawing, a ring
+    at the plane's middle with a cross in it when the arrow runs away from
+    you (the tail of an arrow in flight) and a dot when it comes at you (the
+    tip). The arrow points at the half that stays, so a cross says the plane
+    takes away what lies between you and it.
+
+    One `(kind, segments, colour)` per plane seen this way, kind "cross" or
+    "dot", paused planes first as with the arrows. The ring faces the
+    camera and is a fixed size on the glass, like the arrow.
+    """
+    right, up = camera.right_up()
+    _arrows, slant, away = _clip_arrow_slants(frames, camera)
+    turn = np.linspace(0.0, 2.0 * np.pi, 33)
+    ring = np.stack([np.cos(turn), np.sin(turn)], axis=1)
+    ring = np.stack([ring[:-1], ring[1:]], axis=1).reshape(-1, 2)
+    corner = np.sqrt(0.5) * 0.62
+    cross = np.array([(-1, -1), (1, 1), (-1, 1), (1, -1)], float) * corner
+    # A dot drawn in lines: spokes close enough together that at the width
+    # the marks are drawn they run into one another and fill.
+    spin = np.arange(8) * np.pi / 8
+    spoke = np.stack([np.cos(spin), np.sin(spin)], axis=1) * 0.24
+    dot = np.stack([-spoke, spoke], axis=1).reshape(-1, 2)
+    marks = []
+    for enabled in (False, True):
+        for f, s, a in zip(frames, slant, away):
+            if f[2] is not enabled or s >= CLIP_MARK_SLANT:
+                continue
+            at = np.asarray(f[0], float)
+            r = float(cv_marker_size(at, camera, width, height,
+                                     CLIP_MARK_PX)[0])
+            flat = np.vstack([ring, cross if a else dot]) * r
+            marks.append(("cross" if a else "dot",
+                          at + flat[:, :1] * right + flat[:, 1:] * up,
+                          theme.CLIP_NORMAL if enabled
+                          else theme.CLIP_NORMAL_PAUSED))
+    return marks
 
 
 def anchored_clips(clips, anchor):
@@ -3027,17 +3123,23 @@ class Viewport(QOpenGLWidget):
         both sides, so until this was drawn there was nothing on screen that
         said which half of the model the plane was about to take. Drawn over
         the top of everything, because a plane lying flat against a face is
-        exactly when you need to be told.
+        exactly when you need to be told. Seen head on, a ring with a cross
+        or a dot stands in for the arrow (`clip_end_on_marks`).
         """
         frames = self._clip_frames()
         if not frames:
             return
-        passes = clip_normal_arrows(frames, self.camera,
-                                    self.width(), self.height())
+        w, h = self.width(), self.height()
+        passes = clip_normal_arrows(frames, self.camera, w, h)
+        passes += [(segs, color) for _kind, segs, color
+                   in clip_end_on_marks(frames, self.camera, w, h)]
         GL.glDisable(GL.GL_DEPTH_TEST)
         for segs, color in passes:
-            self._preview.update(rebased(segs, self._frame_anchor))
-            self._draw_lines(self._preview, mvp, color, 2.0)
+            # Through the screen-space quad shader: macOS and llvmpipe cap
+            # glLineWidth at one pixel, and a hairline ring is no sign.
+            self._draw_thick_segments(
+                rebased(segs, self._frame_anchor).reshape(-1, 2, 3),
+                mvp, color, CLIP_MARK_LINE_PX)
         GL.glEnable(GL.GL_DEPTH_TEST)
 
     def _draw_selection_box(self, w, h):
@@ -4138,7 +4240,16 @@ class Viewport(QOpenGLWidget):
                 if np.isfinite(tmin):
                     depth = tmin
                     hit = True
-            if len(mesh.edge_segments) and not shaded_faces:
+            # A shaded object is clicked by its faces, but a flat one seen
+            # edge on has none on screen: a clipping plane from the side
+            # could only be caught with a band over a corner. When every
+            # face near the click is edge on, a miss tries the edges as a
+            # wireframe click does. Only then: a face in plain view that
+            # missed has no claim on the click, or the surface beside a
+            # seam, or the box beside a floor, would take it by its edge.
+            edges_on_show = not shaded_faces or (
+                not hit and seen_edge_on(mesh.vertices, tris, direction))
+            if len(mesh.edge_segments) and edges_on_show:
                 segs, _ = self._near_segments(mesh, px - r, py - r,
                                               px + r, py + r, w, h)
                 pts = segs.reshape(-1, 3)
@@ -5604,6 +5715,25 @@ def _side(a: np.ndarray, b: np.ndarray, p: np.ndarray) -> np.ndarray:
     """Which side of each 2D line a->b the point p falls; 0 is on it."""
     return ((b[:, 0] - a[:, 0]) * (p[1] - a[:, 1])
             - (b[:, 1] - a[:, 1]) * (p[0] - a[:, 0]))
+
+
+def seen_edge_on(vertices, triangles, direction, slant=EDGE_ON_SLANT):
+    """Whether every one of these triangles is seen edge on along `direction`.
+
+    Edge on means the sight line runs within about six degrees of the
+    triangle's plane, where a face 100 pixels deep shows as a sliver ten
+    thick. A triangle with no area has no face to show and counts as edge on.
+    """
+    tri = np.asarray(triangles).reshape(-1, 3)
+    if not len(tri):
+        return True
+    a, b, c = (vertices[tri[:, i]].astype(float) for i in range(3))
+    n = np.cross(b - a, c - a)
+    size = np.linalg.norm(n, axis=1)
+    d = np.asarray(direction, float)
+    d = d / (np.linalg.norm(d) or 1.0)
+    facing = np.abs(n @ d)
+    return bool(np.all(facing <= slant * np.maximum(size, 1e-300)))
 
 
 def _point_segment_dist2(p: np.ndarray, a: np.ndarray,
