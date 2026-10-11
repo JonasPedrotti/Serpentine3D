@@ -48,6 +48,18 @@
   original overrode. The new `printwidth` and `sectionhatch` commands set
   them on a selection, and `matchprops` now copies both.
 
+- **A clipping plane closes the solids it cuts (#40).** A clipping plane
+  used to leave a solid hollow, showing the backs of its own faces where
+  it was cut. Now the cut face is capped and drawn the way the solid's
+  section is: a darker shade of the solid with its hatch's lines over it
+  in their colour, flooded for Solid, plain for None. The cap is worked
+  out on the graphics card every frame, so it follows a plane as it is
+  dragged, two planes trim each other's caps, and solids of one material
+  that overlap still cap as one. The hatch lines keep still on the cut
+  while the view turns, falling about as far apart as the layer's spacing
+  asks on screen. Caps show in the shaded, rendered and analysis modes,
+  not in wireframe or ghosted.
+
 - **Panel icons.** Properties and Layers now carry an icon at the left of
   their title bars, sliders and a stack of sheets, so the two stacked
   panels tell apart at a glance.

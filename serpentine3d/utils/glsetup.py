@@ -37,6 +37,8 @@ def set_default_gl_format():
     fmt.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
     fmt.setSamples(4)
     fmt.setDepthBufferSize(24)
+    # section caps count on it how many solids a pixel of a plane is inside
+    fmt.setStencilBufferSize(8)
     QSurfaceFormat.setDefaultFormat(fmt)
 
     # One share group for every viewport's context: a mesh is uploaded

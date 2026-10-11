@@ -24,6 +24,7 @@ from ..utils import units as _units
 # Lives in utils so the launcher can set it without importing this
 # module (and the kernel behind it); re-exported here for old callers.
 from ..utils.glsetup import set_default_gl_format  # noqa: F401
+from . import section_caps as _caps
 from ..utils.math3d import (normalize, ray_line_parameter, ray_plane, ray_plane_any, ray_triangle_hits)
 from . import gpu_share, theme
 from .camera import (
@@ -539,6 +540,38 @@ def rebased(pts, anchor):
     if anchor is None:
         return np.ascontiguousarray(pts, np.float32)
     return (np.asarray(pts, np.float64) - anchor).astype(np.float32)
+
+
+# The display modes that fill faces solidly, and so close a cut solid with
+# a cap. Wireframe has no faces to close, and ghosted ones are see-through.
+CAP_MODES = ("shaded", "zebra", "curvature", "draft", "rendered")
+
+
+class _CapQuad:
+    """The sheet a section cap is laid on: two triangles in the plane's
+    (u, v), remade only when the extent it has to reach changes."""
+
+    def __init__(self):
+        self._extent = None
+        self.vao = GL.glGenVertexArrays(1)
+        GL.glBindVertexArray(self.vao)
+        self.vbo = GL.glGenBuffers(1)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self.vbo)
+        GL.glBufferData(GL.GL_ARRAY_BUFFER, 6 * 2 * 4, None,
+                        GL.GL_DYNAMIC_DRAW)
+        GL.glEnableVertexAttribArray(0)
+        GL.glVertexAttribPointer(0, 2, GL.GL_FLOAT, False, 0,
+                                 ctypes.c_void_p(0))
+        GL.glBindVertexArray(0)
+
+    def draw(self, extent: float):
+        GL.glBindVertexArray(self.vao)
+        if extent != self._extent:
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self.vbo)
+            GL.glBufferData(GL.GL_ARRAY_BUFFER, _caps.cap_quad(extent),
+                            GL.GL_DYNAMIC_DRAW)
+            self._extent = extent
+        GL.glDrawArrays(GL.GL_TRIANGLES, 0, 6)
 
 
 def anchored(matrix, anchor):
@@ -1084,6 +1117,8 @@ class Viewport(QOpenGLWidget):
         self._mesh_prog = self._line_prog = self._bg_prog = 0
         self._thick_prog = 0
         self._point_prog = 0
+        self._count_prog = self._cap_prog = 0     # section caps
+        self._cap_quad = None
         # Point clouds: how big a point is on screen and how many the frame
         # may hold before the finer levels are dropped (display settings).
         self.point_size = float(config.get("display", "point_size",
@@ -1148,6 +1183,9 @@ class Viewport(QOpenGLWidget):
         self._point_prog = _compile(POINT_VERT, POINT_FRAG)
         self._bg_prog = _compile(BG_VERT, BG_FRAG)
         self._tex_prog = _compile(TEX_VERT, TEX_FRAG)
+        self._count_prog = _compile(_caps.COUNT_VERT, _caps.COUNT_FRAG)
+        self._cap_prog = _compile(_caps.CAP_VERT, _caps.CAP_FRAG)
+        self._cap_quad = _CapQuad()
         self._tex_vao = GL.glGenVertexArrays(1)
         GL.glBindVertexArray(self._tex_vao)
         self._tex_vbo = GL.glGenBuffers(1)
@@ -2387,6 +2425,139 @@ class Viewport(QOpenGLWidget):
                                          (*line_color, 1.0), selected,
                                          anchor=gpu.anchor)
         self._line_width(1.0)
+        if clips and mode in CAP_MODES:
+            self._draw_section_caps(mvp, clips, objects, locked_layers, mode)
+
+    def _draw_section_caps(self, mvp, clips, objects, locked_layers, mode):
+        """Close every solid a live clipping plane cuts with a cap, in its
+        section's fill (see ui/section_caps.py for how).
+
+        After the objects, so a cap is hidden behind whatever is in front
+        of it; on the stencil, so only the inside of a solid is capped.
+        """
+        if not self._cap_prog or self._cap_quad is None:
+            return
+        planes = _caps.cap_planes(self._clip_frames())
+        solids = []
+        for obj in objects:
+            gpu = self._gpu.get(obj.id)
+            if (obj.kind == "solid" and gpu is not None and gpu.tri_count
+                    and obj.mesh_ready and obj.mesh.bounds() is not None):
+                solids.append((obj, gpu))
+        if not planes or not solids:
+            return
+        boxes = [obj.mesh.bounds() for obj, _gpu in solids]
+        lows = np.array([b[0] for b in boxes], float)
+        highs = np.array([b[1] for b in boxes], float)
+        ratio = self.devicePixelRatioF()
+        width, height = self.width() * ratio, self.height() * ratio
+        right, _up = self.camera.right_up()
+        GL.glEnable(GL.GL_STENCIL_TEST)
+        try:
+            for i, plane in enumerate(planes):
+                through = _caps.straddling(lows, highs, plane.origin,
+                                           plane.normal)
+                cut = [solids[k] for k in np.flatnonzero(through)]
+                if not cut:
+                    continue
+                others = [p.equation for j, p in enumerate(planes) if j != i]
+                ppu = _caps.pixels_per_unit(mvp, plane.origin, right,
+                                            width, height)
+                reach = max(float(np.linalg.norm(
+                    np.asarray(corner, float) - np.asarray(plane.origin)))
+                    for obj, _gpu in cut for corner in obj.mesh.bounds())
+                by_id = {obj.id: (obj, gpu) for obj, gpu in cut}
+                looks = [(obj.id, _caps.cap_style(
+                    self.scene.section_fill_of(obj),
+                    self._cap_color(obj, locked_layers, mode)))
+                    for obj, _gpu in cut]
+                for style, ids in _caps.group_by_style(looks):
+                    self._count_into_stencil(
+                        mvp, plane, [by_id[oid][1] for oid in ids])
+                    self._lay_cap(mvp, plane, others, style, ppu,
+                                  reach * 1.5 + 1.0)
+        finally:
+            GL.glDisable(GL.GL_STENCIL_TEST)
+            GL.glColorMask(True, True, True, True)
+            GL.glDepthMask(True)
+            GL.glEnable(GL.GL_DEPTH_TEST)
+            # the clip distances as the objects had them, for _end_clips
+            for k in range(_caps.MAX_PLANES):
+                (GL.glEnable if k < len(clips) else GL.glDisable)(
+                    GL.GL_CLIP_DISTANCE0 + k)
+
+    def _cap_color(self, obj, locked_layers, mode):
+        """The colour a cap shades from: the object's, greyed on a locked
+        layer the way its faces are, and its render colour when rendered."""
+        locked = obj.locked or obj.layer_id in locked_layers
+        color = self.scene.color_of(obj)
+        if locked:
+            grey = (color[0] + color[1] + color[2]) / 3 * 0.55 + 0.18
+            return (grey, grey, grey)
+        if mode == "rendered":
+            return self.scene.render_color_of(obj)
+        return color
+
+    def _count_into_stencil(self, mvp, plane, gpus):
+        """How many of these solids each pixel of the plane lies inside, on
+        the stencil: only this plane cutting, every face counted whether
+        anything hides it or not, a back face one up and a front face one
+        down."""
+        GL.glClear(GL.GL_STENCIL_BUFFER_BIT)
+        GL.glColorMask(False, False, False, False)
+        GL.glDepthMask(False)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        GL.glStencilFunc(GL.GL_ALWAYS, 0, 0xFF)
+        GL.glStencilOpSeparate(GL.GL_FRONT, GL.GL_KEEP, GL.GL_KEEP,
+                               GL.GL_DECR_WRAP)
+        GL.glStencilOpSeparate(GL.GL_BACK, GL.GL_KEEP, GL.GL_KEEP,
+                               GL.GL_INCR_WRAP)
+        GL.glEnable(GL.GL_CLIP_DISTANCE0)
+        for k in range(1, _caps.MAX_PLANES):
+            GL.glDisable(GL.GL_CLIP_DISTANCE0 + k)
+        prog = self._count_prog
+        self._use(prog)
+        GL.glUniform1i(self._uloc(prog, "uClipCount"), 1)
+        for gpu in gpus:
+            GL.glUniformMatrix4fv(self._uloc(prog, "uMVP"), 1, GL.GL_TRUE,
+                                  anchored(mvp, gpu.anchor))
+            GL.glUniform4fv(self._uloc(prog, "uClips"), 1, np.asarray(
+                anchored_clips([plane.equation], gpu.anchor), np.float32))
+            GL.glBindVertexArray(gpu.tri_vao)
+            GL.glDrawElements(GL.GL_TRIANGLES, gpu.tri_count,
+                              GL.GL_UNSIGNED_INT, ctypes.c_void_p(0))
+
+    def _lay_cap(self, mvp, plane, others, style, ppu, extent):
+        """The sheet over the plane where the stencil says solid, cut by
+        every other plane, hidden by anything nearer."""
+        GL.glColorMask(True, True, True, True)
+        GL.glDepthMask(True)
+        GL.glEnable(GL.GL_DEPTH_TEST)
+        GL.glStencilFunc(GL.GL_NOTEQUAL, 0, 0xFF)
+        GL.glStencilOp(GL.GL_KEEP, GL.GL_KEEP, GL.GL_KEEP)
+        for k in range(_caps.MAX_PLANES):
+            (GL.glEnable if k < len(others) else GL.glDisable)(
+                GL.GL_CLIP_DISTANCE0 + k)
+        origin = np.asarray(plane.origin, float)
+        prog = self._cap_prog
+        self._use(prog)
+        GL.glUniformMatrix4fv(self._uloc(prog, "uMVP"), 1, GL.GL_TRUE,
+                              anchored(mvp, origin))
+        GL.glUniform3f(self._uloc(prog, "uU"), *plane.u)
+        GL.glUniform3f(self._uloc(prog, "uV"), *plane.v)
+        GL.glUniform1i(self._uloc(prog, "uClipCount"), len(others))
+        if others:
+            GL.glUniform4fv(self._uloc(prog, "uClips"), len(others),
+                            np.asarray(anchored_clips(others, origin),
+                                       np.float32))
+        period = _caps.hatch_period(style.spacing_mm, ppu)
+        pattern = style.pattern if period else _caps.PLAIN
+        GL.glUniform1i(self._uloc(prog, "uPattern"), pattern)
+        GL.glUniform1f(self._uloc(prog, "uPeriod"), period or 1.0)
+        GL.glUniform1f(self._uloc(prog, "uAngle"), style.angle)
+        GL.glUniform3f(self._uloc(prog, "uFill"), *style.fill)
+        GL.glUniform4f(self._uloc(prog, "uLine"), *style.line)
+        self._cap_quad.draw(extent)
 
     def _draw_point_markers(self, mvp, points, color, selected: bool,
                             anchor=None):
