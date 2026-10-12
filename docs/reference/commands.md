@@ -160,7 +160,8 @@ Commands that need a file open a filtered chooser by default. Append
 | `delete` (`del`, `erase`) | Delete |
 | `dir` | Show which way curves run and which way surfaces face. |
 | `explode` (`x`) | Explode |
-| `fillet` | Round two curves, or edges of a selected solid/surface. |
+| `fillet` | Round two curves in the plane they already lie on, or edges of a selected solid/surface. |
+| `filletcorners` | Round every corner of a polyline at once with one radius — straight and arc pieces both round. |
 | `flip` | Turn curves round and surfaces inside out, as Rhino's Flip does. |
 | `hide` | Hide |
 | `insertknot` (`insertcontrolpoint`) | Add a control point to a curve without moving the curve. |
@@ -258,7 +259,7 @@ Commands that need a file open a filtered chooser by default. Append
 | `cap` | Cap |
 | `chamferedge` (`che`) | Chamferedge |
 | `contour` | Contour |
-| `filletedge` (`fe`) | Fillet edges. Ctrl+Shift-click edges first to fillet only those; |
+| `filletedge` (`fe`) | Fillet edges. Ctrl+Shift-click edges first to fillet only those; the radius may be `start,end` or `u:r;u:r;…` for a variable law along the smooth chain, straight between points on request. |
 | `intersect` (`int`) | Intersect |
 | `mergeallcoplanarfaces` (`mergeallfaces`) | Fuse coplanar neighbouring faces of each selected polysurface. |
 | `pushpull` (`pp`, `moveface`) | SketchUp-style push/pull on a planar face. |

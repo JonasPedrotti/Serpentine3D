@@ -1,5 +1,93 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Variable-radius fillets swept over the whole smooth chain
+  (`filletedge`).** A radius used to be one number, or at best a
+  `start,end` pair applied edge by edge. Now `filletedge` takes
+  `u:r;u:r;…` — positions from 0 to 1 along the tangent chain the picked
+  edge belongs to, each with its own radius — and the kernel interpolates
+  the law across the entire chain, the way SolidWorks sweeps a
+  variable-radius fillet over one. `start,end` now varies along the whole
+  chain too, not each piece of it separately, and fewer than two points, a
+  position outside 0–1, or a non-positive radius is refused with a word
+  about which one. A chamfer keeps to a single distance and says so,
+  instead of dying in the bindings.
+
+- **Different sizes on different edges (`fillet_edges`).** The core
+  call takes `radii=[...]` — one constant size per picked edge, matched
+  in order, the way SolidWorks' constant fillets let neighbouring edges
+  take different sizes, and the way FreeCAD's Part fillet edits them.
+  A chamfer may take a distance per edge too. Where picked edges merge
+  into one tangent chain, the last of their radii rules it.
+
+- **The blamed edges stay selected.** When the kernel refuses a fillet,
+  the error now carries the edges it choked on, and `filletedge` keeps
+  exactly those selected after it reports — the culprits are already
+  highlighted, and the next radius is one number away.
+
+- **Straight or smooth between the radius points.** A variable fillet's
+  points were always joined by the kernel's own smooth interpolation;
+  `filletedge` now asks, and `fillet_edges` takes `transition=`, so
+  the radii can also run straight from point to point — SolidWorks' two
+  transition types for a variable fillet.
+
+- **Every corner of a polyline rounded at once (`filletcorners`).** A
+  rectangle took four passes of `fillet` and joins in between; the new
+  command takes one radius and rounds all the corners of a
+  straight-sided polyline in one pass. Closed ones come back closed and
+  open ones keep their ends, joints that are already smooth are left
+  alone, and a radius that would make two rounds overlap is refused
+  with the piece's number.
+
+- **A variable law may taper to zero at its ends.** A law point could
+  never take a zero radius; now the law's end points may — the blend
+  thins out to a knife edge the way SolidWorks' variable fillet tapers
+  at a chain's end. Interior points still need a positive radius, and
+  at least one end has to stay positive, with a word about which rule
+  was hit.
+
+- **`filletcorners` rounds arc corners too.** A polyline corner where a
+  straight piece meets an arc — or two arcs meet — used to be skipped
+  and only line-to-line corners rounded; now every corner of the
+  polyline rounds in the same pass, the piece between two rounds is
+  trimmed along its own arc when it has to be, and a radius that would
+  eat it backwards is refused with the piece's number, as before.
+
+### Changed
+
+- **A fillet never hands back a broken solid.** The kernel sometimes
+  reports success and still returns a shape that fails its own solid
+  checks — a radius wider than the plate it runs along left a body the
+  mesher and the printer both choke on. The blend now checks its result
+  before returning it, and a broken one is reported like any other
+  failure, with the advice to go smaller.
+
+- **A dirty input gets one repair pass.** An imported shape that fails
+  its solid checks used to make the blend die with whatever the kernel
+  said about it; now the shape is repaired (ShapeFix) and the blend is
+  retried on the repaired solid before the failure stands.
+
+- **The failure line names the way the blend died.** A chain whose
+  surface comes out twisted and one the blend could not walk along used
+  to share the generic "failed the blend" line; each now says which, so
+  a shallow-angle twist and a too-large radius read differently.
+
+- **`fillet` works in the plane the curves already live on.** Two curves
+  were filleted in world XY at the corner's height, so an L drawn on a
+  tilted construction plane came back as "radius too large or curves not
+  coplanar in XY". The plane now comes from the curves themselves — two
+  straight pieces span their own plane, and an arc donates its circle's
+  axis when the other edge lies in it — with the construction plane kept
+  as a hint for the pairs that leave it open.
+
+- **A fillet that does not fit names the largest one that does.** When the
+  kernel refuses a radius, `filletedge` bisects down from it and echoes
+  "the largest radius that fits is about 4.93" for that object, instead of
+  leaving "try a smaller value" as the whole conversation.
+
 ## 0.11.0 (2026-10-11)
 
 ### Added

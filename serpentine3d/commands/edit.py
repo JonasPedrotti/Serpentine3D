@@ -295,7 +295,8 @@ def cmd_fillet(ctx):
             return None
         try:
             return g.join_curves(list(
-                g.fillet_curves(a[0].shape, b[0].shape, r, corner)))
+                g.fillet_curves(a[0].shape, b[0].shape, r, corner,
+                                plane=ctx.cplane)))
         except g.GeometryError:
             return None
 
@@ -306,11 +307,30 @@ def cmd_fillet(ctx):
     if radius < 1e-9:
         ctx.echo("Zero radius — nothing filleted.")
         return
-    ea, arc, eb = g.fillet_curves(a[0].shape, b[0].shape, radius, corner)
+    ea, arc, eb = g.fillet_curves(a[0].shape, b[0].shape, radius, corner,
+                                  plane=ctx.cplane)
     joined = g.join_curves([ea, arc, eb])
     ctx.scene.remove(b[0].id)
     new = ctx.scene.replace_shape(a[0].id, joined)
     ctx.echo(f"Filleted into {new.name} (r={radius:g}).")
+
+
+@command("filletcorners")
+def cmd_filletcorners(ctx):
+    """Round every corner of a polyline at once, straight and arc pieces alike."""
+    from .solids_edit import _edge_size_req
+    objs = yield SelectReq("Select polyline to fillet every corner of",
+                           kinds=("curve",), max_count=1)
+    read, req = _edge_size_req(
+        ctx, objs, "Fillet radius (click, or type a number)",
+        lambda r: g.fillet_corners(objs[0].shape, r))
+    radius = read((yield req))
+    if radius < 1e-9:
+        ctx.echo("Zero radius — nothing filleted.")
+        return
+    new = ctx.scene.replace_shape(
+        objs[0].id, g.fillet_corners(objs[0].shape, radius))
+    ctx.echo(f"Rounded every corner of {new.name} (r={radius:g}).")
 
 
 @command("explode", aliases=("x",))
