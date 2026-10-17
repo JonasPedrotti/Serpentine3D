@@ -7,7 +7,7 @@ import signal
 import sys
 
 import numpy as np
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QDockWidget, QFileDialog, QInputDialog, QMainWindow,
@@ -2258,7 +2258,10 @@ class MainWindow(QMainWindow):
         self.cfg.save()
 
     def closeEvent(self, ev):
-        if self.dirty and self.scene.all():
+        if (self.dirty and self.scene.all()
+                and not getattr(self, "_restarting", False)):
+            # a scale restart saved or handed the work over already —
+            # restart_app sets the flag so the prompt cannot double-ask
             ret = QMessageBox.question(
                 self, "Unsaved changes",
                 "Save changes before closing?",
@@ -2318,6 +2321,41 @@ class MainWindow(QMainWindow):
             self.command_line.echo(
                 f"Recovered {len(self.scene.all())} object(s) from the "
                 "previous session's autosave.")
+            self.viewport.zoom_extents()
+            self._update_status()
+        except Exception as exc:                              # noqa: BLE001
+            QMessageBox.warning(self, "Recovery failed", str(exc))
+
+    def offer_handoff(self):
+        """Offer back unsaved work a scale restart handed over that no
+        session took up (the new one never got going). Called once the
+        command line's file is open, which is where a restart that worked
+        has already spent it."""
+        if os.environ.get("SERP3D_NO_RECOVER") == "1":
+            return
+        entry = self.autosave.waiting_handoff()
+        if entry is None:
+            return
+        import datetime
+        when = datetime.datetime.fromtimestamp(
+            entry["mtime"]).strftime("%H:%M")
+        doc = entry["doc_path"] or "an unsaved document"
+        ret = QMessageBox.question(
+            self, "Recover unsaved work?",
+            f"A restart at {when} kept unsaved changes to {doc}, but they "
+            "were never reopened.\n\nRestore them?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes:
+            self.autosave.discard_handoff()
+            return
+        try:
+            fileio.import_file(self.scene, entry["path"], replace=True)
+            self.ctx.current_path = entry["doc_path"]
+            self.autosave.set_doc_path(entry["doc_path"])
+            self.autosave.discard_handoff()
+            self.command_line.echo(
+                f"Recovered {len(self.scene.all())} object(s) a restart "
+                "had kept.")
             self.viewport.zoom_extents()
             self._update_status()
         except Exception as exc:                              # noqa: BLE001
@@ -3105,6 +3143,9 @@ def run_app(app, splash=None):
     app.setDesktopFileName("serpentine3d")
     app.setStyleSheet(theme.QSS)
 
+    # The saved interface font, on before any window is built.
+    theme.apply_saved_interface_font(app)
+
     if splash:
         splash.message("Preparing workspace…", 0.7)
     window = MainWindow()
@@ -3139,19 +3180,8 @@ def run_app(app, splash=None):
                       lambda: warn_if_opengl_failed(window, splash))
     window.offer_recovery()
 
-    for arg in app.arguments()[1:]:
-        if not arg.startswith("-") and os.path.exists(arg):
-            try:
-                fileio.import_file(window.scene, arg, replace=True)
-                if arg.endswith(".serp"):
-                    window.ctx.current_path = os.path.abspath(arg)
-                window.command_line.echo(
-                    f"Opened {arg}: {len(window.scene.all())} object(s).")
-                window.viewport.zoom_extents()
-                window.add_recent(arg)
-            except Exception as exc:                          # noqa: BLE001
-                window.command_line.echo(f"Could not open {arg}: {exc}")
-            break
+    _open_launch_args(window, app.arguments()[1:])
+    window.offer_handoff()
 
     from .ui.welcome import WelcomeScreen, should_show as _welcome
     if _welcome(window):
@@ -3161,6 +3191,105 @@ def run_app(app, splash=None):
         _offer_default_app(window)
     window.start_update_check()
     return app.exec()
+
+
+def _open_launch_args(window, args: list[str]):
+    """Open the first existing file the command line names: a double-
+    clicked document, `serp3d file.serp`, or a scale restart's handoff."""
+    for arg in args:
+        if not arg.startswith("-") and os.path.exists(arg):
+            try:
+                # a restart handoff is taken up on arrival: reopened under
+                # the name it was handed over with, and spent
+                handoff = None
+                if os.path.abspath(arg) == os.path.abspath(
+                        window.autosave.handoff_path):
+                    handoff = window.autosave.waiting_handoff()
+                fileio.import_file(window.scene, arg, replace=True)
+                if handoff is not None:
+                    window.ctx.current_path = handoff["doc_path"]
+                    window.autosave.discard_handoff()
+                    window.command_line.echo(
+                        "Restarted at the new interface scale. Unsaved "
+                        "changes were kept.")
+                else:
+                    if arg.endswith(".serp"):
+                        window.ctx.current_path = os.path.abspath(arg)
+                    window.command_line.echo(
+                        f"Opened {arg}: {len(window.scene.all())} object(s).")
+                window.viewport.zoom_extents()
+                if handoff is not None:
+                    if handoff["doc_path"]:
+                        window.add_recent(handoff["doc_path"])
+                else:
+                    # as from File → Open: what is on disk is what is
+                    # open; only a handoff's work is still unsaved
+                    window.mark_saved()
+                    window.add_recent(arg)
+            except Exception as exc:                          # noqa: BLE001
+                window.command_line.echo(f"Could not open {arg}: {exc}")
+            break
+
+
+def _restart_command() -> list[str]:
+    """The argv that starts this app again, wherever it runs from.
+
+    An AppImage names itself in $APPIMAGE, and re-running it reproduces
+    the whole environment. A frozen bundle without the variable is its
+    own executable. In development the interpreter runs the package
+    module directly.
+    """
+    bundle = os.environ.get("APPIMAGE")
+    if bundle:
+        return [bundle]
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    return [sys.executable, "-m", "serpentine3d"]
+
+
+def restart_app(window):
+    """Restart so a new interface scale takes effect, asking nothing.
+
+    Qt reads the scale factor only as the QApplication is built, so the
+    setting lands on the next process (launcher._apply_ui_scale). The
+    document survives as it is: a clean one reopens from disk, and one
+    with unsaved changes (even an emptied one, which reopening from disk
+    would undo) is handed over through the autosave folder and reopened
+    unsaved under its own name. The question, if any, was the Settings
+    page's to ask.
+    """
+    handoff = None
+    if window.dirty:
+        try:
+            handoff = window.autosave.hand_over(window.ctx.current_path)
+        except Exception:                                     # noqa: BLE001
+            window.command_line.echo(
+                "Could not keep the unsaved work for a restart, so "
+                "Serpentine3D was not restarted.")
+            return
+    _relaunch(window, handoff=handoff, origin=window.ctx.current_path)
+
+
+def _relaunch(window, handoff: str | None, origin: str | None):
+    """Spawn the next session and close this one.
+
+    No unsaved-changes prompt: the work is already on disk (saved, or
+    handed over). The child starts detached, before the close, so an
+    AppImage mount vanishing under this process cannot take it down.
+    """
+    cmd = _restart_command()
+    if handoff:
+        cmd += [handoff]
+    elif origin:
+        cmd += [origin]
+    if not QProcess.startDetached(cmd[0], cmd[1:]):
+        if handoff:
+            window.autosave.discard_handoff()   # this session keeps it
+        window.command_line.echo(
+            "Could not start Serpentine3D again, so it was not restarted.")
+        return
+    window._restarting = True
+    window.close()
 
 
 def main():

@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Interface scale and font (Settings → Display).** A scale slider,
+  100% to 150%, grows the whole interface (text, icons, panels), and an
+  interface-font picker (with the system default as a choice) applies
+  immediately. Both stick between sessions. The scale needs a restart,
+  so the page shows a live preview of the Properties panel at the
+  chosen size, marks the new scale "after restart", and the footer says
+  so beside **Restart now**. Closing the page with a new scale waiting
+  asks once: restart now, or keep it for the next launch. The restart
+  brings the open document back as it was, unsaved changes included,
+  and if the new session never gets going, the next launch offers that
+  work back. GitHub #74.
+
 - **Variable-radius fillets swept over the whole smooth chain
   (`filletedge`).** A radius used to be one number, or at best a
   `start,end` pair applied edge by edge. Now `filletedge` takes
@@ -87,6 +99,14 @@
   kernel refuses a radius, `filletedge` bisects down from it and echoes
   "the largest radius that fits is about 4.93" for that object, instead of
   leaving "try a smaller value" as the whole conversation.
+
+### Fixed
+
+- **A file opened by double-clicking it no longer asks to be saved.** A
+  document handed over on the command line (a double-click, `serp3d
+  file.serp`, or Open With) came up marked as changed, so closing it
+  untouched asked whether to save. It now starts saved, as it does from
+  File → Open.
 
 ## 0.11.0 (2026-10-11)
 
