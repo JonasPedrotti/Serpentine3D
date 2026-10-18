@@ -25,8 +25,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# xdist: the suite is 4,600 independent tests and one core ran them in
-# 21 minutes; -n auto does it in 77 seconds on sixteen.
+# xdist: the tests are independent, so they can run side by side
+# (CONTRIBUTING says how many at once).
 dev = ["pytest>=8.0", "pytest-xdist>=3.5"]
 docs = ["mkdocs>=1.6", "mkdocs-material>=9.5"]
 

@@ -27,8 +27,9 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         # -n auto: the tests are independent and each one brings its own
-        # settings, journal and autosave directories, so they run as wide
-        # as the runner has cores. One core takes twenty minutes.
+        # settings, journal and autosave directories, so they run one per
+        # core. Memory is the limit, not cores: each worker can pass 2 GB,
+        # which the standard runner's four cores and 16 GB hold.
         run: uv run pytest tests/ -q -n auto --ignore=tests/e2e_dod.py
 
   headless-smoke:

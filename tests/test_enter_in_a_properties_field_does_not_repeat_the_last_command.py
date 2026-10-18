@@ -146,11 +146,12 @@ def test_a_field_in_another_window_does_not_swallow_this_one_s_enter():
     """Whose cursor counts is this window's own.
 
     The check used to ask QApplication for the focus widget, which is the
-    application's, not the window's: anything else holding a cursor (a
-    floating panel, a second window, another test's leftovers) made this
-    window believe it was being typed in, and its viewport stopped
-    repeating the last command. It is also what kept the suite from
-    running its tests in parallel, where windows outlive each other.
+    application's, not the window's: a field holding a cursor in some
+    other window (another test's leftovers, say) made this window believe
+    it was being typed in when a key was sent straight to its viewport,
+    and the viewport stopped repeating the last command. It is also what
+    kept the suite from running its tests in parallel, where windows
+    outlive each other.
     """
     stray = QLineEdit()
     stray.show()
