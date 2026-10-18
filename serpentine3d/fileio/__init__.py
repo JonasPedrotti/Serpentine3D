@@ -365,6 +365,21 @@ _SINGLE_PRECISION = {".3dm": "Rhino mesh vertices",
                      ".stl": "STL coordinates"}
 
 
+def _written_as_a_mesh(obj) -> bool:
+    """Whether this object leaves as mesh vertices rather than as curves.
+
+    A curve goes into a .3dm as a NURBS curve, in full precision, and
+    into an STL not at all; a line hatch leaves as the curves it is drawn
+    with. Only what is tessellated meets the format's float32, so only
+    that is worth warning about.
+    """
+    if obj.kind == "curve":
+        return False
+    if obj.kind == "hatch":
+        return getattr(obj.shape, "pattern", "") == "solid"
+    return True
+
+
 def _precision_note(objs, ext) -> str | None:
     """What a single-precision format will do to a far model, or None."""
     import numpy as np
@@ -375,6 +390,8 @@ def _precision_note(objs, ext) -> str | None:
         return None
     reach = 0.0
     for o in objs:
+        if not _written_as_a_mesh(o):
+            continue
         try:
             mn, mx = o.bbox()
         except Exception:                                  # noqa: BLE001

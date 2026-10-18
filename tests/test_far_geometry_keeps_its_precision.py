@@ -18,12 +18,14 @@ survey is most of the file.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from serpentine3d.core import geometry as g
 from serpentine3d.core.mesh import MeshShape, mesh_to_display
 from serpentine3d.core.tessellate import tessellate
 from serpentine3d.ui import viewport as vp
-from serpentine3d.utils.math3d import ANCHOR_NEAR, display_coords
+from serpentine3d.utils.math3d import (display_coords,
+                                       double_precision_near)
 
 
 FAR = np.array([300000.0, 200000.0, 0.0])
@@ -42,11 +44,45 @@ def test_coordinates_near_home_stay_in_float32():
     assert out.dtype == np.float32
 
 
-def test_the_threshold_is_the_anchors_own():
-    inside = display_coords([[ANCHOR_NEAR, 0.0, 0.0]])
-    outside = display_coords([[ANCHOR_NEAR * 1.01, 0.0, 0.0]])
-    assert inside.dtype == np.float32
-    assert outside.dtype == np.float64
+def test_the_threshold_is_where_float32_gets_too_coarse_to_draw():
+    near = double_precision_near()
+    assert display_coords([[near * 0.99, 0.0, 0.0]]).dtype == np.float32
+    assert display_coords([[near * 1.01, 0.0, 0.0]]).dtype == np.float64
+
+
+def test_it_is_a_real_length_rather_than_a_bare_number():
+    """Eighty-four metres' worth of whatever the drawing is in: float32
+    steps ten microns there, and nothing is drawn finer than that."""
+    from serpentine3d.utils import units
+
+    try:
+        for unit, metres in (("mm", 83.9), ("m", 83.9), ("ft", 83.9)):
+            units.set_document_units(unit)
+            near = double_precision_near()
+            assert units.convert(near, unit, "m") == pytest.approx(
+                metres, rel=1e-2), unit
+            # float32's step doubles at each power of two rather than
+            # growing smoothly, so the promise is "no coarser than this
+            # up to here, coarser beyond it".
+            limit = units.convert(0.01, "mm", unit)
+            assert np.spacing(np.float32(near)) <= limit
+            assert np.spacing(np.float32(near * 2.0)) > limit
+    finally:
+        units.set_document_units("mm")
+
+
+def test_a_building_across_the_yard_is_not_far_away():
+    """The old threshold was 4096 units, four metres in a millimetre
+    drawing: a million-vertex mesh seven metres out doubled its display
+    arrays from 210MB to 420MB for precision nobody could see."""
+    from serpentine3d.utils import units
+
+    try:
+        units.set_document_units("mm")
+        pts = np.array([[5000.0, 7000.0, 0.0], [5000.004, 7000.0, 0.0]])
+        assert display_coords(pts).dtype == np.float32
+    finally:
+        units.set_document_units("mm")
 
 
 def test_one_far_corner_is_enough_to_keep_the_whole_array_double():

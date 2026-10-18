@@ -15,13 +15,34 @@ import math
 import numpy as np
 
 
-# How far from the origin float32 stops being a fine enough grid to hold a
-# coordinate on: at 100,000 units it steps 8mm, at a million 6cm. Data past
-# this keeps its doubles all the way to the GPU upload, where the viewport
-# subtracts an anchor near it and the cast to float32 loses nothing. Inside
-# it float32 is good to a fraction of a micron and costs half the memory,
-# which on a scanned survey is most of the file.
+# Where the viewport starts uploading a mesh relative to an anchor near
+# it rather than in the world's own numbers. Folding an anchor into a
+# matrix costs nothing, so this is set low and generously: at 4096 units
+# float32 still steps well under a micron, and anchoring earlier than it
+# has to loses nothing at all.
 ANCHOR_NEAR = 4096.0
+
+# How coarse float32 may get before the data itself has to keep its
+# doubles. Ten microns: finer than anything drawn by hand or measured by
+# a scanner, and the point past which a modelled detail starts landing on
+# the same grid node as its neighbour.
+STEP_LIMIT_MM = 0.01
+
+
+def double_precision_near() -> float:
+    """The coordinate past which float32 is too coarse to draw with.
+
+    Where float32's step reaches STEP_LIMIT_MM, in the document's own
+    units: about 84 metres' worth of them, so 84,000 in a millimetre
+    drawing and 84 in a metre one. Keeping doubles doubles the memory a
+    display mesh takes, and a million-vertex scan is 210MB of it, so the
+    question is asked about real length rather than about bare numbers:
+    a building five metres across the yard is not far away, however many
+    millimetres that is.
+    """
+    from .units import convert, document_units
+    limit = convert(STEP_LIMIT_MM, "mm", document_units())
+    return limit / float(np.spacing(np.float32(1.0)))
 
 
 def display_coords(points) -> np.ndarray:
@@ -36,7 +57,7 @@ def display_coords(points) -> np.ndarray:
     still reach a long way out, and the far end is the end that suffers.
     """
     arr = np.asarray(points, np.float64)
-    if arr.size and float(np.abs(arr).max()) > ANCHOR_NEAR:
+    if arr.size and float(np.abs(arr).max()) > double_precision_near():
         return np.ascontiguousarray(arr)
     return np.ascontiguousarray(arr, np.float32)
 

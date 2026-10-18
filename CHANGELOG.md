@@ -106,7 +106,8 @@
   are single precision whatever we hand them (Rhino `.3dm`, whose mesh
   vertices are float32, and STL) now says so, naming the grid the model
   will land on and suggesting STEP instead, rather than quietly
-  flattening the detail. On screen, the rubber band, a command's preview
+  flattening the detail; it is said about what is written as a mesh,
+  since a curve leaves a `.3dm` as a NURBS curve at full precision. On screen, the rubber band, a command's preview
   and a detail view on a sheet were each casting model points to float32
   before the anchor could subtract anything; they no longer do.
 
@@ -127,7 +128,21 @@
   clipping plane's cut lines read the same arrays, so they are exact out
   there too. Near the origin nothing changes: float32 is good to a
   fraction of a micron there and costs half the memory, which on a
-  scanned survey is most of the file.
+  scanned survey is most of the file. Where "near" ends is a real
+  length, not a bare number: doubles start where float32 steps more than
+  ten microns, about 84 metres' worth of whatever unit the drawing is
+  in, so a building across the yard is not far away however many
+  millimetres that is.
+
+- **A file holding far geometry says which release can read it.** The
+  offsets and their origin are new, and a reader that knows nothing of
+  them takes the offsets for the coordinates themselves: a mesh at
+  (500,000, 6,200,000) opened in 0.12.0 came back at the origin, with no
+  word that anything was wrong, and a save from there made it stick. A
+  drawing carrying an origin is written as file version 7 and names the
+  release that reads it, the way hatches and user text did; a drawing
+  near home is written exactly as before and opens in every release it
+  did before.
 
 ## 0.12.0 (2026-10-17)
 

@@ -214,6 +214,16 @@ def test_a_single_precision_format_says_what_it_will_do(tmp_path, suffix):
 
 
 @pytest.mark.parametrize("suffix", [".3dm", ".stl"])
+def test_nothing_is_said_about_curves_which_go_out_exactly(tmp_path, suffix):
+    """A .3dm takes a curve as a NURBS curve, in full precision, and an
+    STL does not take one at all. Neither meets the format's float32, so
+    neither is worth a warning."""
+    scene = Scene()
+    scene.add(g.make_circle(tuple(FAR), REVEAL, (0.0, 0.0, 1.0)), name="Arc")
+    assert export_file(scene, str(tmp_path / f"curves{suffix}")) is None
+
+
+@pytest.mark.parametrize("suffix", [".3dm", ".stl"])
 def test_the_same_formats_say_nothing_about_a_model_at_home(tmp_path, suffix):
     scene = Scene()
     scene.add(g.make_box((0.0, 0.0, 0.0), 10.0, 10.0, 10.0), name="Block")

@@ -37,6 +37,26 @@ _IN_FRAC = re.compile(
     rf"\s*(?:\"|in)\s*$")
 
 
+# The unit the open document is drawn in. The kernel cannot reach the
+# scene from inside a tessellation, and some of what it decides there is
+# about real lengths rather than bare numbers: whether float32 still
+# holds a micron out where this geometry sits, say. A Scene keeps this in
+# step with its own `units` (core/scene.py), the way core/tolerance.py
+# keeps the modelling tolerance.
+_DOC_UNITS = "mm"
+
+
+def document_units() -> str:
+    """The unit the open document is drawn in."""
+    return _DOC_UNITS
+
+
+def set_document_units(name: str):
+    global _DOC_UNITS
+    if name in TO_MM:
+        _DOC_UNITS = name
+
+
 def convert(value: float, from_units: str, to_units: str) -> float:
     return value * TO_MM[from_units] / TO_MM[to_units]
 
