@@ -2861,7 +2861,13 @@ class MainWindow(QMainWindow):
         return False
 
     def _text_editor_has_focus(self):
-        field = QApplication.focusWidget()
+        # This window's own focus, not the application's. In the app the
+        # two are the same widget, since a key only climbs to here from
+        # inside this window. A key sent straight to a widget, as a test
+        # sends it, is not: asking QApplication then let a field left
+        # focused in some other window swallow this one's Enter, and the
+        # viewport stopped repeating the last command.
+        field = self.focusWidget()
         return (isinstance(field, (QLineEdit, QPlainTextEdit, QTextEdit))
                 and not field.isReadOnly()
                 and field is not getattr(
