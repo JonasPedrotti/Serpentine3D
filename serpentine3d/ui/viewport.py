@@ -42,6 +42,39 @@ PICK_RADIUS_PX = 7.0
 # How nearly a face's plane must run along the sight line before a click
 # that misses it may try its edges instead: the sine of about six degrees.
 EDGE_ON_SLANT = 0.1
+
+
+def same_place_tolerance(depth: float) -> float:
+    """How near two hits have to be to count as the same place.
+
+    The document's own tolerance, since that is what "the same point"
+    means everywhere else in the program, and a hair of the distance
+    besides: a model far from the origin is measured in numbers with
+    fewer decimals to spare.
+    """
+    from ..core import tolerance
+    return max(tolerance.tol(), abs(float(depth)) * 1e-6)
+
+
+def ids_in_the_same_place(hits) -> list[str]:
+    """The ids at the front of `hits` that are all in the same place.
+
+    `hits` is what pick_hits gives back, nearest first. More than one of
+    them means a click cannot say which was meant: they are not one in
+    front of the other, they are in the same spot, and no camera angle
+    will separate them. One of them means the click has its answer.
+
+    A curve lying on a face is not this: the pick puts a curve a little
+    in front of what it lies on so that it can be taken at all, and that
+    nudge is bigger than this tolerance. It is an answer, not a question.
+    """
+    if not hits:
+        return []
+    first = hits[0][0]
+    tol = same_place_tolerance(first)
+    return [obj_id for depth, obj_id in hits if depth - first <= tol]
+
+
 # How long the left button has to sit still before the objects under it are
 # offered as a list instead of picked. Long enough that no ordinary click
 # ever reaches it, short enough that you do not wonder whether it is coming.
@@ -4267,11 +4300,18 @@ class Viewport(QOpenGLWidget):
             return None                 # a mesh, a cloud: no exact point
 
     def pick_objects(self, px: float, py: float) -> list[str]:
-        """Every object under the pixel, nearest first.
+        """Every object under the pixel, nearest first."""
+        return [obj_id for _depth, obj_id in self.pick_hits(px, py)]
+
+    def pick_hits(self, px: float, py: float) -> list[tuple[float, str]]:
+        """Every object under the pixel as (depth, id), nearest first.
 
         A click takes the first of these and always has. Holding the button
         still offers the whole list instead, so the thing behind the thing
-        in front is reachable without hiding half the scene first.
+        in front is reachable without hiding half the scene first. The
+        depths come out with it because two objects in the same place are
+        a different matter from one behind another, and only the numbers
+        tell them apart (see ids_in_the_same_place).
         """
         w, h = self.width(), self.height()
         eye = self._eye()
@@ -4351,7 +4391,7 @@ class Viewport(QOpenGLWidget):
                 found.append((depth, obj.id))
         # by depth alone, so objects at the same distance keep scene order
         found.sort(key=lambda d: d[0])
-        return [obj_id for _, obj_id in found]
+        return found
 
     # How many of a cloud's points a click or a band projects: enough that
     # a wall of points has one under the cursor, few enough to be instant.
@@ -4833,17 +4873,23 @@ class Viewport(QOpenGLWidget):
         if not self.point_mode:
             self._hold_timer.start()
 
-    def _offer_the_stack(self):
+    def _offer_the_stack(self, ids=None, pos=None, mods=None):
         """Open the object chooser, if there is anything to choose between.
 
         One object under the cursor is not a choice, so nothing happens and
         the release picks it the way it always did. That is what keeps a
         slow, deliberate click on a single object identical to a quick one.
+
+        The hold and Alt ask it about everything under the cursor. A plain
+        click asks it about what is in the same place, and hands that list
+        in rather than letting this one read the ray again.
         """
-        pos, mods = self._press_pos, self._hold_mods
+        if pos is None:
+            pos, mods = self._press_pos, self._hold_mods
         if pos is None or self._box_active or self.point_mode:
             return
-        ids = self.pick_objects(pos.x(), pos.y())
+        if ids is None:
+            ids = self.pick_objects(pos.x(), pos.y())
         if len(ids) < 2:
             return
         from .object_chooser import ObjectChooser, chooser_rows
@@ -4862,6 +4908,20 @@ class Viewport(QOpenGLWidget):
         # Down and to the right of the cursor, so that letting the button up
         # without moving lands in the gap rather than on the first row.
         menu.popup(self.mapToGlobal(pos.toPoint()) + QPoint(13, 11))
+
+    def _choices_in_the_same_place(self, hits) -> list[str]:
+        """The ids a plain click has to ask about, or an empty list.
+
+        Objects in the same place that all come to the same selection are
+        not a choice: a group answers for its members, so both rows would
+        do the same thing and the click may as well do it.
+        """
+        together = ids_in_the_same_place(hits)
+        if len(together) < 2:
+            return []
+        answers = {tuple(sorted(self.scene.expand_group_ids([i])))
+                   for i in together}
+        return together if len(answers) > 1 else []
 
     def _chooser_closed(self):
         self._chooser = None
@@ -5108,10 +5168,17 @@ class Viewport(QOpenGLWidget):
                     self.selection.toggle_subobject(*hit)
                     self.update()
                 return
-            picked = self.pick_object(pos.x(), pos.y())
-            if picked:
+            hits = self.pick_hits(pos.x(), pos.y())
+            together = self._choices_in_the_same_place(hits)
+            if together:
+                # Nothing a camera angle can separate, so the click cannot
+                # mean one of them rather than the other: ask, the way Alt
+                # and the hold do, without having to know about either.
+                self._offer_the_stack(together, pos, mods)
+                return
+            if hits:
                 self.last_click_px = (pos.x(), pos.y())
-                self.objectClicked.emit(picked, ev.modifiers())
+                self.objectClicked.emit(hits[0][1], ev.modifiers())
             else:
                 self.emptyClicked.emit(ev.modifiers())
 

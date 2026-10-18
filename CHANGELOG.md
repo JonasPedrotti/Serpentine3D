@@ -4,6 +4,20 @@
 
 ### Added
 
+- **Objects in the same place offer themselves on a click.** A duplicate
+  sitting exactly on top of another could only be told apart by holding
+  the button still or Alt-clicking, and nothing on screen said a second
+  one was there at all: one of them was unreachable until you knew the
+  trick. Now a plain click where two objects are in the same place opens
+  the chooser by itself. Only there. Something merely behind something
+  else is picked in front the way it always was, or a click in a full
+  drawing would be a menu every time, and a curve lying on a face still
+  goes to the curve, which the pick has always decided deliberately.
+  Objects that are in the same place but come to the same selection, a
+  group answering for its members, are not a choice and are not offered
+  as one. Holding the button still and Alt-click are untouched: they
+  reach what is behind, which is a different question.
+
 - **Hatch asks for its pattern, spacing and angle in one popup (#45).**
   What used to be three prompts one after another is a single window with
   the three together, so what the hatch is made of can be read off and
