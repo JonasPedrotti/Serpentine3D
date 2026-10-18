@@ -167,6 +167,30 @@ def test_the_number_box_can_hold_a_millimetre_spacing(_qapp):
         d.deleteLater()
 
 
+def test_a_number_shows_the_digits_it_has_and_no_more(_qapp):
+    """The box counts to seven places so a 4mm detail can be hatched;
+    a spacing of half a unit must not read as 0.5000 because of it."""
+    from serpentine3d.commands.base import FormField
+    from serpentine3d.ui.form_dialog import FormDialog
+
+    form = FormReq("Hatch", title="Hatch", fields=(
+        FormField("spacing", NumberReq("Line spacing", default=0.5,
+                                       minimum=1e-6)),
+        FormField("angle", NumberReq("Angle (degrees)", default=45.0)),
+        FormField("fine", NumberReq("Fine spacing", default=0.0002,
+                                    minimum=1e-6)),
+    ))
+    d = FormDialog(form)
+    try:
+        point = str(d._widgets["spacing"].locale().decimalPoint())
+        assert d._widgets["spacing"].text() == f"0{point}5"
+        assert d._widgets["angle"].text() == f"45{point}0"
+        assert d._widgets["fine"].text() == f"0{point}0002"
+        assert d.values()["fine"] == pytest.approx(0.0002)
+    finally:
+        d.deleteLater()
+
+
 def test_the_dialog_hands_back_what_it_was_left_showing(dialog):
     dialog._widgets["pattern"].setCurrentText("Solid")
     dialog._widgets["angle"].setValue(12.5)

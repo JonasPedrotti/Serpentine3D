@@ -22,6 +22,27 @@ from ..commands.base import NumberReq, OptionReq
 from .dialogs import untether
 
 
+class _NumberBox(QDoubleSpinBox):
+    """A spin box that counts as finely as the number needs without
+    showing the zeros that implies.
+
+    A hatch over a 4mm detail opens on a spacing of 0.0002, so the box
+    has to count to seven places; a spacing of 0.5 would then read as
+    0.5000, which is four invitations to wonder what they are for. One
+    digit after the point always stays, so a whole number still looks
+    like something you can type a fraction into.
+    """
+
+    def textFromValue(self, value: float) -> str:
+        text = super().textFromValue(value)
+        point = str(self.locale().decimalPoint())
+        if point and point in text:
+            text = text.rstrip("0")
+            if text.endswith(point):
+                text += "0"
+        return text
+
+
 def _decimals_for(default, minimum) -> int:
     """How finely a spin box has to count to hold this number.
 
@@ -72,7 +93,7 @@ class FormDialog(QDialog):
             box.currentTextChanged.connect(self._refresh_enabled)
             return box
         if isinstance(req, NumberReq):
-            spin = QDoubleSpinBox()
+            spin = _NumberBox()
             # Enough decimals for the number it opens on: a hatch over a
             # 4mm detail starts at a spacing of 0.0002, and a box with two
             # decimals would round that to nothing and refuse to hatch.
