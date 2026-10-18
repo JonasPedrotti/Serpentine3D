@@ -14,13 +14,13 @@ from __future__ import annotations
 import base64
 import json
 
-from ..core import geometry
+from ..core import geometry, user_text
 from ..core.layers import (DEFAULT_CUT_LINE_WIDTH, DEFAULT_SCREEN_WIDTH,
                            Layer, section_fill_dict)
 
 # The newest version this reader understands. Anything newer is refused
 # with the version it asks for, never a traceback.
-FORMAT_VERSION = 5
+FORMAT_VERSION = 6
 # What a document with none of the version-3 kinds is written as.
 PLAIN_VERSION = 2
 # The Serpentine3D release a version-3 file asks its reader to be.
@@ -99,7 +99,7 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
                  visible=obj.visible, locked=obj.locked, group=obj.group_id,
                  block=obj.block_id, color=obj.color, material=obj.material,
                  linetype=obj.linetype, draw_order=obj.draw_order,
-                 annotation=obj.annotation)
+                 annotation=obj.annotation, user_text=obj.user_text)
             for obj in scene.all() if obj.kind == "picture"], blobs),
         "block_defs": {
             bid: {
@@ -154,6 +154,8 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
                 "print_width": obj.print_width,
                 "section_fill": (dict(obj.section_fill)
                                  if obj.section_fill else None),
+                "user_text": (dict(obj.user_text) if obj.user_text
+                              else None),
                 "group": obj.group_id,
                 "block": obj.block_id,
                 "brep": (None if obj.kind == "mesh" else
@@ -195,6 +197,11 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
     if any(isinstance(shape, HatchShape) for shape in new_shapes):
         doc["version"] = 5
         doc["requires"] = "0.10.5"
+    # A release before user text opens the file and drops every key without
+    # a word, and a save there loses them for good.
+    if any(obj.user_text for obj in scene.all()):
+        doc["version"] = 6
+        doc["requires"] = "0.12.1"
     _write_container(doc, path, thumbnail, blobs)
 
 
@@ -266,6 +273,8 @@ def _cloud_to_json(obj, blobs: dict) -> dict:
         entry["color"] = list(obj.color)
     if obj.locked:
         entry["locked"] = True
+    if obj.user_text:
+        entry["user_text"] = dict(obj.user_text)
     return entry
 
 
@@ -287,7 +296,7 @@ def load_scene(scene, path: str):
 
 _CARRIED_FIELDS = ("visible", "locked", "group_id", "block_id", "color",
                    "material", "clip_plane", "annotation", "linetype",
-                   "draw_order", "print_width", "section_fill")
+                   "draw_order", "print_width", "section_fill", "user_text")
 
 
 def merge_scene(scene, path: str) -> int:
@@ -463,6 +472,7 @@ def _load_doc(scene, doc: dict, blobs=None):
                      block_id=plane.get("block"), color=plane.get("color"),
                      material=plane.get("material"),
                      annotation=plane.get("annotation"),
+                     user_text=user_text.cleaned(plane.get("user_text")),
                      linetype=plane.get("linetype", "ByLayer"),
                      draw_order=plane.get("draw_order", 0))
     for bid, bd in doc.get("block_defs", {}).items():
@@ -509,6 +519,9 @@ def _load_doc(scene, doc: dict, blobs=None):
                 k: v for k, v in od["section_fill"].items()
                 if k in ("pattern", "angle", "spacing", "color",
                          "cut_line_width", "cut_line_color")})
+        text = user_text.cleaned(od.get("user_text"))
+        if text:
+            updates["user_text"] = text
         if od.get("locked"):
             updates["locked"] = True
         if od.get("group"):
@@ -533,6 +546,9 @@ def _load_doc(scene, doc: dict, blobs=None):
             updates["color"] = tuple(cd["color"])
         if cd.get("locked"):
             updates["locked"] = True
+        text = user_text.cleaned(cd.get("user_text"))
+        if text:
+            updates["user_text"] = text
         if updates:
             scene.update(obj.id, **updates)
 

@@ -12,7 +12,7 @@ Commands that need a file open a filtered chooser by default. Append
 | `booleandifference` (`difference`, `bd`) | Booleandifference |
 | `booleanintersection` (`intersection`, `bi`) | Booleanintersection |
 | `booleanunion` (`union`, `bu`) | Booleanunion |
-| `curveboolean` (`curvebool`) | Closed curves around the regions of overlapping planar curves. |
+| `curveboolean` (`curvebool`) | Closed curves around the regions of overlapping planar curves. KeepObjects leaves the curves it worked from in place. |
 
 ## Camera
 
@@ -141,7 +141,7 @@ Commands that need a file open a filtered chooser by default. Append
 | `exportdxf` | Export the active layout sheet (or the model) to DXF. |
 | `exportpdf` (`pdf`) | Exportpdf |
 | `exportsvg` | Exportsvg |
-| `hatch` | Fill a region with a pattern, on a sheet or in the model, starting from its layer's hatch. |
+| `hatch` | Fill a region with a pattern, on a sheet or in the model, starting from its layer's hatch. Curves that cross ask which of the regions they make to fill (All, or Alt+A, for every one). |
 | `layout` | Layout |
 | `leader` | Leader |
 | `make2d` | Make2d |
@@ -214,6 +214,7 @@ Commands that need a file open a filtered chooser by default. Append
 | `bringtofront` (`bf`) | Draw the selected objects on top of overlapping ones. |
 | `changelayer` (`tolayer`) | Move objects to a layer by name (created if missing). |
 | `count` | Count objects: totals by block, kind and layer (for takeoffs). |
+| `getusertext` | Report the user text on the selected objects, as Rhino's GetUserText does: one key's value, or with Enter every key. |
 | `group` | Group objects and keep them selected. |
 | `insert` | Insert |
 | `linetype` (`lt`, `setlinetype`) | Set the dash style of selected objects (Continuous/Dashed/…/ByLayer). |
@@ -227,6 +228,7 @@ Commands that need a file open a filtered chooser by default. Append
 | `sectionhatch` (`sectionstyle`) | Set how a section cut through selected objects is filled. |
 | `sendbackward` (`sendbackwards`) | Nudge the selected objects one step towards the back. |
 | `sendtoback` (`sb`) | Draw the selected objects behind overlapping ones. |
+| `setusertext` (`setattributeusertext`) | Set a key of user text on the selected objects, as Rhino's SetUserText does. |
 | `ungroup` | Ungroup objects and keep them selected. |
 | `unlockall` (`unlock`) | Unlockall |
 | `what` | Report details of the selected objects. |
