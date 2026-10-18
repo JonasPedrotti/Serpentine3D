@@ -198,3 +198,68 @@ def test_the_dialog_hands_back_what_it_was_left_showing(dialog):
     values = dialog.values()
     assert values["pattern"] == "Solid"
     assert values["angle"] == pytest.approx(12.5)
+
+
+# -- in the window -----------------------------------------------------------
+
+@pytest.fixture
+def window(_qapp, monkeypatch):
+    """A main window whose hatch popup records itself instead of blocking,
+    and answers OK with whatever it is showing."""
+    from PySide6.QtWidgets import QApplication, QDialog
+
+    from serpentine3d.app import MainWindow
+    from serpentine3d.ui import form_dialog
+
+    shown = []
+
+    def _exec(dialog):
+        shown.append(dialog.values())
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(form_dialog.FormDialog, "exec", _exec)
+    w = MainWindow()
+    w.shown_forms = shown
+    yield w
+    w.mark_saved()
+    w.close()
+    QApplication.processEvents()
+
+
+def _hatch_held_square(w, typed=""):
+    from PySide6.QtWidgets import QApplication
+
+    outline = w.scene.add(_square(), name="Outline")
+    w.selection.set([outline.id])
+    w.processor.run(f"hatch {typed}".strip())
+    QApplication.processEvents()        # the turn the popup waits for
+    return [o for o in w.scene.all() if o.kind == "hatch"]
+
+
+def test_answers_typed_after_the_command_name_are_not_overruled(window):
+    """`hatch Solid` means solid. The popup used to open before the typed
+    answer was read, showing the layer's pattern, and OK made that."""
+    hatches = _hatch_held_square(window, "Solid")
+
+    assert [h.shape.pattern for h in hatches] == ["solid"]
+    assert window.shown_forms == [], "the answer was typed, nothing to ask"
+
+
+def test_a_partly_typed_form_carries_on_at_the_prompt(window):
+    """Someone who typed the pattern is typing: the popup would open on
+    the layer's pattern again, so the rest is asked where they are."""
+    hatches = _hatch_held_square(window, "Cross")
+
+    assert hatches == []
+    assert window.shown_forms == []
+    assert window.processor.busy
+    assert "spacing" in window.processor.request.prompt.lower()
+    window.processor.cancel()
+
+
+def test_with_nothing_typed_the_popup_asks(window):
+    hatches = _hatch_held_square(window)
+
+    assert len(window.shown_forms) == 1
+    assert [h.shape.pattern for h in hatches] == [
+        window.shown_forms[0]["pattern"].lower()]

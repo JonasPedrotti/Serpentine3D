@@ -11,10 +11,11 @@
   greys out the spacing and the angle, which it has no use for. Nothing
   that answered the prompts stops working: without a window, in a macro,
   a script, an MCP call or a journal replay, the same three questions are
-  asked in the same order as before. The area about to be filled is
-  ghosted while the question stands, the way the regions are while they
-  are being picked, so a hatch is never chosen for an area you cannot
-  see.
+  asked in the same order as before, and an answer typed after the
+  command's name (`hatch Solid`) is taken as typed, with the popup left
+  closed. The area about to be filled is ghosted while the question
+  stands, the way the regions are while they are being picked, so a
+  hatch is never chosen for an area you cannot see.
 
 - **Boundary mode for Hatch (#45).** Two outlines running through each
   other leave regions nobody can guess at, so Hatch asks which of them to

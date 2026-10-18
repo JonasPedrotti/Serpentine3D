@@ -72,6 +72,21 @@ def test_curves_lying_apart_are_each_filled_without_asking(env):
     assert len(_hatches(scene)) == 2, "nothing to decide, so nothing asked"
 
 
+def test_many_curves_lying_apart_are_still_filled_without_asking(env):
+    """However many there are: a sheet of separate outlines is as obvious
+    as two of them, and was filled straight away before boundary mode."""
+    scene, _sel, _hist, _ctx, proc = env
+    squares = [scene.add(_square(10.0, corner=(20.0 * i, 0.0)), name=f"S{i}")
+               for i in range(20)]
+
+    proc.run("hatch")
+    _pick(proc, *squares)
+    assert "region" not in proc.request.prompt.lower(), proc.request.prompt
+    proc.provide_text("Solid")
+
+    assert len(_hatches(scene)) == 20
+
+
 def test_a_curve_inside_another_is_its_hole_without_asking(env):
     scene, _sel, _hist, _ctx, proc = env
     outer = scene.add(_square(10.0), name="Outline")

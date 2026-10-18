@@ -657,12 +657,6 @@ def _hatch_in_the_model(ctx):
                  f"placed ({pattern}).")
 
 
-# Past this many curves the overlap test costs more than the question it
-# saves, and a pick of that size is a drawing someone wants to choose from
-# anyway.
-_OVERLAP_LIMIT = 12
-
-
 def _curves_overlap(curves) -> bool:
     """Whether any two of these outlines cross, so there is a choice.
 
@@ -671,12 +665,14 @@ def _curves_overlap(curves) -> bool:
     curve inside another is its hole, which is what the command has
     always done and what Rhino does; it is two outlines running through
     each other that leave regions nobody can guess at.
+
+    Only pairs whose boxes meet are intersected, so a sheet of separate
+    outlines costs a box comparison per pair rather than a boolean, and
+    is filled without asking however many outlines it has.
     """
     if len(curves) < 2:
         return False
-    if len(curves) > _OVERLAP_LIMIT:
-        return True
-    faces, areas = [], []
+    faces, areas, boxes = [], [], []
     for obj in curves:
         try:
             face = g.planar_face(obj.shape)
@@ -684,19 +680,24 @@ def _curves_overlap(curves) -> bool:
             return True            # cannot tell: let the pick decide
         faces.append(face)
         areas.append(g.surface_area(face))
-    for i in range(len(faces)):
-        for j in range(i + 1, len(faces)):
-            try:
-                common = g.surface_area(
-                    g.boolean_intersection(faces[i], faces[j]))
-            except (g.GeometryError, Exception):      # noqa: BLE001
-                continue           # they do not meet at all
-            if common <= g.tol():
-                continue           # apart, or touching along an edge
-            # Sharing all of one of them is nesting, not crossing.
-            if (abs(common - areas[i]) > g.tol()
-                    and abs(common - areas[j]) > g.tol()):
-                return True
+        boxes.append(g.bbox(face))
+    lo, hi = np.array(boxes, float).transpose(1, 0, 2)
+    tol = g.tol()
+    # Every pair's boxes at once. Inclusive, so a flat box (every curve on
+    # z=0 has one) still meets the boxes beside it on its own plane.
+    meet = np.all((lo[:, None] <= hi[None] + tol)
+                  & (lo[None] <= hi[:, None] + tol), axis=2)
+    for i, j in zip(*np.nonzero(np.triu(meet, k=1))):
+        try:
+            common = g.surface_area(
+                g.boolean_intersection(faces[i], faces[j]))
+        except (g.GeometryError, Exception):          # noqa: BLE001
+            continue               # they do not meet at all
+        if common <= tol:
+            continue               # apart, or touching along an edge
+        # Sharing all of one of them is nesting, not crossing.
+        if abs(common - areas[i]) > tol and abs(common - areas[j]) > tol:
+            return True
     return False
 
 

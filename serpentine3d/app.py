@@ -239,6 +239,7 @@ class MainWindow(QMainWindow):
         self._cursor_preview = None
         self._file_picker_open = False
         self._form_dialog_open = False
+        self._offered_form = None
         self.ctx.add_echo_listener(self.command_line.echo)
         self.processor.add_listener(self._sync_command_state)
         self.processor.add_listener(self._resume_dropped_imports)
@@ -1520,11 +1521,26 @@ class MainWindow(QMainWindow):
         runs; what the popup adds is seeing the answers together. OK
         answers the whole form, Cancel cancels the command, as closing a
         file picker does.
+
+        It opens on the next turn of the event loop, not from in here.
+        `hatch Solid` feeds its answer straight after the command starts,
+        and a popup opened now would be up before the answer arrived,
+        showing the layer's pattern for OK to make instead. Waiting lets
+        typed answers win: one that moves the form on, or finishes it,
+        means someone is typing, and the rest is asked at the prompt.
         """
         form = self.processor.form
-        if (form is None or self.processor.headless
-                or self._form_dialog_open or not self.processor.busy
+        if (form is None or form is self._offered_form
+                or self.processor.headless or not self.processor.busy
                 or self.processor.request is not req):
+            return
+        self._offered_form = form
+        QTimer.singleShot(0, self, lambda: self._show_form(form, req))
+
+    def _show_form(self, form, req):
+        """The popup `_offer_form` waited a turn to open."""
+        if (self.processor.form is not form or self.processor.request is not req
+                or self._form_dialog_open or not self.processor.busy):
             return
         from .ui.form_dialog import FormDialog
         self._form_dialog_open = True
