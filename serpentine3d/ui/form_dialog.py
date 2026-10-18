@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFormLayout, QLabel, QLineEdit,
                                QVBoxLayout)
@@ -61,6 +62,10 @@ class FormDialog(QDialog):
     def __init__(self, form, parent=None):
         super().__init__(parent)
         self.setWindowTitle(form.title or form.prompt or "Options")
+        # No icon beside the title: a window inherits the application's,
+        # and a few options asked about what is already on screen are not
+        # a second program to be told apart from the first.
+        self.setWindowIcon(QIcon())
         untether(self, over=parent)
         self.form = form
         self._widgets: dict = {}
