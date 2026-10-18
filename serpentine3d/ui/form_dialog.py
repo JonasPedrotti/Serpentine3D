@@ -13,7 +13,9 @@ Cancelling the popup cancels the command, as closing a file picker does.
 from __future__ import annotations
 
 import math
+import sys
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFormLayout, QLabel, QLineEdit,
@@ -62,10 +64,16 @@ class FormDialog(QDialog):
     def __init__(self, form, parent=None):
         super().__init__(parent)
         self.setWindowTitle(form.title or form.prompt or "Options")
-        # No icon beside the title: a window inherits the application's,
-        # and a few options asked about what is already on screen are not
-        # a second program to be told apart from the first.
+        # No icon beside the title: a few options asked about what is
+        # already on screen are not a second program to be told apart
+        # from the first. An empty icon is not enough on Windows, which
+        # falls back to the window class's own; a tool window has no icon
+        # to fall back to, and its slimmer title bar suits a popup this
+        # small anyway. Linux keeps the plain window `untether` wants,
+        # which is what gets it out of GNOME's attached-dialog grip.
         self.setWindowIcon(QIcon())
+        if sys.platform.startswith("win"):
+            self.setWindowFlag(Qt.WindowType.Tool, True)
         untether(self, over=parent)
         self.form = form
         self._widgets: dict = {}
