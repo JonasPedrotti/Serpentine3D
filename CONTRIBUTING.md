@@ -21,10 +21,16 @@ to compile.
 ## Running the tests
 
 ```bash
-.venv/bin/pytest                          # the whole suite
-QT_QPA_PLATFORM=offscreen .venv/bin/pytest   # headless (what CI does)
-.venv/bin/pytest tests/test_commands.py -k fillet   # one area
+.venv/bin/pytest -n auto                  # the whole suite, every core
+QT_QPA_PLATFORM=offscreen .venv/bin/pytest -n auto   # headless (what CI does)
+.venv/bin/pytest tests/test_commands.py -k fillet    # one area
 ```
+
+The suite is some 4,600 independent tests, and each one brings its own
+settings, journal and autosave directories, so `-n auto` spreads them
+over every core: twenty-one minutes on one, seventy-seven seconds on
+sixteen. Leave it off when you suspect one test is leaving something
+behind for the next, which is the one thing running them apart can hide.
 
 CI runs the suite on Python 3.12 plus a `serp3d-batch` smoke test.
 PRs need green CI; if you change behaviour, add or update a test that

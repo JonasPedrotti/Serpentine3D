@@ -26,7 +26,10 @@ jobs:
       - name: Unit tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: uv run pytest tests/ -q --ignore=tests/e2e_dod.py
+        # -n auto: the tests are independent and each one brings its own
+        # settings, journal and autosave directories, so they run as wide
+        # as the runner has cores. One core takes twenty minutes.
+        run: uv run pytest tests/ -q -n auto --ignore=tests/e2e_dod.py
 
   headless-smoke:
     runs-on: ubuntu-latest

@@ -2861,7 +2861,13 @@ class MainWindow(QMainWindow):
         return False
 
     def _text_editor_has_focus(self):
-        field = QApplication.focusWidget()
+        # This window's own focus, not the application's. A field being
+        # typed in somewhere else (a floating panel, a second window) is
+        # not what the key that reached this window was aimed at, and
+        # asking QApplication let one window's editor swallow another
+        # window's Enter: the viewport stopped repeating the last command
+        # whenever anything else held a cursor.
+        field = self.focusWidget()
         return (isinstance(field, (QLineEdit, QPlainTextEdit, QTextEdit))
                 and not field.isReadOnly()
                 and field is not getattr(
