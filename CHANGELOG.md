@@ -42,6 +42,37 @@
   the rest of the drawing is set out from. The default is what it always
   did.
 
+- **Rhino's Attribute User Text is kept.** The keys and values an object
+  carries in a .3dm were dropped on import, so a round trip through
+  Serpentine3D lost a drawing's part numbers, rooms and schedule data for
+  good. They now come in with each object, hidden ones included, and from
+  the parallel importer as from the plain one; a .serp keeps them; and
+  .3dm export writes them back in the order they came. A placed block
+  arrives as its pieces, so each piece keeps its own keys and takes any it
+  lacks from the block that placed it. Properties lists them under User
+  text, a table where you add, rename, change and remove pairs as in
+  Rhino's panel, each edit one undo step. Clearing a value takes its key
+  away and keys match whatever their case, both as in Rhino, and Delete in
+  the table takes the picked pair away, not the object. `setusertext` and
+  `getusertext` do the same from the command line, and `scene_info` reports
+  them to scripts and assistants. A .serp holding user text asks for this
+  release or newer, since an older one would open it and drop the keys
+  without a word; a file with none opens in every release it did before.
+  Asked for on the forum.
+
+### Changed
+
+- A picked row in a table (User text, and the settings dialog's aliases
+  and shortcuts) shows in the theme's gold rather than the system's blue.
+
+### Fixed
+
+- **Both pieces of a hidden object keep its look.** A hidden .3dm object
+  that converts to two pieces, a sewn solid and the faces that would not
+  sew, gave the second piece none of the object's colour or material once
+  it was shown, though a file opened with it showing gave both. Now it
+  gets them, and the object's user text.
+
 ## 0.12.0 (2026-10-17)
 
 ### Added
