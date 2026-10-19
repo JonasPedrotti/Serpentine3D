@@ -240,3 +240,76 @@ def test_curves_named_rather_than_clicked_take_the_nearest_corner(env):
     assert len(curves) == 1
     assert g.curve_length(curves[0].shape) == pytest.approx(
         16 + math.pi, rel=1e-3)
+
+
+# -- polylines keep the rest of themselves ---------------------------------
+
+def _two_polylines(scene):
+    """Two three-piece polylines whose last pieces make a corner.
+
+    Across runs 0,20 -> 0,10 -> 5,0 -> 15,0, Up runs 20,0 -> 20,10, with
+    a long tail behind each: filleting the corner at (20, 0) has no claim
+    on anything but the piece it is made in.
+    """
+    a = scene.add(g.make_polyline([(0.0, 20.0, 0.0), (0.0, 10.0, 0.0),
+                                   (5.0, 0.0, 0.0), (15.0, 0.0, 0.0)]),
+                  name="Across")
+    b = scene.add(g.make_polyline([(20.0, 20.0, 0.0), (20.0, 15.0, 0.0),
+                                   (20.0, 0.0, 0.0)]), name="Up")
+    return a, b
+
+
+def test_a_polyline_keeps_the_pieces_the_corner_never_touched(env):
+    """Both are carried out to (20, 0) and rounded there, and everything
+    drawn behind that corner is still there afterwards."""
+    scene, _sel, _hist, _ctx, proc = env
+    a, b = _two_polylines(scene)
+    before = _length(scene)
+    proc.run("fillet")
+    proc.provide_text("2")
+    proc.click_object(a.id, at=(14.0, 0.0, 0.0))
+    proc.click_object(b.id, at=(20.0, 1.0, 0.0))
+
+    curves = _curves(scene)
+    assert len(curves) == 1, "the two polylines joined into one curve"
+    # the tails are untouched, the two clicked pieces reach the corner,
+    # and the arc cuts 2 off each leg in exchange for a quarter circle
+    grown = (20.0 - 15.0) + (20.0 - 0.0) - 20.0
+    assert g.curve_length(curves[0].shape) == pytest.approx(
+        before + grown - 4 + math.pi, rel=1e-3), \
+        "a fillet dropped part of a polyline nobody picked"
+
+
+def test_a_sharp_corner_keeps_them_too(env):
+    scene, _sel, _hist, _ctx, proc = env
+    a, b = _two_polylines(scene)
+    before = _length(scene)
+    proc.run("fillet")
+    proc.click_object(a.id, at=(14.0, 0.0, 0.0))
+    proc.click_object(b.id, at=(20.0, 1.0, 0.0))
+
+    curves = _curves(scene)
+    assert len(curves) == 1
+    assert g.curve_length(curves[0].shape) == pytest.approx(
+        before + 5.0, rel=1e-6), \
+        "both clicked pieces carried out to (20, 0), the tails left alone"
+
+
+def test_what_lies_past_the_corner_is_what_the_trim_takes(env):
+    """A piece in the middle of a polyline is cut at the corner, so what
+    hangs off its other side goes with the cut: that is what trimming a
+    curve to a corner means, and the clicks say which side is kept."""
+    scene, _sel, _hist, _ctx, proc = env
+    a = scene.add(g.make_polyline([(0.0, 0.0, 0.0), (20.0, 0.0, 0.0),
+                                   (20.0, -5.0, 0.0)]), name="Across")
+    b = scene.add(g.make_line((10.0, 0.0, 0.0), (10.0, 10.0, 0.0)),
+                  name="Up")
+    proc.run("fillet")
+    proc.click_object(a.id, at=(2.0, 0.0, 0.0))     # the side to keep
+    proc.click_object(b.id, at=(10.0, 8.0, 0.0))
+
+    curves = _curves(scene)
+    assert len(curves) == 1
+    assert g.curve_length(curves[0].shape) == pytest.approx(
+        20.0, rel=1e-6), \
+        "ten across to the corner and ten up, the rest trimmed away"

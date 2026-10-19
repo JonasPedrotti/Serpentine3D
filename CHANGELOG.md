@@ -87,9 +87,13 @@
   it was shown, though a file opened with it showing gave both. Now it
   gets them, and the object's user text.
 
-- **Fillet no longer fails on a polyline.** Picking a curve made of more
-  than one piece raised `Standard_TypeMismatch: TopoDS::Edge`; the piece
-  nearest the pick is the one filleted. Where the kernel rounds a
+- **Fillet no longer fails on a polyline, or eats the rest of it.**
+  Picking a curve made of more than one piece raised
+  `Standard_TypeMismatch: TopoDS::Edge`; the piece nearest the pick is
+  the one filleted, and everything else the polyline is made of comes
+  through the fillet untouched instead of being dropped. What lay past
+  the corner on the side nobody picked is what the trim takes, as it is
+  for a single curve. Where the kernel rounds a
   crossing on the side nobody picked, only its arc is taken and both
   curves are cut to the corner, so what is kept is what was clicked.
 

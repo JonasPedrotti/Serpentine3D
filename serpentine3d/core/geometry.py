@@ -828,8 +828,9 @@ def fillet_curves(edge_a, edge_b, radius: float, near: Point,
     # A polyline is a wire: the corner is made in the edge that was
     # clicked, which is what `near` says.
     here_b = near if near_b is None else near_b
-    ea = occ.to_edge(edge_near(edge_a, near))
-    eb = occ.to_edge(edge_near(edge_b, here_b))
+    clicked_a = occ.to_edge(edge_near(edge_a, near))
+    clicked_b = occ.to_edge(edge_near(edge_b, here_b))
+    ea, eb = clicked_a, clicked_b
     normal = _curve_plane_normal(ea, eb)
     if normal is None and plane is not None:
         n = getattr(plane, "normal", plane)
@@ -871,7 +872,45 @@ def fillet_curves(edge_a, edge_b, radius: float, near: Point,
                             _far_end(ea, at))
     eb_cut = _cut_to_corner(eb, BRep_Tool.Curve_s(eb, 0.0, 0.0), for_b,
                             _far_end(eb, at))
-    return ea_cut, arc, eb_cut
+    return (_with_the_rest(edge_a, clicked_a, ea_cut, for_a), arc,
+            _with_the_rest(edge_b, clicked_b, eb_cut, for_b))
+
+
+def _with_the_rest(curve, clicked, cut, corner: Point):
+    """The cut piece, carrying whatever else the curve is made of.
+
+    Only one piece of a polyline makes the corner, and the others were
+    drawn by somebody: the fillet has no business throwing them away.
+    What lay the other side of the corner is gone, since that is the
+    part the corner cut off, so the rest is gathered by walking out from
+    the end the cut piece keeps.
+    """
+    rest = _edges_through(curve, clicked, _far_end(cut, corner))
+    if not rest:
+        return cut
+    try:
+        return join_curves([cut] + rest)
+    except GeometryError:
+        return cut
+
+
+def _edges_through(curve, clicked, at: Point) -> list:
+    """The edges of `curve`, bar `clicked`, that hang off the point `at`."""
+    import numpy as np
+
+    rest = [e for e in edges_of(curve) if not e.IsSame(clicked)]
+    found, front = [], [np.asarray(at, float)]
+    while front and rest:
+        here = front.pop()
+        for edge in list(rest):
+            ends = [np.asarray(q, float) for q in _curve_ends(edge)]
+            hit = next((i for i, q in enumerate(ends)
+                        if float(np.linalg.norm(q - here)) <= tol()), None)
+            if hit is not None:
+                rest.remove(edge)
+                found.append(edge)
+                front.append(ends[1 - hit])
+    return found
 
 
 def _far_end(edge, corner: Point) -> Point:
@@ -1005,8 +1044,10 @@ def corner_curves(edge_a, edge_b, near_a: Point, near_b: Point) -> tuple:
             best, best_d = here, d
     if best is None:
         raise GeometryError("Those curves do not cross, even extended")
-    return (_cut_to_corner(ea, ca, best, near_a),
-            _cut_to_corner(eb, cb, best, near_b))
+    return (_with_the_rest(edge_a, ea, _cut_to_corner(ea, ca, best, near_a),
+                           best),
+            _with_the_rest(edge_b, eb, _cut_to_corner(eb, cb, best, near_b),
+                           best))
 
 
 def _cut_to_corner(edge, carrier, corner, near: Point):
