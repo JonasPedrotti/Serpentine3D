@@ -22,46 +22,6 @@ import numpy as np
 # has to loses nothing at all.
 ANCHOR_NEAR = 4096.0
 
-# How coarse float32 may get before the data itself has to keep its
-# doubles. Ten microns: finer than anything drawn by hand or measured by
-# a scanner, and the point past which a modelled detail starts landing on
-# the same grid node as its neighbour.
-STEP_LIMIT_MM = 0.01
-
-
-def double_precision_near() -> float:
-    """The coordinate past which float32 is too coarse to draw with.
-
-    Where float32's step reaches STEP_LIMIT_MM, in the document's own
-    units: about 84 metres' worth of them, so 84,000 in a millimetre
-    drawing and 84 in a metre one. Keeping doubles doubles the memory a
-    display mesh takes, and a million-vertex scan is 210MB of it, so the
-    question is asked about real length rather than about bare numbers:
-    a building five metres across the yard is not far away, however many
-    millimetres that is.
-    """
-    from .units import convert, document_units
-    limit = convert(STEP_LIMIT_MM, "mm", document_units())
-    return limit / float(np.spacing(np.float32(1.0)))
-
-
-def display_coords(points) -> np.ndarray:
-    """Coordinates for display, in the narrowest precision that holds them.
-
-    An anchor can only recover digits the data still has, so a tessellation
-    that casts to float32 on the way out of the kernel has already thrown
-    away what the anchor was for: a 5mm detail of a building at survey
-    coordinates lands on the same grid point as its neighbour and the two
-    faces fight over every pixel. The test is on the coordinates themselves
-    rather than on where their middle is: a mesh centred near home can
-    still reach a long way out, and the far end is the end that suffers.
-    """
-    arr = np.asarray(points, np.float64)
-    if arr.size and float(np.abs(arr).max()) > double_precision_near():
-        return np.ascontiguousarray(arr)
-    return np.ascontiguousarray(arr, np.float32)
-
-
 # How many points are rebased at a time. The subtraction needs float64 to
 # be worth doing, and a scan does not fit in memory twice.
 _CHUNK = 1 << 20

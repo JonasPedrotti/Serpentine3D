@@ -3,16 +3,15 @@
 The anchoring in 0.8.1 stopped far geometry swimming while the camera
 moved, but the data reaching it had already been rounded: tessellation
 cast its vertices to float32 on the way out of the kernel, and out there
-that grid is 8mm wide at 100,000 units and 6cm at a million. An anchor
-subtracts in float64 and so can only give back digits the data still
-has, which left a surveyed building's 4mm reveal standing still and
-wrong, two faces on one grid node fighting over every pixel.
+that grid is 8mm wide at 100,000 units and 6cm at a million. That left a
+surveyed building's 4mm reveal standing still and wrong, two faces on
+one grid node fighting over every pixel.
 
-So display coordinates stay in double precision as far as the upload,
-where the anchor has already made them small (`display_coords` in
-utils/math3d.py). Near the origin nothing changes: float32 is good to a
-fraction of a micron there and half the memory, which on a scanned
-survey is most of the file.
+A display mesh keeps its coordinates as float32 offsets from the point
+it sits at (core/tessellate.py), so four bytes hold a fraction of a
+micron wherever it is, and a survey costs no more memory than a model at
+home. What the kernel hands over is simply the coordinates it worked
+out, in the doubles it worked them out in; the mesh does the rest.
 """
 
 from __future__ import annotations
@@ -22,84 +21,66 @@ import pytest
 
 from serpentine3d.core import geometry as g
 from serpentine3d.core.mesh import MeshShape, mesh_to_display
-from serpentine3d.core.tessellate import tessellate
+from serpentine3d.core.tessellate import DisplayMesh, tessellate
 from serpentine3d.ui import viewport as vp
-from serpentine3d.utils.math3d import (display_coords,
-                                       double_precision_near)
 
 
 FAR = np.array([300000.0, 200000.0, 0.0])
 REVEAL = 0.004          # 4mm, under half of float32's grid out at FAR
 
 
-# -- which precision coordinates come out in ------------------------------
+# -- how a mesh keeps what it is given ------------------------------------
 
-def test_coordinates_far_from_home_keep_their_doubles():
-    out = display_coords(FAR + np.array([[0.0, 0.0, 0.0]]))
-    assert out.dtype == np.float64
-
-
-def test_coordinates_near_home_stay_in_float32():
-    out = display_coords([[1.0, 2.0, 3.0], [-10.0, 0.0, 4.0]])
-    assert out.dtype == np.float32
+def _mesh_of(points):
+    mesh = DisplayMesh()
+    mesh.vertices = np.asarray(points, float)
+    return mesh
 
 
-def test_the_threshold_is_where_float32_gets_too_coarse_to_draw():
-    near = double_precision_near()
-    assert display_coords([[near * 0.99, 0.0, 0.0]]).dtype == np.float32
-    assert display_coords([[near * 1.01, 0.0, 0.0]]).dtype == np.float64
+def test_a_far_mesh_keeps_offsets_from_where_it_sits():
+    mesh = _mesh_of(FAR + np.array([[0.0, 0.0, 0.0], [REVEAL, 0.0, 0.0]]))
+
+    assert mesh.far
+    assert mesh.local.dtype == np.float32
+    assert np.abs(mesh.local).max() <= REVEAL
+    assert np.abs(mesh.origin - FAR).max() < 1.0
 
 
-def test_it_is_a_real_length_rather_than_a_bare_number():
-    """Eighty-four metres' worth of whatever the drawing is in: float32
-    steps ten microns there, and nothing is drawn finer than that."""
-    from serpentine3d.utils import units
+def test_a_mesh_at_home_carries_no_origin_at_all():
+    mesh = _mesh_of([[1.0, 2.0, 3.0], [-10.0, 0.0, 4.0]])
 
-    try:
-        for unit, metres in (("mm", 83.9), ("m", 83.9), ("ft", 83.9)):
-            units.set_document_units(unit)
-            near = double_precision_near()
-            assert units.convert(near, unit, "m") == pytest.approx(
-                metres, rel=1e-2), unit
-            # float32's step doubles at each power of two rather than
-            # growing smoothly, so the promise is "no coarser than this
-            # up to here, coarser beyond it".
-            limit = units.convert(0.01, "mm", unit)
-            assert np.spacing(np.float32(near)) <= limit
-            assert np.spacing(np.float32(near * 2.0)) > limit
-    finally:
-        units.set_document_units("mm")
+    assert not mesh.far
+    assert mesh.local.dtype == np.float32
+    assert np.array_equal(mesh.origin, np.zeros(3))
 
 
-def test_a_building_across_the_yard_is_not_far_away():
-    """The old threshold was 4096 units, four metres in a millimetre
-    drawing: a million-vertex mesh seven metres out doubled its display
-    arrays from 210MB to 420MB for precision nobody could see."""
-    from serpentine3d.utils import units
+def test_the_world_s_coordinates_come_back_as_they_went_in():
+    points = FAR + np.array([[0.0, 0.0, 0.0], [REVEAL, REVEAL, REVEAL]])
+    mesh = _mesh_of(points)
 
-    try:
-        units.set_document_units("mm")
-        pts = np.array([[5000.0, 7000.0, 0.0], [5000.004, 7000.0, 0.0]])
-        assert display_coords(pts).dtype == np.float32
-    finally:
-        units.set_document_units("mm")
+    assert np.abs(mesh.vertices - points).max() < 1e-7
 
 
-def test_one_far_corner_is_enough_to_keep_the_whole_array_double():
-    """A mesh centred near home can still reach a long way out, and the
-    far end is the end that suffers."""
-    pts = np.array([[0.0, 0.0, 0.0], [1e6, 0.0, 0.0]])
-    assert display_coords(pts).dtype == np.float64
+def test_every_array_is_measured_from_the_same_point():
+    """A mesh's edges and its faces are in the same place by definition,
+    so they share an origin: one subtraction, one matrix to fold it back
+    into, and the pieces still line up with each other."""
+    mesh = _mesh_of(FAR + np.zeros((1, 3)))
+    mesh.edge_segments = np.array([[FAR, FAR + (REVEAL, 0, 0)]])
+    mesh.points = np.array([FAR + (0, REVEAL, 0)])
+
+    assert np.abs(mesh.local_edges).max() <= REVEAL
+    assert np.abs(mesh.local_points).max() <= REVEAL
+    far_end = mesh.edge_segments[0, 1]
+    assert np.abs(far_end - (FAR + (REVEAL, 0, 0))).max() < 1e-7
 
 
-def test_display_coords_is_contiguous_for_the_upload():
-    pts = np.asfortranarray(FAR + np.zeros((4, 3)))
-    assert display_coords(pts).flags["C_CONTIGUOUS"]
+def test_an_empty_mesh_costs_nothing():
+    mesh = DisplayMesh()
 
-
-def test_an_empty_array_costs_nothing():
-    out = display_coords(np.zeros((0, 3)))
-    assert out.dtype == np.float32 and out.shape == (0, 3)
+    assert not mesh.far
+    assert mesh.bounds() is None
+    assert mesh.vertices.shape == (0, 3)
 
 
 # -- the detail that used to collapse -------------------------------------
@@ -155,9 +136,13 @@ def _far_mesh_shape(size=REVEAL):
 
 
 def test_a_far_mesh_object_reaches_the_display_undamaged():
+    """Not bit for bit any more: the display keeps float32 offsets from
+    the mesh's own origin, which out here holds a tenth of a nanometre.
+    Far better than the micron anything is drawn or measured to, and
+    half the memory of carrying doubles this far."""
     dm = mesh_to_display(_far_mesh_shape())
-    assert dm.vertices.dtype == np.float64
-    assert np.abs(dm.vertices - _far_mesh_shape().vertices).max() == 0.0
+    assert dm.local.dtype == np.float32
+    assert np.abs(dm.vertices - _far_mesh_shape().vertices).max() < 1e-7
 
 
 def test_a_far_mesh_objects_feature_edges_keep_their_digits():
@@ -216,9 +201,14 @@ def test_a_mesh_near_home_is_written_the_way_it_always_was():
     assert np.allclose(shape_from_bytes(blob).vertices, near.vertices)
 
 
-def test_a_dashed_far_edge_is_dashed_in_double_precision():
-    """Linetypes rebuild the edge segments, so they are a second way in."""
+def test_a_dashed_far_edge_is_dashed_where_the_mesh_keeps_it():
+    """Linetypes rebuild the edge segments, so they are a second way in:
+    the buffers take offsets, and the world's numbers here would put a
+    far object twice as far out as it is."""
     mesh = tessellate(_far_box())
     segs = vp._dashed_edge_segments(mesh, (2.0, 1.0), 1.0)
-    assert segs.dtype == np.float64
-    assert np.abs(np.asarray(segs).reshape(-1, 3) - FAR).max() < REVEAL * 2
+
+    assert np.asarray(segs).dtype == np.float32
+    assert np.abs(np.asarray(segs)).max() <= REVEAL * 1.001
+    world = mesh.to_world(np.asarray(segs).reshape(-1, 3))
+    assert np.abs(world - FAR).max() <= REVEAL * 1.001

@@ -25,7 +25,7 @@ from ..utils import units as _units
 # module (and the kernel behind it); re-exported here for old callers.
 from ..utils.glsetup import set_default_gl_format  # noqa: F401
 from . import section_caps as _caps
-from ..utils.math3d import (ANCHOR_NEAR, display_coords, normalize,
+from ..utils.math3d import (ANCHOR_NEAR, normalize,
                             ray_line_parameter, ray_plane, ray_plane_any,
                             ray_triangle_hits)
 from . import gpu_share, theme
@@ -440,9 +440,15 @@ def _compile(vert_src: str, frag_src: str) -> int:
 def _dashed_edge_segments(mesh, pattern, scale):
     """Rebuild the object's edge segments as dash segments: regroup the
     flattened GL_LINES back into per-edge polylines (via edge_of_segment) and
-    run each through the linetype dasher."""
+    run each through the linetype dasher.
+
+    In the mesh's own coordinates, in and out, because that is what the
+    buffers take: a dash pattern is measured along a polyline and does
+    not care where the polyline is, and handing back the world's numbers
+    here would put a far object twice as far away as it is.
+    """
     from ..core.linetype import dash_polyline
-    segs = mesh.edge_segments
+    segs = mesh.local_edges
     eos = getattr(mesh, "edge_of_segment", None)
     if eos is None or not len(segs):
         return segs
@@ -454,7 +460,7 @@ def _dashed_edge_segments(mesh, pattern, scale):
         out.extend(dash_polyline(poly, pattern, scale))
     if not out:
         return np.zeros((0, 2, 3), np.float32)
-    return display_coords(out)
+    return np.ascontiguousarray(out, np.float32)
 
 
 # Vertex attribute layouts, as (location, floats, stride, byte offset).
@@ -523,14 +529,22 @@ def _thick_arrays(segments):
 # what keeps _set_mvp's one-upload-per-frame behaviour on the scenes
 # that never had the problem.
 #
-# The anchor's threshold, ANCHOR_NEAR, lives with display_coords in
-# utils/math3d: the same number decides which coordinates come out of the
-# kernel in double precision, since an anchor can only recover digits the
-# data still has.
+# A mesh that keeps its coordinates as offsets (core/tessellate.py) has
+# already done the subtracting, so its anchor is simply where it sits and
+# the offsets go to the card untouched. ANCHOR_NEAR is what is left for
+# the meshes near home that hold the world's own numbers.
 
 
 def mesh_anchor(mesh):
-    """Where a mesh's data is uploaded relative to, or None near home."""
+    """Where a mesh's data is uploaded relative to, or None near home.
+
+    A mesh that keeps its coordinates as offsets has already answered
+    this: it is where it sits, and the offsets are what goes to the card
+    as they are. One that holds the world's own numbers, which is every
+    mesh near home, is uploaded as it always was.
+    """
+    if getattr(mesh, "far", False):
+        return np.asarray(mesh.origin, float)
     b = mesh.bounds()
     if b is None:
         return None
@@ -774,9 +788,11 @@ def cloud_vertex_data(mesh, anchor) -> np.ndarray:
     """The interleaved bytes a point cloud uploads: (N, 16) uint8 rows of
     rebased float32 xyz, rgb, pad. White where the cloud brought no
     colour, and the draw mixes the object's colour in instead."""
-    n = len(mesh.vertices)
+    n = len(mesh.local)
     rows = np.empty((n, CLOUD_STRIDE), np.uint8)
-    xyz = np.ascontiguousarray(rebased(mesh.vertices, anchor), np.float32)
+    xyz = np.ascontiguousarray(
+        mesh.local if mesh.far else rebased(mesh.vertices, anchor),
+        np.float32)
     rows[:, :12] = xyz.view(np.uint8).reshape(n, 12)
     colors = mesh.cloud_colors
     if colors is None:
@@ -850,25 +866,30 @@ class _MeshBuffers:
         if mesh.is_cloud:
             self.cloud_vbo = self._upload(GL.GL_ARRAY_BUFFER,
                                           cloud_vertex_data(mesh, self.anchor))
-            self.cloud_count = len(mesh.vertices)
+            self.cloud_count = len(mesh.local)
             self.cloud_levels = mesh.cloud_levels
             self.cloud_colored = mesh.cloud_colors is not None
         if mesh.has_faces:
             curv = mesh.curvature
-            if len(curv) != len(mesh.vertices):
-                curv = np.zeros(len(mesh.vertices), np.float32)
-            inter = np.hstack([rebased(mesh.vertices, self.anchor),
+            if len(curv) != len(mesh.local):
+                curv = np.zeros(len(mesh.local), np.float32)
+            # A far mesh's offsets are already what the card wants, so
+            # they go up as they are: no float64 copy of a survey made
+            # just to subtract from it again.
+            inter = np.hstack([mesh.local if mesh.far
+                               else rebased(mesh.vertices, self.anchor),
                                np.asarray(mesh.normals, np.float32),
                                np.asarray(curv, np.float32)[:, None]])
             self.tri_vbo = self._upload(GL.GL_ARRAY_BUFFER, inter)
             idx = mesh.triangles.astype(np.uint32)
             self.tri_ebo = self._upload(GL.GL_ELEMENT_ARRAY_BUFFER, idx)
             self.tri_count = idx.size
-        edge_segments = mesh.edge_segments
+        edge_segments = mesh.local_edges
         if dash and dash[0]:                          # (pattern, scale)
             edge_segments = _dashed_edge_segments(mesh, dash[0], dash[1])
         if len(edge_segments):
-            rel = rebased(edge_segments, self.anchor)
+            rel = (np.ascontiguousarray(edge_segments, np.float32)
+                   if mesh.far else rebased(edge_segments, self.anchor))
             self.line_vbo = self._upload(GL.GL_ARRAY_BUFFER,
                                          rel.reshape(-1, 3))
             self.line_count = rel.size // 3
@@ -876,8 +897,10 @@ class _MeshBuffers:
             self.thick_vbo = self._upload(GL.GL_ARRAY_BUFFER, flat)
             self.thick_ebo = self._upload(GL.GL_ELEMENT_ARRAY_BUFFER, idx)
             self.thick_count = len(idx)
-        if len(mesh.iso_segments):
-            pts = rebased(mesh.iso_segments, self.anchor).reshape(-1, 3)
+        if len(mesh.local_isos):
+            pts = (np.ascontiguousarray(mesh.local_isos, np.float32)
+                   if mesh.far
+                   else rebased(mesh.local_isos, self.anchor)).reshape(-1, 3)
             self.iso_vbo = self._upload(GL.GL_ARRAY_BUFFER, pts)
             self.iso_count = len(pts)
 
@@ -4153,7 +4176,7 @@ class Viewport(QOpenGLWidget):
         drop = self._reject_boxes([b for _, b in boxed], x0, y0, x1, y1, w, h)
         return [obj for (obj, _), d in zip(boxed, drop) if not d]
 
-    def _near_primitives(self, index, x0, y0, x1, y1, w, h):
+    def _near_primitives(self, index, x0, y0, x1, y1, w, h, offset=None):
         """Which of an indexed mesh's primitives can reach a screen rect.
 
         Narrowing the drawing to the objects near the cursor does nothing
@@ -4167,8 +4190,13 @@ class Viewport(QOpenGLWidget):
         """
         if index is None:
             return None
-        drop = self._reject_extents(index.mins, index.maxs,
-                                    x0, y0, x1, y1, w, h)
+        # An index is built in the mesh's own coordinates; its boxes come
+        # out to the world here, and there are hundreds of them where
+        # there are millions of triangles.
+        mins, maxs = index.mins, index.maxs
+        if offset is not None and np.any(offset):
+            mins, maxs = mins + offset, maxs + offset
+        drop = self._reject_extents(mins, maxs, x0, y0, x1, y1, w, h)
         if not drop.any():
             return None
         return index.gather(~drop)
@@ -4180,15 +4208,29 @@ class Viewport(QOpenGLWidget):
         found at position 3 of a narrowed set is not triangle 3 of the mesh.
         """
         sub = self._near_primitives(mesh.triangle_index(),
-                                    x0, y0, x1, y1, w, h)
+                                    x0, y0, x1, y1, w, h, mesh.origin)
         return (mesh.triangles if sub is None else mesh.triangles[sub]), sub
 
     def _near_segments(self, mesh, x0, y0, x1, y1, w, h) -> tuple:
-        """(edge segments worth testing, where each sits in the mesh)."""
+        """(edge segments worth testing, where each sits in the mesh).
+
+        In the world's coordinates, like everything that is about to be
+        projected onto the screen. The narrowing happens in the mesh's
+        own, where its index is, and only what survives is moved out:
+        a handful of segments rather than a survey.
+        """
         sub = self._near_primitives(mesh.segment_index(),
-                                    x0, y0, x1, y1, w, h)
-        return ((mesh.edge_segments if sub is None
-                 else mesh.edge_segments[sub]), sub)
+                                    x0, y0, x1, y1, w, h, mesh.origin)
+        near = mesh.local_edges if sub is None else mesh.local_edges[sub]
+        return mesh.to_world(near), sub
+
+    def _near_segments_local(self, mesh, x0, y0, x1, y1, w, h) -> tuple:
+        """The same, left in the mesh's own coordinates for a caller that
+        works there (the pick moves the ray, not the mesh)."""
+        sub = self._near_primitives(mesh.segment_index(),
+                                    x0, y0, x1, y1, w, h, mesh.origin)
+        return ((mesh.local_edges if sub is None
+                 else mesh.local_edges[sub]), sub)
 
     def _selection_color(self, obj_id: str) -> tuple:
         """The gold to draw a selected object in: full, or dimmed while the
@@ -4307,10 +4349,15 @@ class Viewport(QOpenGLWidget):
             if shaded_faces:
                 tris, _ = self._near_triangles(mesh, px - r, py - r,
                                                px + r, py + r, w, h)
-                t = ray_triangle_hits(origin, direction,
-                                      mesh.vertices[tris[:, 0]].astype(float),
-                                      mesh.vertices[tris[:, 1]].astype(float),
-                                      mesh.vertices[tris[:, 2]].astype(float))
+                # The ray moves into the mesh's coordinates rather than
+                # the mesh into the world's: a ray is three numbers and a
+                # survey mesh is millions, and the distance along it,
+                # which is the answer, is the same either way.
+                here = origin - mesh.origin
+                t = ray_triangle_hits(here, direction,
+                                      mesh.local[tris[:, 0]].astype(float),
+                                      mesh.local[tris[:, 1]].astype(float),
+                                      mesh.local[tris[:, 2]].astype(float))
                 tmin = t.min() if len(t) else np.inf
                 if np.isfinite(tmin):
                     depth = tmin
@@ -4323,11 +4370,11 @@ class Viewport(QOpenGLWidget):
             # missed has no claim on the click, or the surface beside a
             # seam, or the box beside a floor, would take it by its edge.
             edges_on_show = not shaded_faces or (
-                not hit and seen_edge_on(mesh.vertices, tris, direction))
-            if len(mesh.edge_segments) and edges_on_show:
-                segs, _ = self._near_segments(mesh, px - r, py - r,
-                                              px + r, py + r, w, h)
-                pts = segs.reshape(-1, 3)
+                not hit and seen_edge_on(mesh.local, tris, direction))
+            if len(mesh.local_edges) and edges_on_show:
+                segs, _ = self._near_segments_local(mesh, px - r, py - r,
+                                                    px + r, py + r, w, h)
+                pts = mesh.to_world(segs.reshape(-1, 3))
                 scr = eye.project(pts, w, h)
                 a, b = scr[0::2], scr[1::2]
                 d2 = _point_segment_dist2(np.array([px, py]), a[:, :2],
@@ -4341,7 +4388,7 @@ class Viewport(QOpenGLWidget):
                         if seg_depth < depth:
                             depth = seg_depth
                         hit = True
-            if len(mesh.points):
+            if len(mesh.local_points):
                 scr = eye.project(mesh.points.astype(float), w, h)
                 d2 = ((scr[:, 0] - px) ** 2 + (scr[:, 1] - py) ** 2)
                 near = d2 < PICK_RADIUS_PX ** 2
@@ -4364,9 +4411,16 @@ class Viewport(QOpenGLWidget):
     PICK_CLOUD_SAMPLE = 200_000
 
     def _cloud_pick_points(self, mesh) -> np.ndarray:
-        n = len(mesh.vertices)
+        """An even sample of a cloud, in the world's coordinates.
+
+        Thinned first and moved out afterwards: a scan is held as offsets
+        from where it stands, and building the whole of it in doubles to
+        take every two-hundredth point would be the expensive half of a
+        click.
+        """
+        n = len(mesh.local)
         stride = max(1, n // self.PICK_CLOUD_SAMPLE)
-        return mesh.vertices[::stride].astype(float)
+        return mesh.to_world(mesh.local[::stride]).astype(float)
 
     def _nearest_cloud_point(self, mesh, eye, px, py, w, h):
         """Depth of the cloud point nearest the cursor within the pick
