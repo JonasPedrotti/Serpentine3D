@@ -385,3 +385,84 @@ def test_the_corner_of_a_drawn_curve_is_where_it_really_crosses(env):
         "the corner should sit on the line it was cut at"
     assert g.curve_length(rest) == pytest.approx(20.0 - corner[0], rel=1e-6)
     assert g.curve_length(kept) < g.curve_length(curve.shape)
+
+
+# -- curves that never touch at all ----------------------------------------
+
+def _two_apart(scene):
+    """Two drawn curves lying near each other and crossing nowhere.
+
+    A line or an arc is carried out to a corner by its own geometry, so
+    a gap between two of those is no trouble. A drawn curve has no more
+    of itself to read: it is carried on straight, the way it was heading
+    when it stopped, and that is what reaches the corner.
+    """
+    over = scene.add(g.make_interp_curve(
+        [(10.0, 28.0, 0.0), (15.0, 36.0, 0.0), (23.0, 40.5, 0.0),
+         (32.0, 37.5, 0.0), (37.5, 28.0, 0.0), (38.0, 17.0, 0.0)]),
+        name="Over")
+    under = scene.add(g.make_interp_curve(
+        [(28.7, 22.8, 0.0), (31.0, 18.0, 0.0), (35.0, 12.0, 0.0),
+         (42.0, 10.2, 0.0), (52.0, 14.0, 0.0), (62.0, 23.0, 0.0),
+         (69.3, 29.5, 0.0)]), name="Under")
+    return over, under
+
+
+def test_curves_that_never_meet_are_carried_on_to_their_corner(env):
+    scene, _sel, _hist, _ctx, proc = env
+    over, under = _two_apart(scene)
+    assert g.curve_length(over.shape) > 0
+    proc.run("fillet")
+    proc.provide_text("2")
+    proc.click_object(over.id, at=(38.0, 18.0, 0.0))
+    proc.click_object(under.id, at=(29.0, 22.0, 0.0))
+
+    curves = _curves(scene)
+    assert len(curves) == 1, "a fillet, not a refusal"
+    assert g.is_valid(curves[0].shape)
+
+
+def test_it_is_the_same_corner_wherever_the_curves_are_clicked(env):
+    """The clicks say which side of each curve to keep, and with one
+    corner to be had they all find it: picking the far end of a curve is
+    not a different question about where the corner is."""
+    scene, _sel, _hist, _ctx, proc = env
+    over, under = _two_apart(scene)
+    corners = []
+    for on_over, on_under in [((38.0, 18.0, 0.0), (29.0, 22.0, 0.0)),
+                              ((35.0, 30.0, 0.0), (33.0, 15.0, 0.0)),
+                              ((20.0, 39.0, 0.0), (60.0, 21.0, 0.0))]:
+        kept, rest = g.corner_curves(over.shape, under.shape,
+                                     on_over, on_under)
+        corners.append(g._shared_end(kept, rest))
+
+    assert all(c is not None for c in corners), "the pieces must meet"
+    for other in corners[1:]:
+        assert other == pytest.approx(corners[0], abs=1e-6)
+
+
+def test_the_straight_run_is_added_not_the_curve_redrawn(env):
+    """What the curve was stays as it was: the reach to the corner is
+    added to it, so nothing anyone drew is moved or smoothed away."""
+    scene, _sel, _hist, _ctx, proc = env
+    over, under = _two_apart(scene)
+    was = g.curve_length(over.shape)
+
+    kept, _rest = g.corner_curves(over.shape, under.shape,
+                                  (38.0, 18.0, 0.0), (29.0, 22.0, 0.0))
+
+    assert g.curve_length(kept) > was, "the curve had to reach further"
+    assert g.curve_length(kept) == pytest.approx(was + 6.1, abs=0.5), \
+        "and only by the straight bit, not by being redrawn"
+
+
+def test_curves_facing_away_from_each_other_still_say_no(env):
+    """Carrying a curve on is not licence to invent a corner anywhere:
+    two that head apart have none, and the message says that."""
+    scene, _sel, _hist, _ctx, proc = env
+    a = g.make_interp_curve([(0.0, 0.0, 0.0), (5.0, 2.0, 0.0),
+                             (10.0, 0.0, 0.0)])
+    b = g.make_interp_curve([(0.0, 20.0, 0.0), (5.0, 22.0, 0.0),
+                             (10.0, 20.0, 0.0)])
+    with pytest.raises(g.GeometryError, match="do not cross"):
+        g.corner_curves(a, b, (9.0, 0.5, 0.0), (9.0, 20.5, 0.0))

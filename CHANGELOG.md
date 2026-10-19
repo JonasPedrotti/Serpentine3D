@@ -87,6 +87,17 @@
   it was shown, though a file opened with it showing gave both. Now it
   gets them, and the object's user text.
 
+- **Fillet carries a drawn curve on to its corner.** Two curves that
+  cross nowhere were refused, however near they lay and wherever they
+  were picked. A line or an arc is carried out to a corner by its own
+  geometry, which is how a gap between two of those has always been
+  bridged, but a drawn curve stops where it stops and has no more of
+  itself to read. It now runs on straight, the way it was heading when
+  it ended, until it meets the other curve, and that straight bit is
+  part of what comes back: nothing anyone drew is moved or redrawn. Two
+  curves that head away from each other still have no corner, and still
+  say so.
+
 - **Fillet finds the corner of a curve somebody drew.** Filleting a
   degree-3 curve with a line, a polyline or another curve said "those
   curves do not cross, even extended" where they plainly did cross: the
