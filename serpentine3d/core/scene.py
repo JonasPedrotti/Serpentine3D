@@ -197,7 +197,7 @@ class Scene:
         self.dir_enabled: set[str] = set()
         self.layouts: list = []         # drafting sheets (core/layout.py)
         self.sheet_groups: list = []    # SheetGroups the sheets sit in
-        self.units = "mm"               # document units (see below)
+        self.units: str = "mm"          # document units (utils/units.py)
         self.block_defs: dict = {}      # id -> {"name", "shapes": [TopoDS]}
         self.annot_styles: dict = {}    # name -> text/dim style overrides
         self.record_history = False     # new surfaces remember their inputs
@@ -621,23 +621,6 @@ class Scene:
                 tuple(boxes[:, 1].max(axis=0)))
 
     # -- snapshot (undo/redo) --
-    @property
-    def units(self) -> str:
-        """The unit this drawing is in, and the one the kernel reads.
-
-        A property so that every way of setting it, a new document, a
-        file opened, the units command, reaches utils/units as well:
-        tessellation asks there whether float32 still holds a micron
-        where the geometry sits, and it has no scene to ask instead.
-        """
-        return self._units
-
-    @units.setter
-    def units(self, name: str):
-        self._units = name
-        from ..utils.units import set_document_units
-        set_document_units(name)
-
     def snapshot(self) -> dict:
         import copy
         return {

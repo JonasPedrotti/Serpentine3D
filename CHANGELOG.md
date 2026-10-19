@@ -126,13 +126,16 @@
   a dashed linetype's segments took the same route and were rounded the
   same way; both now ride the anchor properly. Picking, snapping and a
   clipping plane's cut lines read the same arrays, so they are exact out
-  there too. Near the origin nothing changes: float32 is good to a
-  fraction of a micron there and costs half the memory, which on a
-  scanned survey is most of the file. Where "near" ends is a real
-  length, not a bare number: doubles start where float32 steps more than
-  ten microns, about 84 metres' worth of whatever unit the drawing is
-  in, so a building across the yard is not far away however many
-  millimetres that is.
+  there too. A display mesh keeps its coordinates as float32 offsets
+  from the point it sits at, the way a scan does, so four bytes hold a
+  fifth of a micron wherever the geometry is and a survey mesh costs no
+  more memory than one at home: a million vertices are 96MB of display
+  arrays whether they are drawn at the origin or 500 kilometres from it,
+  and accurate to 0.2 microns either way. The viewport uploads those
+  offsets untouched and folds the mesh's origin into its matrix, a pick
+  moves the ray into the mesh rather than the mesh into the world, and a
+  clipping plane travels to the mesh instead of the mesh travelling to
+  it.
 
 - **A file holding far geometry says which release can read it.** The
   offsets and their origin are new, and a reader that knows nothing of
