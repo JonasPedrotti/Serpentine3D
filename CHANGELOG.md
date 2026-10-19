@@ -65,6 +65,20 @@
 - A picked row in a table (User text, and the settings dialog's aliases
   and shortcuts) shows in the theme's gold rather than the system's blue.
 
+- **Fillet asks only what it cannot read off the clicks.** The prompt
+  opens on "Select first curve" with Radius and Trim beside it, and both
+  stay there through the second pick: type a number and that is the
+  radius, type `t` and Trim flips, and the question still stands. Each
+  curve is picked near the corner it is to make, which is also what says
+  which side of a crossing to keep, so the separate corner click and the
+  radius drag are gone and the fillet is made as soon as the second curve
+  is picked. Radius 0 is Rhino's sharp corner: the curves are cut back,
+  or carried out, to the point they cross at, so curves that stop short
+  of each other now fillet instead of failing. Trim=No leaves both curves
+  where they are and adds the arc on its own. The radius and Trim are
+  remembered for as long as the program runs, as Rhino remembers them,
+  and open at 0 and Yes again when it is started afresh.
+
 ### Fixed
 
 - **Both pieces of a hidden object keep its look.** A hidden .3dm object
@@ -72,6 +86,12 @@
   sew, gave the second piece none of the object's colour or material once
   it was shown, though a file opened with it showing gave both. Now it
   gets them, and the object's user text.
+
+- **Fillet no longer fails on a polyline.** Picking a curve made of more
+  than one piece raised `Standard_TypeMismatch: TopoDS::Edge`; the piece
+  nearest the pick is the one filleted. Where the kernel rounds a
+  crossing on the side nobody picked, only its arc is taken and both
+  curves are cut to the corner, so what is kept is what was clicked.
 
 ## 0.12.0 (2026-10-17)
 
