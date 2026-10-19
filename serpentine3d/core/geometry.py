@@ -1013,7 +1013,6 @@ def corner_curves(edge_a, edge_b, near_a: Point, near_b: Point) -> tuple:
     """
     import numpy as np
     from OCP.BRep import BRep_Tool
-    from OCP.GeomAPI import GeomAPI_ExtremaCurveCurve
 
     ea = occ.to_edge(edge_near(edge_a, near_a))
     eb = occ.to_edge(edge_near(edge_b, near_b))
@@ -1022,32 +1021,73 @@ def corner_curves(edge_a, edge_b, near_a: Point, near_b: Point) -> tuple:
     if ca is None or cb is None:
         raise GeometryError("Those curves have no geometry to corner")
 
+    # Where they cross as drawn, and only failing that where their
+    # carriers would cross if they were carried out to meet.
+    crossings = _crossings_in(ea, eb) or _crossings_extended(ca, cb)
+    if not crossings:
+        raise GeometryError("Those curves do not cross, even extended")
     want = (np.asarray(near_a, float) + np.asarray(near_b, float)) * 0.5
-    best, best_d = None, None
+    best = min(crossings, key=lambda p: float(np.linalg.norm(p - want)))
+    return (_with_the_rest(edge_a, ea, _cut_to_corner(ea, ca, best, near_a),
+                           best),
+            _with_the_rest(edge_b, eb, _cut_to_corner(eb, cb, best, near_b),
+                           best))
+
+
+def _crossings_in(edge_a, edge_b) -> list:
+    """Every point two edges cross at, from the kernel's intersector.
+
+    This is asked before the extrema below, because the extrema of the
+    distance between two curves do not reliably find a crossing: the
+    distance there is zero and a minimum, but the search is for points
+    where the shortest link stands square to both curves, and on a
+    spline it walks past the crossing often enough. A line or an arc has
+    too simple a distance function for that to show; a drawn curve does
+    not, which is why filleting one used to be refused.
+    """
+    import numpy as np
+    from OCP.IntTools import IntTools_EdgeEdge
+
+    inter = IntTools_EdgeEdge(edge_a, edge_b)
+    inter.Perform()
+    if not inter.IsDone():
+        return []
+    where = occ.edge_adaptor(edge_a)
+    parts = inter.CommonParts()
+    out = []
+    for i in range(1, parts.Length() + 1):
+        part = parts.Value(i)
+        if part.Type() != occ.VERTEX:
+            continue        # a stretch they run along: no one corner in it
+        p = where.Value(part.VertexParameter1())
+        out.append(np.array([p.X(), p.Y(), p.Z()]))
+    return out
+
+
+def _crossings_extended(curve_a, curve_b) -> list:
+    """Where two curves' carriers cross, past the ends that were drawn.
+
+    What makes a corner out of two lines that stop short of each other:
+    a line's carrier is endless, an arc's goes round, and the crossing
+    is read off those.
+    """
+    import numpy as np
+    from OCP.GeomAPI import GeomAPI_ExtremaCurveCurve
+
     try:
-        extrema = GeomAPI_ExtremaCurveCurve(ca, cb)
+        extrema = GeomAPI_ExtremaCurveCurve(curve_a, curve_b)
         count = extrema.NbExtrema()
     except Exception:                                   # noqa: BLE001
-        # Curves running along each other have no one crossing, and the
-        # kernel says so by refusing to count.
-        raise GeometryError(
-            "Those curves do not cross, even extended") from None
+        return []           # curves running along each other: no crossing
+    out = []
     for i in range(1, count + 1):
         if extrema.Distance(i) > tol():
             continue                      # they pass each other here
         p1, p2 = gp_Pnt(), gp_Pnt()
         extrema.Points(i, p1, p2)
-        here = np.array([(p1.X() + p2.X()) / 2, (p1.Y() + p2.Y()) / 2,
-                         (p1.Z() + p2.Z()) / 2])
-        d = float(np.linalg.norm(here - want))
-        if best_d is None or d < best_d:
-            best, best_d = here, d
-    if best is None:
-        raise GeometryError("Those curves do not cross, even extended")
-    return (_with_the_rest(edge_a, ea, _cut_to_corner(ea, ca, best, near_a),
-                           best),
-            _with_the_rest(edge_b, eb, _cut_to_corner(eb, cb, best, near_b),
-                           best))
+        out.append(np.array([(p1.X() + p2.X()) / 2, (p1.Y() + p2.Y()) / 2,
+                             (p1.Z() + p2.Z()) / 2]))
+    return out
 
 
 def _cut_to_corner(edge, carrier, corner, near: Point):

@@ -87,6 +87,16 @@
   it was shown, though a file opened with it showing gave both. Now it
   gets them, and the object's user text.
 
+- **Fillet finds the corner of a curve somebody drew.** Filleting a
+  degree-3 curve with a line, a polyline or another curve said "those
+  curves do not cross, even extended" where they plainly did cross: the
+  crossing was looked for among the extrema of the distance between the
+  two curves, which is a reliable way to find it on a line or an arc and
+  an unreliable one on a drawn curve. The kernel's intersector is asked
+  first now, and the extrema are kept for what they are good at, which
+  is the crossing two curves would have if they were carried out to
+  meet.
+
 - **Fillet no longer fails on a polyline, or eats the rest of it.**
   Picking a curve made of more than one piece raised
   `Standard_TypeMismatch: TopoDS::Edge`; the piece nearest the pick is

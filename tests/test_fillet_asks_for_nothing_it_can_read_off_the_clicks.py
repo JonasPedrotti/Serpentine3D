@@ -313,3 +313,75 @@ def test_what_lies_past_the_corner_is_what_the_trim_takes(env):
     assert g.curve_length(curves[0].shape) == pytest.approx(
         20.0, rel=1e-6), \
         "ten across to the corner and ten up, the rest trimmed away"
+
+
+# -- drawn curves, not just lines and arcs ---------------------------------
+
+def _a_drawn_curve(scene):
+    """A degree-3 curve through four points, dipping below y=0 and coming
+    back up across it. Its one crossing with the line below is the kind
+    the kernel's distance extrema used to walk straight past, which is
+    why filleting a drawn curve was refused as not crossing at all."""
+    points = [(0.0, -3.0, 0.0), (5.0, -6.0, 0.0),
+              (10.0, -6.0, 0.0), (15.0, 3.0, 0.0)]
+    return scene.add(g.make_interp_curve(points), name="Drawn")
+
+
+def test_a_drawn_curve_fillets_against_a_line(env):
+    scene, _sel, _hist, _ctx, proc = env
+    curve = _a_drawn_curve(scene)
+    line = scene.add(g.make_line((-5.0, 0.0, 0.0), (20.0, 0.0, 0.0)),
+                     name="Flat")
+    proc.run("fillet")
+    proc.provide_text("2")
+    proc.click_object(curve.id, at=(14.0, 2.0, 0.0))
+    proc.click_object(line.id, at=(18.0, 0.0, 0.0))
+
+    curves = _curves(scene)
+    assert len(curves) == 1, "they cross, so there is a corner to round"
+    assert g.is_valid(curves[0].shape)
+
+
+def test_a_drawn_curve_fillets_against_a_polyline(env):
+    scene, _sel, _hist, _ctx, proc = env
+    curve = _a_drawn_curve(scene)
+    poly = scene.add(g.make_polyline([(-5.0, 0.0, 0.0), (20.0, 0.0, 0.0),
+                                      (20.0, 9.0, 0.0)]), name="Flat")
+    proc.run("fillet")
+    proc.click_object(curve.id, at=(14.0, 2.0, 0.0))
+    proc.click_object(poly.id, at=(18.0, 0.0, 0.0))
+
+    curves = _curves(scene)
+    assert len(curves) == 1
+    assert g.is_valid(curves[0].shape)
+
+
+def test_two_drawn_curves_find_their_crossing(env):
+    scene, _sel, _hist, _ctx, proc = env
+    a = _a_drawn_curve(scene)
+    b = scene.add(g.make_interp_curve([(8.0, -10.0, 0.0), (12.0, -4.0, 0.0),
+                                       (14.0, 6.0, 0.0)]), name="Other")
+    proc.run("fillet")
+    proc.click_object(a.id, at=(14.0, 2.0, 0.0))
+    proc.click_object(b.id, at=(8.5, -9.0, 0.0))
+
+    curves = _curves(scene)
+    assert len(curves) == 1
+    assert g.is_valid(curves[0].shape)
+
+
+def test_the_corner_of_a_drawn_curve_is_where_it_really_crosses(env):
+    """Not near enough: the corner is the crossing itself, so the two
+    pieces meet exactly and the line keeps the end that was clicked."""
+    scene, _sel, _hist, _ctx, proc = env
+    curve = _a_drawn_curve(scene)
+    line = scene.add(g.make_line((-5.0, 0.0, 0.0), (20.0, 0.0, 0.0)))
+    kept, rest = g.corner_curves(curve.shape, line.shape,
+                                 (14.0, 2.0, 0.0), (18.0, 0.0, 0.0))
+
+    corner = g._shared_end(kept, rest)
+    assert corner is not None, "the two pieces do not meet"
+    assert corner[1] == pytest.approx(0.0, abs=1e-6), \
+        "the corner should sit on the line it was cut at"
+    assert g.curve_length(rest) == pytest.approx(20.0 - corner[0], rel=1e-6)
+    assert g.curve_length(kept) < g.curve_length(curve.shape)
