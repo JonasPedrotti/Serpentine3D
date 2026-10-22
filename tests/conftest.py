@@ -32,6 +32,17 @@ def _isolated_config(tmp_path_factory):
         tmp_path_factory.mktemp("settings") / "settings.json")
 
 
+@pytest.fixture(autouse=True)
+def _fresh_fillet_options():
+    """Fillet remembers its radius and Trim for as long as the program
+    runs; a test is a fresh program, not the one before it."""
+    from serpentine3d.commands import edit
+    was = dict(edit._FILLET_STICKY)
+    yield
+    edit._FILLET_STICKY.clear()
+    edit._FILLET_STICKY.update(was)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolated_session_data(tmp_path_factory):
     """Journals and autosaves of the suite's own, thrown away after.

@@ -193,7 +193,7 @@ class FormReq(Req):
 class SelectReq(Req):
     prompt: str
     # The option a typed number sets, rather than answering the prompt:
-    # at "Select first curve (Radius=0)", 5 means a radius of five and
+    # at "Select first curve (Radius=0)", 5 or 2mm means that radius and
     # the question still stands. Rhino's prompts work this way, and a
     # number is never the name of an object anyway.
     number_option: str = ""
@@ -210,12 +210,9 @@ class SelectReq(Req):
     want_point: bool = False
 
 
-def _is_number(text: str) -> bool:
-    try:
-        float(str(text).strip())
-    except (TypeError, ValueError):
-        return False
-    return True
+def _is_length(text: str, units: str) -> bool:
+    from ..utils.units import parse_length
+    return parse_length(str(text), units) is not None
 
 
 def _kinds_phrase(kinds: tuple) -> str:
@@ -1054,7 +1051,7 @@ class CommandProcessor:
                         if cur in values else 0
                     value = values[idx]
                 elif (getattr(req, "number_option", "") == opt_name
-                        and _is_number(value)):
+                        and _is_length(value, self.ctx.scene.units)):
                     # The prompt's own number: a radius is whatever was
                     # typed, not one of a few listed answers. What the
                     # option lists is only what it opens on.
@@ -1087,7 +1084,7 @@ class CommandProcessor:
         name = getattr(req, "number_option", "")
         if not name:
             return False
-        if not _is_number(text):
+        if not _is_length(text, self.ctx.scene.units):
             return False
         return self.set_option(name, text.strip())
 

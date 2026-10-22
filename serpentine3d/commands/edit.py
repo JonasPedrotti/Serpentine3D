@@ -366,16 +366,15 @@ def _fillet_the_corner(ctx, first, second, near_a, near_b):
 
 
 def _fillet_radius(ctx) -> float:
-    """The radius as the prompt last had it, zero if it is not a number.
+    """The radius as the prompt last had it, in document units (2mm,
+    0.5in and 1/2" are read as lengths), zero if it is not one.
 
     Also what the next fillet will open on: the options are remembered
     for as long as the program runs.
     """
+    from ..utils.units import parse_length
     text = str(ctx.opt("Radius", _FILLET_STICKY["Radius"]))
-    try:
-        radius = max(0.0, float(text))
-    except (TypeError, ValueError):
-        radius = 0.0
+    radius = max(0.0, parse_length(text, ctx.scene.units) or 0.0)
     _FILLET_STICKY["Radius"] = f"{radius:g}"
     _FILLET_STICKY["Trim"] = ctx.opt("Trim", _FILLET_STICKY["Trim"])
     return radius

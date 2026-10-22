@@ -164,16 +164,6 @@ def test_trim_no_at_radius_zero_says_there_is_nothing_to_make(env):
 
 # -- and what it remembers -------------------------------------------------
 
-@pytest.fixture(autouse=True)
-def _forget_between_tests():
-    """Each test starts where a fresh program would."""
-    from serpentine3d.commands import edit
-    was = dict(edit._FILLET_STICKY)
-    edit._FILLET_STICKY.update({"Radius": "0", "Trim": "Yes"})
-    yield
-    edit._FILLET_STICKY.update(was)
-
-
 def test_the_radius_is_what_the_next_fillet_opens_on(env):
     """Typed once and it stays, as Rhino keeps a command's options: the
     second corner of a drawing is usually the same size as the first."""
@@ -193,6 +183,25 @@ def test_the_radius_is_what_the_next_fillet_opens_on(env):
     proc.click_object(d.id, at=(10.0, 21.0, 0.0))
     made = next(o for o in _curves(scene) if o.id == c.id)
     assert g.curve_length(made.shape) == pytest.approx(16 + math.pi, rel=1e-3)
+
+
+@pytest.mark.parametrize("typed, radius", [
+    ("2mm", 2.0), ("0.1in", 2.54), ('1/10"', 2.54), ("0.2cm", 2.0)])
+def test_the_radius_takes_units(env, typed, radius):
+    """A length typed with its units is a radius, not an object's name,
+    as it was at the radius prompt this replaced."""
+    scene, _sel, _hist, _ctx, proc = env
+    a, b = _two_lines(scene)
+    proc.run("fillet")
+    proc.provide_text(typed)
+    assert "first curve" in proc.request.prompt.lower()
+    proc.click_object(a.id, at=(9.0, 0.0, 0.0))
+    proc.click_object(b.id, at=(10.0, 1.0, 0.0))
+
+    made = next(o for o in _curves(scene) if o.id == a.id)
+    legs = 2 * (10 - radius)
+    assert g.curve_length(made.shape) == pytest.approx(
+        legs + math.pi * radius / 2, rel=1e-3)
 
 
 def test_trim_is_remembered_the_same_way(env):

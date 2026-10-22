@@ -79,6 +79,12 @@
   remembered for as long as the program runs, as Rhino remembers them,
   and open at 0 and Yes again when it is started afresh.
 
+- **Fillet's scripted input is now radius, curve, curve.** The radius is
+  an option on the prompt, so a script, macro or recorded journal gives
+  `[radius, curve, curve]` instead of `[curve, curve, corner, radius]`.
+  Those using the old order stop working and need the new one. The radius
+  takes units as the old prompt did: `2mm`, `0.5in` and `1/2"`.
+
 ### Fixed
 
 - **Both pieces of a hidden object keep its look.** A hidden .3dm object
@@ -97,16 +103,6 @@
   part of what comes back: nothing anyone drew is moved or redrawn. Two
   curves that head away from each other still have no corner, and still
   say so.
-
-- **Fillet finds the corner of a curve somebody drew.** Filleting a
-  degree-3 curve with a line, a polyline or another curve said "those
-  curves do not cross, even extended" where they plainly did cross: the
-  crossing was looked for among the extrema of the distance between the
-  two curves, which is a reliable way to find it on a line or an arc and
-  an unreliable one on a drawn curve. The kernel's intersector is asked
-  first now, and the extrema are kept for what they are good at, which
-  is the crossing two curves would have if they were carried out to
-  meet.
 
 - **Fillet no longer fails on a polyline, or eats the rest of it.**
   Picking a curve made of more than one piece raised
