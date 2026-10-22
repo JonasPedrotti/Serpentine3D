@@ -144,6 +144,27 @@ def test_a_curve_lying_on_a_face_still_goes_to_the_curve(view):
     assert seen == [curve.id]
 
 
+@pytest.mark.parametrize("distance", [0.8, 0.3])
+def test_a_curve_on_a_face_seen_from_close_up_still_goes_to_the_curve(
+        view, distance):
+    """The nudge that keeps a curve in front of its face is a thousandth of
+    the distance, so it shrinks as the camera closes in. Under a document
+    unit away, a drawing in metres seen from a step back, it fell inside
+    the document tolerance and the click asked a question it had answered."""
+    _box(view.scene, name="Face")
+    curve = view.scene.add(
+        g.make_line((-2.0, 0.0, 6.0), (2.0, 0.0, 6.0)), name="Curve")
+    view.camera.projection = "perspective"
+    view.camera.target = view.camera.target * 0 + [0.0, 0.0, 6.0]
+    view.camera.distance = distance
+    seen = _clicked(view)
+
+    _click(view, *_centre(view))
+
+    assert view._chooser is None
+    assert seen == [curve.id]
+
+
 def test_objects_in_one_group_need_no_choosing(view):
     """Both rows would select the same thing, so there is no question."""
     a = _box(view.scene, name="First")

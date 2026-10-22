@@ -51,9 +51,15 @@ def same_place_tolerance(depth: float) -> float:
     means everywhere else in the program, and a hair of the distance
     besides: a model far from the origin is measured in numbers with
     fewer decimals to spare.
+
+    Never as wide as half the nudge that puts a curve in front of the face
+    it lies on, a thousandth of the distance: up close, a drawing in metres
+    seen from a step back, the document tolerance outgrew it and a click
+    on a curve asked about the face behind.
     """
     from ..core import tolerance
-    return max(tolerance.tol(), abs(float(depth)) * 1e-6)
+    depth = abs(float(depth))
+    return max(min(tolerance.tol(), depth * 5e-4), depth * 1e-6)
 
 
 def ids_in_the_same_place(hits) -> list[str]:
