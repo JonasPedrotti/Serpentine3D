@@ -803,11 +803,18 @@ def _curve_plane_normal(ea, eb) -> Point | None:
     return tuple(n)
 
 
-def fillet_curves(edge_a, edge_b, radius: float,
-                  near: Point, plane=None) -> tuple:
+def fillet_curves(edge_a, edge_b, radius: float, near: Point,
+                  plane=None, near_b: Point | None = None) -> tuple:
     """Fillet two coplanar line/arc edges; returns (trimmed_a, arc, trimmed_b).
 
-    `near` chooses the corner when the curves cross more than once.
+    `near` chooses the corner when the curves cross more than once, and
+    `near_b` says where the second curve was clicked when that was
+    somewhere else, which is what keeps the clicked side of a crossing.
+
+    The curves are brought to their corner first (see corner_curves), so
+    two that stop short of each other are carried out to it: the kernel's
+    own fillet refuses a gap, and a drawing is full of lines that nearly
+    meet.
 
     The fillet is built in the plane the curves live on, resolved in this
     order: the plane the edges themselves define (two lines, or an arc
@@ -818,7 +825,12 @@ def fillet_curves(edge_a, edge_b, radius: float,
     from .occ import ChFi2d_FilletAPI, gp_Pln
     if radius <= 0:
         raise GeometryError("Fillet radius must be positive")
-    ea, eb = occ.to_edge(edge_a), occ.to_edge(edge_b)
+    # A polyline is a wire: the corner is made in the edge that was
+    # clicked, which is what `near` says.
+    here_b = near if near_b is None else near_b
+    clicked_a = occ.to_edge(edge_near(edge_a, near))
+    clicked_b = occ.to_edge(edge_near(edge_b, here_b))
+    ea, eb = clicked_a, clicked_b
     normal = _curve_plane_normal(ea, eb)
     if normal is None and plane is not None:
         n = getattr(plane, "normal", plane)
@@ -827,16 +839,382 @@ def fillet_curves(edge_a, edge_b, radius: float,
             raise GeometryError("Fillet plane normal is degenerate")
     if normal is None:
         normal = (0.0, 0.0, 1.0)
-    api = ChFi2d_FilletAPI(ea, eb, gp_Pln(_pnt(near), _dir(normal)))
+    at = near
+    whole_a, whole_b = edge_a, edge_b
+    try:
+        whole_a, whole_b = corner_curves(edge_a, edge_b, near, here_b)
+        at = _shared_end(whole_a, whole_b) or near
+        # The corner may have been reached by carrying a curve on, which
+        # leaves it in two pieces: the one that meets the corner is the
+        # one the arc is cut out of.
+        ea = occ.to_edge(edge_near(whole_a, at))
+        eb = occ.to_edge(edge_near(whole_b, at))
+    except GeometryError:
+        # Curves that already meet need no corner made. Ones that cannot
+        # be brought to one have no fillet in them either, and the corner
+        # step says that better than the kernel does.
+        if _shared_end(ea, eb) is None:
+            raise
+    # The corner, not the click: the kernel chooses its solution by the
+    # point it is given, and a click sits anywhere along the curve.
+    api = ChFi2d_FilletAPI(ea, eb, gp_Pln(_pnt(at), _dir(normal)))
     if not api.Perform(float(radius)):
-        raise GeometryError("Fillet failed (radius too large or the two "
-                            "curves do not share one plane)")
+        raise GeometryError("Fillet failed: the radius is too large for "
+                            "that corner, or the curves are not on one "
+                            "plane")
     ea_out = occ.TopoDS_Edge()
     eb_out = occ.TopoDS_Edge()
-    arc = api.Result(_pnt(near), ea_out, eb_out)
+    arc = api.Result(_pnt(at), ea_out, eb_out)
     if arc.IsNull():
         raise GeometryError("Fillet produced no result near that corner")
-    return ea_out, arc, eb_out
+    # Only the arc is taken from the kernel. What it leaves of the two
+    # curves is trimmed by its own reckoning, which keeps the stub beside
+    # the corner rather than the side that was clicked; each curve is cut
+    # back to the arc here instead, the way radius zero cuts them to the
+    # corner.
+    from OCP.BRep import BRep_Tool
+    for_a, for_b = _nearest_each(_curve_ends(arc), *_away_from(at, ea, eb))
+    ea_cut = _cut_to_corner(ea, BRep_Tool.Curve_s(ea, 0.0, 0.0), for_a,
+                            _far_end(ea, at))
+    eb_cut = _cut_to_corner(eb, BRep_Tool.Curve_s(eb, 0.0, 0.0), for_b,
+                            _far_end(eb, at))
+    return (_with_the_rest(whole_a, ea, ea_cut, for_a), arc,
+            _with_the_rest(whole_b, eb, eb_cut, for_b))
+
+
+def _with_the_rest(curve, clicked, cut, corner: Point):
+    """The cut piece, carrying whatever else the curve is made of.
+
+    Only one piece of a polyline makes the corner, and the others were
+    drawn by somebody: the fillet has no business throwing them away.
+    What lay the other side of the corner is gone, since that is the
+    part the corner cut off, so the rest is gathered by walking out from
+    the end the cut piece keeps.
+    """
+    rest = _edges_through(curve, clicked, _far_end(cut, corner))
+    if not rest:
+        return cut
+    try:
+        return join_curves([cut] + rest)
+    except GeometryError:
+        return cut
+
+
+def _edges_through(curve, clicked, at: Point) -> list:
+    """The edges of `curve`, bar `clicked`, that hang off the point `at`."""
+    import numpy as np
+
+    rest = [e for e in edges_of(curve) if not e.IsSame(clicked)]
+    found, front = [], [np.asarray(at, float)]
+    while front and rest:
+        here = front.pop()
+        for edge in list(rest):
+            ends = [np.asarray(q, float) for q in _curve_ends(edge)]
+            hit = next((i for i, q in enumerate(ends)
+                        if float(np.linalg.norm(q - here)) <= tol()), None)
+            if hit is not None:
+                rest.remove(edge)
+                found.append(edge)
+                front.append(ends[1 - hit])
+    return found
+
+
+def _far_end(edge, corner: Point) -> Point:
+    """The end of an edge that is not the corner.
+
+    Which side to keep is settled by then: the corner step already cut
+    each curve back to the side that was clicked, so what is left of it
+    runs from the corner out to one end. A click near the corner itself
+    sits in the piece the arc takes away, and would say the wrong thing.
+    """
+    import numpy as np
+    at = np.asarray(corner, float)
+    return max(_curve_ends(edge),
+               key=lambda p: float(np.linalg.norm(np.asarray(p) - at)))
+
+
+def _away_from(corner: Point, edge_a, edge_b) -> tuple:
+    return _far_end(edge_a, corner), _far_end(edge_b, corner)
+
+
+def _nearest_each(points, near_a: Point, near_b: Point) -> tuple:
+    """Which of two points belongs to which click."""
+    import numpy as np
+    first, second = (np.asarray(p, float) for p in points)
+    a, b = np.asarray(near_a, float), np.asarray(near_b, float)
+    straight = (np.linalg.norm(first - a) + np.linalg.norm(second - b))
+    crossed = (np.linalg.norm(second - a) + np.linalg.norm(first - b))
+    if straight <= crossed:
+        return tuple(first), tuple(second)
+    return tuple(second), tuple(first)
+
+
+def _shared_end(edge_a, edge_b):
+    """The point two edges meet at, or None if they do not."""
+    import numpy as np
+    for pa in _curve_ends(edge_a):
+        for pb in _curve_ends(edge_b):
+            if np.linalg.norm(np.asarray(pa) - np.asarray(pb)) <= tol():
+                return tuple(float(c) for c in pa)
+    return None
+
+
+def edge_near(curve, point: Point):
+    """The one edge of a curve that `point` lies nearest.
+
+    A polyline is a wire of several edges, and a corner is made in one
+    of them: the one that was clicked. A curve of a single edge answers
+    with itself, so a caller never has to ask which kind it has.
+    """
+    import numpy as np
+    edges = edges_of(curve)
+    if not edges:
+        raise GeometryError("That object has no curve in it")
+    if len(edges) == 1:
+        return edges[0]
+    want = np.asarray(point, float)
+
+    def _away(edge) -> float:
+        pts = np.asarray(sample_curve(edge, 24), float)
+        return float(np.linalg.norm(pts - want, axis=1).min())
+
+    return min(edges, key=_away)
+
+
+def nearest_ends(curve_a, curve_b) -> tuple:
+    """The ends of two curves that lie nearest each other, as points.
+
+    What a click would have said, for a pick that had no place on it:
+    typed, scripted, or chosen from a list. Two curves are filleted at
+    the corner they nearly make, and that is the corner their closest
+    ends stand at.
+    """
+    import numpy as np
+    ends_a = [np.asarray(p, float) for p in _curve_ends(curve_a)]
+    ends_b = [np.asarray(p, float) for p in _curve_ends(curve_b)]
+    pair = min(((a, b) for a in ends_a for b in ends_b),
+               key=lambda e: float(np.linalg.norm(e[0] - e[1])))
+    return tuple(float(c) for c in pair[0]), tuple(float(c) for c in pair[1])
+
+
+def _curve_ends(curve) -> list:
+    """A curve's two ends, or its middle where it has none (a circle)."""
+    pts = sample_curve(curve, 3)
+    return [tuple(pts[0]), tuple(pts[-1])]
+
+
+def corner_curves(edge_a, edge_b, near_a: Point, near_b: Point) -> tuple:
+    """Bring two curves to a sharp corner; returns (new_a, new_b).
+
+    What Rhino's Fillet does at radius zero: the curves meet at the point
+    their own geometry crosses at, each cut back to it or carried out to
+    it, and each keeping the side that was clicked. `near_a` and `near_b`
+    are those clicks, which say both which corner is meant, where two
+    curves cross twice, and which piece of each curve to keep.
+
+    Trimming and extending are the same act here, which is why there is
+    only one: a curve's carrier runs on past its ends, so the piece
+    between the crossing and the far end is simply taken from it, whether
+    that is shorter than the curve was or longer.
+    """
+    import numpy as np
+    from OCP.BRep import BRep_Tool
+
+    ea = occ.to_edge(edge_near(edge_a, near_a))
+    eb = occ.to_edge(edge_near(edge_b, near_b))
+    ca = BRep_Tool.Curve_s(ea, 0.0, 0.0)
+    cb = BRep_Tool.Curve_s(eb, 0.0, 0.0)
+    if ca is None or cb is None:
+        raise GeometryError("Those curves have no geometry to corner")
+
+    # Where they cross as drawn; failing that where their carriers would
+    # cross; failing that where they would if each ran on from its end.
+    crossings = (_crossings_in(ea, eb) or _crossings_extended(ca, cb)
+                 or _crossings_by_reaching_on(ea, eb))
+    if not crossings:
+        raise GeometryError("Those curves do not cross, even carried on "
+                            "from their ends")
+    want = (np.asarray(near_a, float) + np.asarray(near_b, float)) * 0.5
+    best = min(crossings, key=lambda p: float(np.linalg.norm(p - want)))
+    return (_with_the_rest(edge_a, ea, _cut_or_reach(ea, ca, best, near_a),
+                           best),
+            _with_the_rest(edge_b, eb, _cut_or_reach(eb, cb, best, near_b),
+                           best))
+
+
+def _crossings_in(edge_a, edge_b) -> list:
+    """Every point two edges cross at, from the kernel's intersector.
+
+    This is asked before the extrema below, because the extrema of the
+    distance between two curves do not reliably find a crossing: the
+    distance there is zero and a minimum, but the search is for points
+    where the shortest link stands square to both curves, and on a
+    spline it walks past the crossing often enough. A line or an arc has
+    too simple a distance function for that to show; a drawn curve does
+    not, which is why filleting one used to be refused.
+    """
+    import numpy as np
+    from OCP.IntTools import IntTools_EdgeEdge
+
+    inter = IntTools_EdgeEdge(edge_a, edge_b)
+    inter.Perform()
+    if not inter.IsDone():
+        return []
+    where = occ.edge_adaptor(edge_a)
+    parts = inter.CommonParts()
+    out = []
+    for i in range(1, parts.Length() + 1):
+        part = parts.Value(i)
+        if part.Type() != occ.VERTEX:
+            continue        # a stretch they run along: no one corner in it
+        p = where.Value(part.VertexParameter1())
+        out.append(np.array([p.X(), p.Y(), p.Z()]))
+    return out
+
+
+def _crossings_extended(curve_a, curve_b) -> list:
+    """Where two curves' carriers cross, past the ends that were drawn.
+
+    What makes a corner out of two lines that stop short of each other:
+    a line's carrier is endless, an arc's goes round, and the crossing
+    is read off those.
+    """
+    import numpy as np
+    from OCP.GeomAPI import GeomAPI_ExtremaCurveCurve
+
+    try:
+        extrema = GeomAPI_ExtremaCurveCurve(curve_a, curve_b)
+        count = extrema.NbExtrema()
+    except Exception:                                   # noqa: BLE001
+        return []           # curves running along each other: no crossing
+    out = []
+    for i in range(1, count + 1):
+        if extrema.Distance(i) > tol():
+            continue                      # they pass each other here
+        p1, p2 = gp_Pnt(), gp_Pnt()
+        extrema.Points(i, p1, p2)
+        out.append(np.array([(p1.X() + p2.X()) / 2, (p1.Y() + p2.Y()) / 2,
+                             (p1.Z() + p2.Z()) / 2]))
+    return out
+
+
+def _crossings_by_reaching_on(edge_a, edge_b) -> list:
+    """Where two curves meet if each runs on from the end facing the other.
+
+    A drawn curve stops where it stops. A line's carrier is endless and
+    an arc's goes round, so two of those are carried out to their corner
+    by geometry alone, but a spline has nothing further to read: two
+    that never touch would have no corner at all. Running on straight,
+    the way the curve was heading, is what the eye expects of them, and
+    the straight run becomes part of what the fillet hands back.
+    """
+    end_a, end_b = nearest_ends(edge_a, edge_b)
+    reach = _reach_for(edge_a, edge_b)
+    ray_a = _end_ray(edge_a, end_a, reach)
+    ray_b = _end_ray(edge_b, end_b, reach)
+    out = []
+    if ray_a is not None:
+        out += _crossings_in(ray_a, edge_b)
+    if ray_b is not None:
+        out += _crossings_in(ray_b, edge_a)
+    if ray_a is not None and ray_b is not None:
+        out += _crossings_in(ray_a, ray_b)
+    return out
+
+
+def _reach_for(edge_a, edge_b) -> float:
+    """How far a curve may be carried on: the size of what is being
+    filleted, so a corner is looked for about the drawing rather than
+    somewhere out of sight."""
+    import numpy as np
+    pts = np.asarray(list(sample_curve(edge_a, 12))
+                     + list(sample_curve(edge_b, 12)), float)
+    return float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))) or 1.0
+
+
+def _end_ray(edge, at: Point, reach: float):
+    """A straight edge running on from `at`, the way the curve ends there."""
+    import numpy as np
+    from OCP.gp import gp_Vec
+
+    where = occ.edge_adaptor(edge)
+    u0, u1 = where.FirstParameter(), where.LastParameter()
+    here = np.asarray(at, float)
+    at_start = (np.linalg.norm(_xyz(where.Value(u0)) - here)
+                <= np.linalg.norm(_xyz(where.Value(u1)) - here))
+    p, v = gp_Pnt(), gp_Vec()
+    where.D1(u0 if at_start else u1, p, v)
+    along = np.array([v.X(), v.Y(), v.Z()])
+    length = float(np.linalg.norm(along))
+    if length < 1e-12:
+        return None
+    along = along / length * (-1.0 if at_start else 1.0)   # out, not back
+    return occ.to_edge(make_line(tuple(here), tuple(here + along * reach)))
+
+
+def _xyz(point):
+    """A kernel point as an array."""
+    import numpy as np
+    return np.array([point.X(), point.Y(), point.Z()])
+
+
+def _cut_or_reach(edge, carrier, corner, near: Point):
+    """What the corner leaves of a curve, carried on to it where needed.
+
+    A curve whose own geometry reaches the corner is simply cut there.
+    One whose does not keeps all of itself and gets a straight run to
+    the corner, which is tangent to it, since that is how the corner was
+    found in the first place.
+    """
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnCurve
+
+    import numpy as np
+    proj = GeomAPI_ProjectPointOnCurve(_pnt(corner), carrier)
+    if proj.NbPoints() >= 1 and proj.LowerDistance() <= tol():
+        return _cut_to_corner(edge, carrier, corner, near)
+    at = np.asarray(corner, float)
+    tip = min(_curve_ends(edge),
+              key=lambda p: float(np.linalg.norm(np.asarray(p) - at)))
+    return join_curves([edge, make_line(tip, corner)])
+
+
+def _cut_to_corner(edge, carrier, corner, near: Point):
+    """The piece of `edge`'s carrier from `corner` out past `near`."""
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnCurve
+
+    def _u(point) -> float:
+        proj = GeomAPI_ProjectPointOnCurve(_pnt(point), carrier)
+        if proj.NbPoints() < 1:
+            raise GeometryError("Could not place that point on the curve")
+        return float(proj.LowerDistanceParameter())
+
+    ad = occ.edge_adaptor(edge)
+    u0, u1 = ad.FirstParameter(), ad.LastParameter()
+    u_corner, u_near = _u(corner), _u(near)
+    if carrier.IsPeriodic():
+        # Angles: the piece runs from the corner the way round that the
+        # click lies, as far as the end it meets there.
+        period = carrier.Period()
+        if abs((u1 - u0) - period) < tight():
+            # A closed curve has no end to stop at: the corner is the one
+            # cut in it, and what is kept is everything from there round
+            # to there again. Its seam is not something anyone drew.
+            return BRepBuilderAPI_MakeEdge(carrier, u_corner,
+                                           u_corner + period).Edge()
+        ahead = (u1 - u_corner) % period        # to the end, going forward
+        behind = (u_corner - u0) % period       # to the start, going back
+        if (u_near - u_corner) % period <= ahead:
+            span, a, b = ahead, u_corner, u_corner + ahead
+        else:
+            span, a, b = behind, u_corner - behind, u_corner
+        if span < tight():
+            raise GeometryError("Nothing of that curve is left to keep")
+    else:
+        u_end = u1 if u_near > u_corner else u0
+        a, b = min(u_corner, u_end), max(u_corner, u_end)
+        if b - a < tight():
+            raise GeometryError("Nothing of that curve is left to keep")
+    return BRepBuilderAPI_MakeEdge(carrier, a, b).Edge()
 
 
 def _piece_end_tangent(edge, at_start: bool):

@@ -192,6 +192,11 @@ class FormReq(Req):
 @dataclass
 class SelectReq(Req):
     prompt: str
+    # The option a typed number sets, rather than answering the prompt:
+    # at "Select first curve (Radius=0)", 5 or 2mm means that radius and
+    # the question still stands. Rhino's prompts work this way, and a
+    # number is never the name of an object anyway.
+    number_option: str = ""
     min_count: int = 1
     max_count: int | None = None          # None = unlimited, finish with Enter
     kinds: tuple = ()                     # () = any; else e.g. ("curve",)
@@ -203,6 +208,11 @@ class SelectReq(Req):
     # trim takes the part that point is on (#31). A viewport click supplies
     # it; a typed, scripted or listed pick cannot, and leaves it out.
     want_point: bool = False
+
+
+def _is_length(text: str, units: str) -> bool:
+    from ..utils.units import parse_length
+    return parse_length(str(text), units) is not None
 
 
 def _kinds_phrase(kinds: tuple) -> str:
@@ -1033,11 +1043,19 @@ class CommandProcessor:
             return False
         for opt_name, values in req.choices.items():
             if opt_name.lower() == name.lower():
+                if value is None and not values:
+                    return False         # nothing to cycle through
                 if value is None:            # cycle
                     cur = self.command_options.get(opt_name, values[0])
                     idx = (values.index(cur) + 1) % len(values) \
                         if cur in values else 0
                     value = values[idx]
+                elif (getattr(req, "number_option", "") == opt_name
+                        and _is_length(value, self.ctx.scene.units)):
+                    # The prompt's own number: a radius is whatever was
+                    # typed, not one of a few listed answers. What the
+                    # option lists is only what it opens on.
+                    value = value.strip()
                 else:
                     matches = [v for v in values
                                if v.lower().startswith(value.lower())]
@@ -1054,6 +1072,21 @@ class CommandProcessor:
                 self._notify()
                 return True
         return False
+
+    def _number_option(self, text: str) -> bool:
+        """A number typed at a prompt that has one is that option's value.
+
+        "5" at "Select first curve (Radius=0)" is a radius of five, and
+        the prompt stands until a curve is picked: the option is what the
+        number was for, and an object is never called 5.
+        """
+        req = self.request
+        name = getattr(req, "number_option", "")
+        if not name:
+            return False
+        if not _is_length(text, self.ctx.scene.units):
+            return False
+        return self.set_option(name, text.strip())
 
     def _try_option_text(self, text: str) -> bool:
         req = self.request
@@ -1112,6 +1145,8 @@ class CommandProcessor:
         # names, paths and other literal text answers keep the character.
         if text.lstrip().startswith("!") and not isinstance(self.request, TextReq):
             self.run(text)
+            return
+        if text.strip() and self._number_option(text):
             return
         if text.strip() and self._try_option_text(text):
             return
@@ -1266,7 +1301,7 @@ class CommandProcessor:
         req = self.request
         if req is None or not getattr(req, "choices", None):
             return []
-        return [(n, self.command_options.get(n, v[0]))
+        return [(n, self.command_options.get(n, v[0] if v else ""))
                 for n, v in req.choices.items()]
 
     def prompt_text(self) -> str:
