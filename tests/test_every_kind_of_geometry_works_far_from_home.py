@@ -287,11 +287,11 @@ def test_a_far_mesh_in_a_glb_keeps_its_shape_and_is_placed_by_its_node(
     doc = json.loads(data[20:20 + length])
     node = doc["nodes"][0]
     assert "translation" in node, "a far mesh was left at absolute float32"
-    # Y-up: the model's x and y become x and -z.
-    assert abs(node["translation"][0] - FAR[0]) < 1.0
+    # Y-up: the model's x and y become x and -z, and glTF measures in metres.
+    assert abs(node["translation"][0] - FAR[0] / 1000) < 1e-3
     acc = doc["accessors"][0]
     span = np.asarray(acc["max"]) - np.asarray(acc["min"])
-    assert np.abs(np.sort(span)[-2:] - REVEAL).max() < 1e-6
+    assert np.abs(np.sort(span)[-2:] - REVEAL / 1000).max() < 1e-9
 
 
 def test_a_far_mesh_in_a_usda_is_placed_by_a_translate_op(tmp_path):

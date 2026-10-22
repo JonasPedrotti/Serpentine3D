@@ -59,9 +59,11 @@ def test_a_degenerate_plane_hint_is_refused():
 
 
 def test_parallel_lines_without_a_corner_fail_cleanly():
+    """Parallel lines have no corner, however far they are carried out,
+    and that is what is said rather than anything about the radius."""
     l1 = g.make_line((0.0, 0.0, 0.0), (10.0, 0.0, 0.0))
     l2 = g.make_line((0.0, 2.0, 0.0), (10.0, 2.0, 0.0))
-    with pytest.raises(g.GeometryError, match="share one plane"):
+    with pytest.raises(g.GeometryError, match="do not cross"):
         g.fillet_curves(l1, l2, 2.0, (5.0, 1.0, 0.0), plane=(0, 0, 1))
 
 

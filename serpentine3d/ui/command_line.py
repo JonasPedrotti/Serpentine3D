@@ -54,7 +54,8 @@ class CommandInput(QLineEdit):
             return False
         modifiers = ev.modifiers()
         return (modifiers == Qt.KeyboardModifier.NoModifier
-                and ev.key() in (Qt.Key.Key_Home, Qt.Key.Key_End)) or (
+                and ev.key() in (Qt.Key.Key_Home, Qt.Key.Key_End,
+                                 Qt.Key.Key_Delete)) or (
             modifiers & Qt.KeyboardModifier.ControlModifier
             and ev.key() in (Qt.Key.Key_C, Qt.Key.Key_V, Qt.Key.Key_A,
                              Qt.Key.Key_Z, Qt.Key.Key_Y, Qt.Key.Key_H))

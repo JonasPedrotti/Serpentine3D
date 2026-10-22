@@ -4,6 +4,20 @@
 
 ### Added
 
+- **Objects in the same place offer themselves on a click.** A duplicate
+  sitting exactly on top of another could only be told apart by holding
+  the button still or Alt-clicking, and nothing on screen said a second
+  one was there at all: one of them was unreachable until you knew the
+  trick. Now a plain click where two objects are in the same place opens
+  the chooser by itself. Only there. Something merely behind something
+  else is picked in front the way it always was, or a click in a full
+  drawing would be a menu every time, and a curve lying on a face still
+  goes to the curve, which the pick has always decided deliberately.
+  Objects that are in the same place but come to the same selection, a
+  group answering for its members, are not a choice and are not offered
+  as one. Holding the button still and Alt-click are untouched: they
+  reach what is behind, which is a different question.
+
 - **Hatch asks for its pattern, spacing and angle in one popup (#45).**
   What used to be three prompts one after another is a single window with
   the three together, so what the hatch is made of can be read off and
@@ -65,6 +79,26 @@
 - A picked row in a table (User text, and the settings dialog's aliases
   and shortcuts) shows in the theme's gold rather than the system's blue.
 
+- **Fillet asks only what it cannot read off the clicks.** The prompt
+  opens on "Select first curve" with Radius and Trim beside it, and both
+  stay there through the second pick: type a number and that is the
+  radius, type `t` and Trim flips, and the question still stands. Each
+  curve is picked near the corner it is to make, which is also what says
+  which side of a crossing to keep, so the separate corner click and the
+  radius drag are gone and the fillet is made as soon as the second curve
+  is picked. Radius 0 is Rhino's sharp corner: the curves are cut back,
+  or carried out, to the point they cross at, so curves that stop short
+  of each other now fillet instead of failing. Trim=No leaves both curves
+  where they are and adds the arc on its own. The radius and Trim are
+  remembered for as long as the program runs, as Rhino remembers them,
+  and open at 0 and Yes again when it is started afresh.
+
+- **Fillet's scripted input is now radius, curve, curve.** The radius is
+  an option on the prompt, so a script, macro or recorded journal gives
+  `[radius, curve, curve]` instead of `[curve, curve, corner, radius]`.
+  Those using the old order stop working and need the new one. The radius
+  takes units as the old prompt did: `2mm`, `0.5in` and `1/2"`.
+
 ### Fixed
 
 - **Both pieces of a hidden object keep its look.** A hidden .3dm object
@@ -72,6 +106,39 @@
   sew, gave the second piece none of the object's colour or material once
   it was shown, though a file opened with it showing gave both. Now it
   gets them, and the object's user text.
+- **A glTF, USD or FBX export is the size of the model.** glTF measures in
+  metres, and the export wrote document units into it, so a 20 mm ring
+  opened in Blender 20 m across, as it would in anything else that shows
+  glTF at real size. FBX did the same by saying every model was in metres.
+  USD said every model was in millimetres, so one drawn in inches came in
+  25.4 times too small. All three now come out at their real size,
+  whatever units the document is in.
+- **Delete works from an empty command line.** Typing a command leaves the
+  keyboard in the command line, and Delete went nowhere from there, so
+  Ctrl+A then Delete picked everything and deleted nothing. An empty
+  command line now hands Delete to the model, on a sheet as well, and with
+  text typed Delete still edits the text. Contributed by DarkWrangler (#97).
+
+- **Fillet carries a drawn curve on to its corner.** Two curves that
+  cross nowhere were refused, however near they lay and wherever they
+  were picked. A line or an arc is carried out to a corner by its own
+  geometry, which is how a gap between two of those has always been
+  bridged, but a drawn curve stops where it stops and has no more of
+  itself to read. It now runs on straight, the way it was heading when
+  it ended, until it meets the other curve, and that straight bit is
+  part of what comes back: nothing anyone drew is moved or redrawn. Two
+  curves that head away from each other still have no corner, and still
+  say so.
+
+- **Fillet no longer fails on a polyline, or eats the rest of it.**
+  Picking a curve made of more than one piece raised
+  `Standard_TypeMismatch: TopoDS::Edge`; the piece nearest the pick is
+  the one filleted, and everything else the polyline is made of comes
+  through the fillet untouched instead of being dropped. What lay past
+  the corner on the side nobody picked is what the trim takes, as it is
+  for a single curve. Where the kernel rounds a
+  crossing on the side nobody picked, only its arc is taken and both
+  curves are cut to the corner, so what is kept is what was clicked.
 
 - **A scan at survey coordinates is a scan again, not a set of lines.**
   A point cloud was held in absolute float32, whose grid steps 3cm at half

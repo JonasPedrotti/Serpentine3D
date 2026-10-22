@@ -161,7 +161,7 @@ Commands that need a file open a filtered chooser by default. Append
 | `delete` (`del`, `erase`) | Delete |
 | `dir` | Show which way curves run and which way surfaces face. |
 | `explode` (`x`) | Explode |
-| `fillet` | Round two curves in the plane they already lie on, or edges of a selected solid/surface. |
+| `fillet` | Round the corner between two curves, or edges of a selected solid/surface. Pick each curve near the corner you mean. Radius and Trim stay on the prompt and can be changed between the picks (a typed number is the radius, `t` flips Trim), and both are remembered until the program is started again. Radius 0 gives a sharp corner: the curves are cut back, or carried out, to the point they cross at. |
 | `filletcorners` | Round every corner of a polyline at once with one radius — straight and arc pieces both round. |
 | `flip` | Turn curves round and surfaces inside out, as Rhino's Flip does. |
 | `hide` | Hide |
