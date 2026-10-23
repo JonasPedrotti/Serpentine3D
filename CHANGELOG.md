@@ -2,7 +2,55 @@
 
 ## Unreleased
 
+### Added
+
+- **A clipping plane can be switched off in some views and not others.**
+  Rhino lets a clipping plane choose the views it cuts, and a sheet needs
+  it: a plan detail cut at sill height, a section detail cut down the
+  middle and an elevation not cut at all, each by its own plane, all from
+  one model. A plane still cuts every view to begin with, each model pane
+  and each detail on every sheet, and any of them can be switched off.
+  The pane's title menu lists the planes that cut it under Clipping
+  Planes, a tick each. A plane's Properties lists every view it cuts,
+  the panes and then each sheet's details, with Paused above them. A
+  detail's Properties lists the planes that cut it. In the view you are
+  working in, `disableclippinginview` (`dcv`) and `enableclippinginview`
+  (`ecv`) do the same from the command line, and inside a detail they
+  mean the detail. A pane keeps its place in the list when it is turned
+  to another view, a detail keeps its setting in the file, and a
+  duplicated sheet's details are cut the way the originals were.
+  `disableclippingplane` still pauses a plane everywhere, and now keeps
+  the views it is switched off in for when it resumes; scripts read the
+  setting from `scene_info`. Enter on nothing at any of the four
+  commands' prompts now means every plane, as the prompts always said,
+  rather than cancelling.
+
 ### Fixed
+
+- **A clipping plane cuts a detail as well (#94).** A detail is a view of
+  the model, and a section is what most wants putting on a sheet, but
+  every detail drew the model whole, whatever the clipping planes said.
+  Now a detail takes the same cut as a model view, in every display mode,
+  on the sheet and in the PDF and DXF. A hidden-line detail hatches the
+  faces the plane leaves the way it hatches its own section, and can
+  have both at once. A shaded one closes what it cuts with the model
+  view's caps, hatched at the hatch's spacing on the paper and outlined
+  at its print width, so the two kinds of detail read alike on one sheet.
+  The plane itself still draws in a detail, as everywhere else; leave its
+  layer out of the detail for a clean section that still cuts. Reported
+  by lourencovp.
+
+- **Inside a detail, Properties and Delete follow what you pick (#93).**
+  The click before a double-click picks the detail on the sheet, as the
+  `detail` command does with one it has just placed, and going inside
+  left that pick behind. So a box picked through the detail could be
+  moved and changed, but Properties stayed on the detail, and Delete
+  took the whole detail off the sheet and left the box. Going into a
+  detail now lets go of what was picked on the sheet. Inside one,
+  Properties shows what you have picked in the model and Delete deletes
+  it, as Copy and the commands already did; with nothing picked, it
+  shows the detail you are in, so its scale and view can still be
+  changed from there. Reported by lourencovp.
 
 - **A scan at survey coordinates is a scan again, not a set of lines.**
   A point cloud was held in absolute float32, whose grid steps 3cm at half
