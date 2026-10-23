@@ -83,6 +83,39 @@ def test_an_empty_mesh_costs_nothing():
     assert mesh.vertices.shape == (0, 3)
 
 
+@pytest.mark.parametrize("stray", [
+    g.make_point((1_000_000.0, 0.0, 0.0)),
+    g.make_line((1_000_000.0, 0.0, 0.0), (1_000_100.0, 0.0, 0.0)),
+], ids=["point", "edge"])
+def test_a_stray_far_piece_leaves_the_faces_where_they_are(stray):
+    """A surface model with a survey point or line far out: one origin
+    for the lot, chosen from all of it, and the faces stay at home."""
+    box = g.make_box((0, 0, 0), 10, 10, 10)
+    mesh = tessellate(g.make_compound([box, stray]))
+
+    xs = mesh.vertices[:, 0]
+    assert abs(xs.min()) < 0.1 and abs(xs.max() - 10) < 0.1
+
+
+def test_arrays_given_one_at_a_time_still_share_one_origin():
+    mesh = _mesh_of([[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]])
+    mesh.points = np.array([[1_000_000.0, 0.0, 0.0]])
+
+    assert mesh.far
+    assert np.abs(mesh.vertices - [[0, 0, 0], [10, 10, 10]]).max() < 0.1
+
+
+def test_far_data_centred_on_home_still_counts_as_far():
+    """Its origin is (0, 0, 0), which is no reason for the next array
+    to go and choose another."""
+    mesh = _mesh_of([[-1_000_000.0, 0.0, 0.0], [1_000_000.0, 0.0, 0.0]])
+    assert mesh.far and np.array_equal(mesh.origin, np.zeros(3))
+
+    mesh.points = np.array([[1_000_000.0, 5.0, 0.0]])
+    assert np.array_equal(mesh.origin, np.zeros(3))
+    assert np.abs(mesh.vertices[:, 0]).max() == 1_000_000.0
+
+
 # -- the detail that used to collapse -------------------------------------
 
 def _far_box(size=REVEAL):

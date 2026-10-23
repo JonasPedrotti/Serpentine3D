@@ -210,7 +210,7 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
     # there makes it stick. So a file carrying one says so.
     if any(_carries_an_origin(shape) for shape in new_shapes):
         doc["version"] = 7
-        doc["requires"] = "0.12.1"
+        doc["requires"] = "0.12.2"
     _write_container(doc, path, thumbnail, blobs)
 
 

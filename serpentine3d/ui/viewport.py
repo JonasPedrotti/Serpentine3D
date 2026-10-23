@@ -613,6 +613,14 @@ def rebased(pts, anchor):
     return (np.asarray(pts, np.float64) - anchor).astype(np.float32)
 
 
+def uploadable(mesh, local, anchor):
+    """Some of a mesh's own coordinates, ready for its buffers: a far
+    mesh's offsets go as they are, a near one's are rebased like the rest."""
+    if mesh.far:
+        return np.ascontiguousarray(local, np.float32)
+    return rebased(local, anchor)
+
+
 # The display modes that fill faces solidly, and so close a cut solid with
 # a cap. Wireframe has no faces to close, and ghosted ones are see-through.
 CAP_MODES = ("shaded", "zebra", "curvature", "draft", "rendered")
@@ -2231,7 +2239,7 @@ class Viewport(QOpenGLWidget):
         and one would simply be discarded.
         """
         if (len(mesh.triangles) < spatial.MIN_PRIMITIVES
-                and len(mesh.edge_segments) < spatial.MIN_PRIMITIVES):
+                and len(mesh.local_edges) < spatial.MIN_PRIMITIVES):
             return                         # most of a drawing, and never worth
 
         def work():
@@ -2550,8 +2558,8 @@ class Viewport(QOpenGLWidget):
             if subs and len(obj.mesh.edge_of_segment):
                 mask = np.isin(obj.mesh.edge_of_segment, subs)
                 if mask.any():
-                    segs = rebased(obj.mesh.edge_segments[mask],
-                                   gpu.anchor)
+                    segs = uploadable(obj.mesh, obj.mesh.local_edges[mask],
+                                      gpu.anchor)
                     # Gold over a dark halo, the control-point markers'
                     # trick, through the screen-space quad shader: a
                     # width glLineWidth cannot cap to a hairline.
@@ -2569,8 +2577,9 @@ class Viewport(QOpenGLWidget):
                 mask = np.isin(obj.mesh.face_of_triangle, fsubs)
                 if mask.any():
                     tris = obj.mesh.triangles[mask]
-                    pts = obj.mesh.vertices[tris.ravel()]
-                    self._preview.update(rebased(pts, gpu.anchor))
+                    pts = uploadable(obj.mesh, obj.mesh.local[tris.ravel()],
+                                     gpu.anchor)
+                    self._preview.update(pts)
                     self._set_line_uniforms(omvp,
                                             (*theme.SELECTION_COLOR, 0.45))
                     GL.glBindVertexArray(self._preview.vao)
@@ -4500,7 +4509,7 @@ class Viewport(QOpenGLWidget):
         found = []
         for obj in near_cursor:
             mesh = obj.mesh
-            if not len(mesh.edge_segments):
+            if not len(mesh.local_edges):
                 continue
             segs, sub = self._near_segments(mesh, px - r, py - r,
                                             px + r, py + r, w, h)
@@ -5258,7 +5267,7 @@ class Viewport(QOpenGLWidget):
                       and self.selection.filter_allows(obj.kind)]
         for obj in self._pick_candidates(selectable, *rect, w, h):
             mesh = obj.mesh
-            if len(mesh.edge_segments):
+            if len(mesh.local_edges):
                 segs = mesh.edge_segments
                 if crossing:
                     # a crossing box asks whether *any* point falls inside,
@@ -5394,7 +5403,7 @@ class Viewport(QOpenGLWidget):
         caught = []
         for obj in self._pick_candidates(selectable, *rect, w, h):
             mesh = obj.mesh
-            if len(mesh.edge_of_segment) and len(mesh.edge_segments):
+            if len(mesh.edge_of_segment) and len(mesh.local_edges):
                 # only the segments whose chunk can reach the rect are
                 # projected; a chunk thrown out is outside it, which is an
                 # answer in itself for a window

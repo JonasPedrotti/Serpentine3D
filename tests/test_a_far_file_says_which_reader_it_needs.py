@@ -59,7 +59,7 @@ def test_a_far_mesh_asks_for_the_release_that_can_read_it(tmp_path):
     doc, _path = _saved(scene, tmp_path)
 
     assert doc["version"] == 7
-    assert doc["requires"] == "0.12.1"
+    assert doc["requires"] == "0.12.2"
 
 
 def test_a_far_scan_asks_for_it_too(tmp_path):
@@ -69,7 +69,7 @@ def test_a_far_scan_asks_for_it_too(tmp_path):
     doc, _path = _saved(scene, tmp_path)
 
     assert doc["version"] == 7
-    assert doc["requires"] == "0.12.1"
+    assert doc["requires"] == "0.12.2"
 
 
 def test_a_far_mesh_inside_a_block_counts_as_well(tmp_path):
@@ -91,7 +91,7 @@ def test_a_drawing_near_home_is_written_as_it_always_was(tmp_path):
     doc, _path = _saved(scene, tmp_path)
 
     assert doc["version"] < 7
-    assert "requires" not in doc or doc["requires"] != "0.12.1"
+    assert "requires" not in doc or doc["requires"] != "0.12.2"
 
 
 def test_a_picture_far_out_is_not_one_of_these(tmp_path):
@@ -119,7 +119,7 @@ def test_an_older_reader_is_turned_away_rather_than_misreading(
     monkeypatch.setattr(native, "FORMAT_VERSION", 6)
     older = Scene()
     kept = older.add(g.make_box((0, 0, 0), 1, 1, 1))
-    with pytest.raises(ValueError, match="0.12.1"):
+    with pytest.raises(ValueError, match="0.12.2"):
         native.load_scene(older, path)
     assert older.get(kept.id) is kept, "the drawing it had is left alone"
 

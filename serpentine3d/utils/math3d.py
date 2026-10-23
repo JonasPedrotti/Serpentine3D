@@ -36,8 +36,14 @@ def origin_for(points) -> np.ndarray | None:
     """
     if not len(points):
         return None
-    lo = np.asarray(points.min(axis=0), np.float64)
-    hi = np.asarray(points.max(axis=0), np.float64)
+    return origin_between(np.asarray(points.min(axis=0), np.float64),
+                          np.asarray(points.max(axis=0), np.float64))
+
+
+def origin_between(lo, hi) -> np.ndarray | None:
+    """origin_for, from the corners of the data's bounding box."""
+    if lo is None:
+        return None
     if max(np.abs(lo).max(), np.abs(hi).max()) <= ANCHOR_NEAR:
         return None
     return (lo + hi) * 0.5

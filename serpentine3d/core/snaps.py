@@ -500,7 +500,7 @@ class SnapIndex:
         cursor = np.array([px, py])
         for obj in objects:
             mesh = obj.mesh
-            if not len(mesh.edge_segments):
+            if not len(mesh.local_edges):
                 continue
             seg = mesh.edge_segments
             a3, b3 = seg[:, 0, :].astype(float), seg[:, 1, :].astype(float)

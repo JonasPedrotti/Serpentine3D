@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..utils.math3d import offsets_from, origin_for
+from ..utils.math3d import offsets_from, origin_between
 from . import occ, geometry
 from .occ import (
     BRepMesh_IncrementalMesh, TopExp_Explorer, TopLoc_Location,
@@ -16,6 +16,21 @@ from .occ import (
 from .spatial import build_index
 
 _UNINDEXED = object()
+
+_LOCALS = ("local", "local_edges", "local_isos", "local_points")
+
+
+def _extent(*arrays) -> tuple:
+    """(lo, hi) over every point in `arrays`, without joining them."""
+    lows, highs = [], []
+    for a in arrays:
+        if len(a):
+            flat = a.reshape(-1, 3)
+            lows.append(np.asarray(flat.min(axis=0), np.float64))
+            highs.append(np.asarray(flat.max(axis=0), np.float64))
+    if not lows:
+        return None, None
+    return np.min(lows, axis=0), np.max(highs, axis=0)
 
 # Serial numbers for display meshes; see DisplayMesh.uid. next() on a count
 # is a single bytecode, so the tessellation workers can share one.
@@ -83,6 +98,7 @@ class DisplayMesh:
     # comparison, since two meshes of the same geometry are still equal.
     uid: int = field(default_factory=lambda: next(_uids),
                      repr=False, compare=False)
+    _far: bool = field(default=False, repr=False, compare=False)
     _bounds: tuple | None = field(default=None, repr=False, compare=False)
     # spatial indexes for picking, built on first click and kept: None means
     # "not looked at yet", _UNINDEXED means "looked at, not worth indexing"
@@ -97,29 +113,42 @@ class DisplayMesh:
             return np.asarray(local)
         return np.asarray(local, np.float64) + self.origin
 
-    def _rebase(self, points) -> np.ndarray:
-        """World coordinates as offsets from this mesh's origin.
+    def place(self, *, vertices=None, edge_segments=None, iso_segments=None,
+              points=None) -> None:
+        """Store world coordinates, deciding once where the mesh sits.
 
-        The first array that arrives decides where the mesh sits; the
-        rest are measured from the same point, since a mesh's edges and
-        its faces are in the same place by definition.
+        The origin is chosen from everything the mesh holds, what it is
+        given here and what it was given before, so faces at home and a
+        stray point far out share one origin rather than the faces being
+        measured from where the point is.
         """
-        pts = np.asarray(points)
-        if not len(pts):
-            return np.ascontiguousarray(pts, np.float32)
+        given = {name: np.asarray(pts) for name, pts in (
+            ("local", vertices), ("local_edges", edge_segments),
+            ("local_isos", iso_segments), ("local_points", points))
+            if pts is not None}
         if not self.far:
-            found = origin_for(pts.reshape(-1, 3))
-            if found is None:
-                return np.ascontiguousarray(pts, np.float32)
-            self.origin = found
-        shape = pts.shape
+            held = {name: getattr(self, name) for name in _LOCALS
+                    if name not in given and len(getattr(self, name))}
+            found = origin_between(*_extent(
+                *given.values(), *held.values()))
+            if found is not None:
+                self.origin = found
+                self._far = True
+                given.update(held)
+                self._bounds = self._tri_index = self._seg_index = None
+        for name, pts in given.items():
+            setattr(self, name, self._offsets(pts))
+
+    def _offsets(self, pts) -> np.ndarray:
+        if not len(pts) or not self.far:
+            return np.ascontiguousarray(pts, np.float32)
         flat = offsets_from(pts.reshape(-1, 3), self.origin)
-        return flat.reshape(shape)
+        return flat.reshape(pts.shape)
 
     @property
     def far(self) -> bool:
         """Whether this mesh keeps its coordinates relative to an origin."""
-        return bool(np.any(self.origin))
+        return self._far
 
     @property
     def vertices(self) -> np.ndarray:
@@ -127,7 +156,7 @@ class DisplayMesh:
 
     @vertices.setter
     def vertices(self, points):
-        self.local = self._rebase(points)
+        self.place(vertices=points)
 
     @property
     def edge_segments(self) -> np.ndarray:
@@ -135,7 +164,7 @@ class DisplayMesh:
 
     @edge_segments.setter
     def edge_segments(self, points):
-        self.local_edges = self._rebase(points)
+        self.place(edge_segments=points)
 
     @property
     def iso_segments(self) -> np.ndarray:
@@ -143,7 +172,7 @@ class DisplayMesh:
 
     @iso_segments.setter
     def iso_segments(self, points):
-        self.local_isos = self._rebase(points)
+        self.place(iso_segments=points)
 
     @property
     def points(self) -> np.ndarray:
@@ -151,7 +180,7 @@ class DisplayMesh:
 
     @points.setter
     def points(self, points):
-        self.local_points = self._rebase(points)
+        self.place(points=points)
 
     @property
     def has_faces(self) -> bool:
@@ -475,22 +504,19 @@ def tessellate(shape, deflection: float | None = None) -> DisplayMesh:
             segments.append(seg)
             seg_edge_ids.append(np.full(len(seg), edge_index, np.int32))
 
+    free_pts = geometry.free_points(shape)
     mesh = DisplayMesh()
+    mesh.place(
+        vertices=np.concatenate(all_verts) if all_verts else None,
+        edge_segments=np.concatenate(segments) if segments else None,
+        iso_segments=np.concatenate(isos) if isos else None,
+        points=np.asarray(free_pts, float) if free_pts else None)
     if all_verts:
-        mesh.vertices = np.concatenate(all_verts)
         mesh.normals = np.concatenate(all_norms)
         mesh.triangles = np.concatenate(all_tris)
         mesh.curvature = np.concatenate(all_curv).astype(np.float32)
         mesh.has_curvature = _CURVATURE
         mesh.face_of_triangle = np.concatenate(tri_face_ids)
     if segments:
-        mesh.edge_segments = np.concatenate(segments)
         mesh.edge_of_segment = np.concatenate(seg_edge_ids)
-    if isos:
-        mesh.iso_segments = np.concatenate(isos)
-
-    # free-standing points: vertex shapes and vertices dangling in compounds
-    free_pts = geometry.free_points(shape)
-    if free_pts:
-        mesh.points = np.asarray(free_pts, float)
     return mesh
