@@ -20,7 +20,7 @@ from ..core.layers import (DEFAULT_CUT_LINE_WIDTH, DEFAULT_SCREEN_WIDTH,
 
 # The newest version this reader understands. Anything newer is refused
 # with the version it asks for, never a traceback.
-FORMAT_VERSION = 6
+FORMAT_VERSION = 7
 # What a document with none of the version-3 kinds is written as.
 PLAIN_VERSION = 2
 # The Serpentine3D release a version-3 file asks its reader to be.
@@ -202,7 +202,36 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
     if any(obj.user_text for obj in scene.all()):
         doc["version"] = 6
         doc["requires"] = "0.12.1"
+    # Geometry far from the world's origin is written as float32 offsets
+    # from a float64 origin, which is the only way four bytes can hold a
+    # millimetre out at survey coordinates. A reader that knows nothing of
+    # that origin takes the offsets for the coordinates themselves and
+    # puts the object at the world's origin, without a word, and a save
+    # there makes it stick. So a file carrying one says so.
+    if any(_carries_an_origin(shape) for shape in new_shapes):
+        doc["version"] = 7
+        doc["requires"] = "0.12.2"
     _write_container(doc, path, thumbnail, blobs)
+
+
+def _carries_an_origin(shape) -> bool:
+    """Whether this shape is written as offsets from an origin.
+
+    Meshes and clouds are, wherever they are written from: an object, a
+    block definition, or a layout. A picture is a mesh by inheritance but
+    writes itself its own way, with no offsets in it.
+    """
+    from ..core.mesh import MeshShape
+    from ..core.picture import PictureShape
+    from ..core.pointcloud import PointCloudShape
+    from ..utils.math3d import origin_for
+    if isinstance(shape, PointCloudShape):
+        return bool(shape.far)
+    if isinstance(shape, PictureShape):
+        return False
+    if isinstance(shape, MeshShape):
+        return origin_for(shape.vertices) is not None
+    return False
 
 
 def _image_planes_to_json(planes, blobs: dict) -> list[dict]:
@@ -239,7 +268,7 @@ def _cloud_to_json(obj, blobs: dict) -> dict:
     cloud = obj.shape
     base = f"blobs/{obj.id}/"
     names = {"xyz": base + "xyz.f32"}
-    blobs[names["xyz"]] = np.ascontiguousarray(cloud.xyz, "<f4").tobytes()
+    blobs[names["xyz"]] = np.ascontiguousarray(cloud.local, "<f4").tobytes()
     if cloud.rgb is not None:
         names["rgb"] = base + "rgb.u8"
         blobs[names["rgb"]] = np.ascontiguousarray(
@@ -262,6 +291,11 @@ def _cloud_to_json(obj, blobs: dict) -> dict:
         "bbox": [list(mn), list(mx)],
         "blobs": names,
     }
+    if cloud.far:
+        # What the float32 blob is measured from. Only a scan standing far
+        # from the world's origin carries one, so a file of near-home
+        # clouds is byte for byte what it was before.
+        entry["origin"] = [float(c) for c in cloud.origin]
     if cloud.provenance:
         entry["provenance"] = dict(cloud.provenance)
     if obj.color:
@@ -606,24 +640,42 @@ def _cloud_from_json(cd: dict, blobs):
     return PointCloudShape(xyz, sized(read("rgb", np.uint8, 3)),
                            sized(read("conf", "<f4")),
                            sized(read("level", np.uint8)),
-                           provenance=cd.get("provenance"))
+                           provenance=cd.get("provenance"),
+                           origin=cd.get("origin"))
 
 
 def _mesh_to_json(mesh) -> dict:
+    """The vertices as float32, with an origin when the mesh needs one.
+
+    float32 steps 6cm at a million units, so a survey mesh written in
+    absolute coordinates came back from its own file on that grid. Out
+    there the vertices are written as offsets from "o" instead, which the
+    same four bytes hold to a fraction of a micron. A mesh near the
+    origin carries no "o" and is written exactly as it always was."""
     import numpy as np
-    return {
+    from ..utils.math3d import offsets_from, origin_for
+    origin = origin_for(mesh.vertices)
+    verts = (mesh.vertices if origin is None
+             else offsets_from(mesh.vertices, origin))
+    out = {
         "v": base64.b64encode(
-            mesh.vertices.astype("<f4").tobytes()).decode("ascii"),
+            np.asarray(verts).astype("<f4").tobytes()).decode("ascii"),
         "t": base64.b64encode(
             mesh.triangles.astype("<u4").tobytes()).decode("ascii"),
     }
+    if origin is not None:
+        out["o"] = [float(c) for c in origin]
+    return out
 
 
 def _mesh_from_json(data: dict):
     import numpy as np
     from ..core.mesh import MeshShape
     v = np.frombuffer(base64.b64decode(data["v"]),
-                      dtype="<f4").reshape(-1, 3)
+                      dtype="<f4").reshape(-1, 3).astype(float)
     t = np.frombuffer(base64.b64decode(data["t"]),
                       dtype="<u4").reshape(-1, 3)
+    origin = data.get("o")
+    if origin is not None:
+        v = v + np.asarray(origin, float)
     return MeshShape(v, t)

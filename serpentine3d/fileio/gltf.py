@@ -12,6 +12,7 @@ import struct
 import numpy as np
 
 from ..core.tessellate import tessellate
+from ..utils.math3d import offsets_from, origin_for
 from ..utils.units import convert
 
 # Z-up -> Y-up: (x, y, z) -> (x, z, -y)
@@ -46,7 +47,19 @@ def export_glb(scene, path: str, only_ids: list | None = None):
         mesh = tessellate(obj.shape)
         if not mesh.has_faces:
             continue
-        verts = (mesh.vertices @ _ZUP_TO_YUP.T * to_m).astype(np.float32)
+        # glTF positions are float32 by the spec, which steps 6cm at a
+        # million units. A mesh that far out is written about its own
+        # origin and placed by its node's translation instead, the way
+        # glTF means a scene to be put together: the shape keeps its
+        # detail, and only where it stands is held in the format's own
+        # precision. Near home there is no translation and nothing changes.
+        placed = np.asarray(mesh.vertices, float) @ _ZUP_TO_YUP.T
+        origin = origin_for(placed)
+        if origin is None:
+            verts = (placed * to_m).astype(np.float32)
+        else:
+            origin = origin * to_m
+            verts = offsets_from(placed * to_m, origin)
         norms = (mesh.normals @ _ZUP_TO_YUP.T).astype(np.float32)
         idx = mesh.triangles.astype(np.uint32).ravel()
 
@@ -93,7 +106,10 @@ def export_glb(scene, path: str, only_ids: list | None = None):
                 "material": len(materials) - 1,
             }],
         })
-        nodes.append({"name": obj.name, "mesh": len(meshes) - 1})
+        node = {"name": obj.name, "mesh": len(meshes) - 1}
+        if origin is not None:
+            node["translation"] = [float(c) for c in origin]
+        nodes.append(node)
 
     doc = {
         "asset": {"version": "2.0", "generator": "Serpentine3D"},

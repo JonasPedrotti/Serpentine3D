@@ -213,8 +213,14 @@ class CutLines:
         key = (oid, tuple(plane.origin), tuple(plane.normal))
         hit = self._used.get(key) or self._kept.get(key)
         if hit is None or hit[0] is not mesh:
-            hit = (mesh, plane_cut_segments(mesh.vertices, mesh.triangles,
-                                            plane.origin, plane.normal))
+            # Cut in the mesh's own coordinates and move the answer out:
+            # the plane is a point and a direction, the mesh is millions
+            # of triangles, so the plane is the one that travels. A
+            # dragged plane asks this of every solid it touches.
+            here = np.asarray(plane.origin, float) - mesh.origin
+            cut = plane_cut_segments(mesh.local, mesh.triangles,
+                                     here, plane.normal)
+            hit = (mesh, mesh.to_world(cut))
         self._used[key] = hit
         return hit[1]
 
