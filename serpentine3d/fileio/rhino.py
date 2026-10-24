@@ -1814,7 +1814,7 @@ def export_3dm(scene, path: str, only_ids: list | None = None,
         # curves it is drawn with rather than as a mesh with no faces,
         # which is nothing; a solid one leaves as its filled mesh (#33)
         if obj.kind == "curve" or (obj.kind == "hatch"
-                                   and obj.shape.pattern != "solid"):
+                                   and not obj.shape.solid):
             exported = False
             for edge in geometry.edges_of(obj.shape):
                 nc = _shape_to_r3_curve(edge)

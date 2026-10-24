@@ -7,8 +7,8 @@ import numpy as np
 from ..core import clipping
 from ..core import geometry as g
 from ..core.layout import (
-    PAPER_SIZES, DetailView, Layout, LinearDim, TextNote, parse_scale,
-    unique_layout_name,
+    PAPER_SIZES, DetailView, Layout, LinearDim, TextNote, hatch_patterns_of,
+    parse_scale, pattern_label, pattern_named, unique_layout_name,
 )
 # a detail view named "front" should look where the front view looks
 from ..ui.camera import STANDARD_VIEWS as _VIEW_ANGLES
@@ -509,14 +509,24 @@ def cmd_leader(ctx):
     ctx.echo("Leader placed.")
 
 
-def _pattern_choices() -> list[str]:
+def _pattern_choices(ctx) -> list[str]:
     """The fills on offer, spelled the way a prompt spells them.
 
     Read off the same list a layer is set from, so a fill the app learns
-    to draw is offered here without anybody remembering to come back.
+    to draw is offered here without anybody remembering to come back, and
+    a pattern loaded from a .pat file is offered beside the app's own.
     """
-    from ..core.layout import HATCH_PATTERNS
-    return [p.capitalize() for p in HATCH_PATTERNS]
+    return [pattern_label(p) for p in hatch_patterns_of(ctx.scene)]
+
+
+def _pattern_answer(ctx, answer) -> tuple:
+    """(name, definition) for the pattern a prompt was answered with: the
+    name as the drawing keeps it, and the HatchPattern a loaded pattern
+    is drawn from, None for the app's own."""
+    from ..core.hatch_patterns import is_builtin
+    name = pattern_named(ctx.scene, answer) or str(answer).lower()
+    return name, (None if is_builtin(name)
+                  else ctx.scene.hatch_pattern(name))
 
 
 def _layer_pattern(ctx) -> str:
@@ -528,9 +538,10 @@ def _layer_pattern(ctx) -> str:
     fill leaves the command where it has always been, on lines: a hatch
     drawn by hand is there to be seen.
     """
-    from ..core.layout import HATCH_PATTERNS
     fill = ctx.scene.layers.current.hatch
-    return (fill if fill in HATCH_PATTERNS else "lines").capitalize()
+    if fill.lower() not in [p.lower() for p in hatch_patterns_of(ctx.scene)]:
+        fill = "lines"
+    return pattern_label(fill)
 
 
 # "paper" still, though it hatches in the model too: the space only says what
@@ -546,7 +557,7 @@ def cmd_hatch(ctx):
         yield from _hatch_in_the_model(ctx)
         return
     from ..core.layout import Hatch
-    choices = _pattern_choices()
+    choices = _pattern_choices(ctx)
     offered = _layer_pattern(ctx)
     pts = []
     first = yield PointReq("First corner of hatch region "
@@ -565,14 +576,18 @@ def cmd_hatch(ctx):
         # prompt opens on: hatching a cut for real should not change what
         # the cut is made of. Off a cut, or on one left empty, the layer
         # answers as it always did.
-        material = material.capitalize()
+        material = pattern_label(material)
+        rings = ([list(p) for p in poly],
+                 [[list(p) for p in ring] for ring in holes])
         pattern = yield OptionReq(
             "Pattern", options=choices,
-            default=material if material in choices else offered)
-        lay.hatches.append(Hatch(points=[list(p) for p in poly],
-                                 holes=[[list(p) for p in ring]
-                                        for ring in holes],
-                                 pattern=pattern.lower(),
+            default=material if material in choices else offered,
+            preview_fn=lambda answer: Hatch(
+                points=rings[0], holes=rings[1],
+                pattern=_pattern_answer(ctx, answer)[0], angle=look.angle,
+                spacing=look.spacing, color=_color_list(look.color)))
+        lay.hatches.append(Hatch(points=rings[0], holes=rings[1],
+                                 pattern=_pattern_answer(ctx, pattern)[0],
                                  angle=look.angle, spacing=look.spacing,
                                  color=_color_list(look.color)))
         ctx.scene.notify()
@@ -590,15 +605,21 @@ def cmd_hatch(ctx):
             break
         pts.append([p[0], p[1]])
     look = _layer_look(ctx)
+
+    def sheet_hatch(answers):
+        return Hatch(points=pts,
+                     pattern=_pattern_answer(ctx, answers["pattern"])[0],
+                     angle=float(answers["angle"]),
+                     spacing=float(answers["spacing"]),
+                     color=_color_list(look.color))
+
     answers = yield _hatch_form(ctx, spacing=look.spacing, angle=look.angle,
-                                pattern=offered, unit=" (mm)", minimum=0.2)
-    pattern, spacing, angle = (answers["pattern"], answers["spacing"],
-                               answers["angle"])
-    lay.hatches.append(Hatch(points=pts, pattern=pattern.lower(),
-                             angle=angle, spacing=spacing,
-                             color=_color_list(look.color)))
+                                pattern=offered, unit=" (mm)", minimum=0.2,
+                                live=sheet_hatch)
+    hatch = sheet_hatch(answers)
+    lay.hatches.append(hatch)
     ctx.scene.notify()
-    ctx.echo(f"Hatch placed ({pattern.lower()}).")
+    ctx.echo(f"Hatch placed ({hatch.pattern}).")
 
 
 def _hatch_in_the_model(ctx):
@@ -639,17 +660,34 @@ def _hatch_in_the_model(ctx):
         return
     size = max(float(np.ptp(np.array(g.bbox(r)), axis=0).max())
                for r in regions)
-    answers = yield _hatch_form(ctx, spacing=_round_spacing(size),
-                                preview=_region_ghost(regions))
-    pattern = str(answers["pattern"]).lower()
-    spacing = float(answers["spacing"])
-    angle = float(answers["angle"])
     xdir = tuple(ctx.cplane.xdir) if ctx.cplane is not None else None
+
+    def hatches(answers):
+        pattern, definition = _pattern_answer(ctx, answers["pattern"])
+        return pattern, [HatchShape(region, pattern,
+                                    angle=float(answers["angle"]),
+                                    spacing=float(answers["spacing"]),
+                                    xdir=xdir, definition=definition)
+                         for region in regions]
+
+    def live(answers):
+        # What OK would make, while the popup is still open; a spacing too
+        # fine to draw shows the regions instead, as before.
+        try:
+            return _region_ghost(hatches(answers)[1])
+        except g.GeometryError:
+            return _region_ghost(regions)
+
+    answers = yield _hatch_form(ctx, spacing=_round_spacing(size),
+                                preview=_region_ghost(regions), live=live)
+    pattern, definition = _pattern_answer(ctx, answers["pattern"])
     made = []
     for region in regions:
         try:
-            shape = HatchShape(region, pattern, angle=float(angle),
-                               spacing=float(spacing), xdir=xdir)
+            shape = HatchShape(region, pattern,
+                               angle=float(answers["angle"]),
+                               spacing=float(answers["spacing"]),
+                               xdir=xdir, definition=definition)
         except g.GeometryError as exc:
             ctx.echo(f"Not hatched: {exc}")
             continue
@@ -705,7 +743,8 @@ def _curves_overlap(curves) -> bool:
 
 
 def _hatch_form(ctx, spacing: float, angle: float = 45.0, pattern=None,
-                unit: str = "", minimum: float = 1e-6, preview=None):
+                unit: str = "", minimum: float = 1e-6, preview=None,
+                live=None):
     """What a hatch is made of, asked as one thing (#45).
 
     A window shows the three together, so the pattern, how close its lines
@@ -719,25 +758,42 @@ def _hatch_form(ctx, spacing: float, angle: float = 45.0, pattern=None,
     clicked; where there was nothing to pick there would otherwise be
     nothing to see, and which area a pattern is about to land on is worth
     as much then as it is during the pick.
+
+    `live(answers)` is the hatch the answers would make, shown while the
+    popup is open and redrawn as it changes. At the prompt each answer
+    shows the hatch it would make with the rest left as they stand.
     """
-    not_solid = lambda a: str(a.get("pattern", "")).lower() != "solid"
-    ghost = None if preview is None else (lambda _value: preview)
+    def not_solid(answers):
+        name, definition = _pattern_answer(ctx, answers.get("pattern", ""))
+        return name != "solid" and not (definition and definition.solid)
+
+    first = pattern or _layer_pattern(ctx)
+    defaults = {"pattern": first, "spacing": float(spacing),
+                "angle": float(angle)}
+
+    def ghost(name):
+        if live is not None:
+            return lambda value: live({**defaults, name: value})
+        return None if preview is None else (lambda _value: preview)
+
     return FormReq(
         "Hatch", title="Hatch",
         fields=(
             FormField("pattern",
-                      OptionReq("Pattern", options=_pattern_choices(),
-                                default=pattern or _layer_pattern(ctx),
-                                preview_fn=ghost)),
+                      OptionReq("Pattern", options=_pattern_choices(ctx),
+                                default=first,
+                                preview_fn=ghost("pattern"))),
             FormField("spacing",
                       NumberReq(f"Line spacing{unit}", default=float(spacing),
-                                minimum=float(minimum), preview_fn=ghost),
+                                minimum=float(minimum),
+                                preview_fn=ghost("spacing")),
                       when=not_solid),
             FormField("angle",
                       NumberReq("Angle (degrees)", default=float(angle),
-                                preview_fn=ghost),
+                                preview_fn=ghost("angle")),
                       when=not_solid),
-        ))
+        ),
+        preview_fn=live)
 
 
 def _region_ghost(regions):
@@ -784,6 +840,38 @@ def _regions_to_fill(ctx, curves):
         ctx.echo("No regions picked, nothing hatched.")
         return []
     return [regions[i] for i in kept]
+
+
+@command("hatchpatterns", aliases=("loadpat", "loadhatchpatterns"))
+def cmd_hatchpatterns(ctx):
+    """Load the hatch patterns in a .pat file into the drawing (#92).
+
+    AutoCAD's acad.pat and acadiso.pat, a Revit export and most patterns
+    found online are .pat files. What is loaded is saved with the drawing,
+    and offered wherever a hatch or a layer's section hatch is picked.
+    """
+    import os
+    from ..core.hatch_patterns import PatternError, merge_into, read_pat
+    path = yield FileReq("Hatch pattern file", default="~/",
+                         title="Load hatch patterns",
+                         filters="Hatch patterns (*.pat);;All files (*)")
+    path = os.path.abspath(os.path.expanduser(path.strip()))
+    try:
+        patterns = read_pat(path)
+    except (OSError, PatternError) as exc:
+        ctx.echo(f"Could not read {os.path.basename(path)}: {exc}")
+        return
+    added, skipped = merge_into(ctx.scene.hatch_patterns, patterns)
+    ctx.scene.notify()
+    if not added:
+        ctx.echo(f"No hatch patterns in {os.path.basename(path)}.")
+        return
+    shown = ", ".join(added[:8]) + (", …" if len(added) > 8 else "")
+    ctx.echo(f"Loaded {len(added)} hatch pattern"
+             f"{'s' if len(added) != 1 else ''} from "
+             f"{os.path.basename(path)}: {shown}.")
+    if skipped:
+        ctx.echo(f"Kept the app's own {', '.join(skipped)}.")
 
 
 def _round_spacing(size: float) -> float:

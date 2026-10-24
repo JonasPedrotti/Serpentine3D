@@ -15,8 +15,9 @@ import numpy as np
 
 from . import geometry
 from .deferred import DeferredShape
-from .layers import (DEFAULT_CUT_LINE_WIDTH, DEFAULT_LAYER_ID, HATCH_INK,
-                     LayerManager, hatch_token_rgb, screen_width_for)
+from .layers import (DEFAULT_CUT_LINE_WIDTH, DEFAULT_LAYER_ID,
+                     HATCH_BACKGROUND_OBJECT, HATCH_INK, LayerManager,
+                     hatch_token_rgb, screen_width_for)
 from .layout import SectionFill
 from .tessellate import DisplayMesh, tessellate
 
@@ -200,6 +201,8 @@ class Scene:
         self.units: str = "mm"          # document units (utils/units.py)
         self.block_defs: dict = {}      # id -> {"name", "shapes": [TopoDS]}
         self.annot_styles: dict = {}    # name -> text/dim style overrides
+        # name -> HatchPattern, the patterns loaded from .pat files (#92)
+        self.hatch_patterns: dict = {}
         self.record_history = False     # new surfaces remember their inputs
         self.history_records: list = []   # {"op", "inputs", "output", ...}
         self._regen_active = False
@@ -571,12 +574,27 @@ class Scene:
                 hatch_token_rgb(own["color"], layer.color),
                 own.get("cut_line_width", DEFAULT_CUT_LINE_WIDTH),
                 hatch_token_rgb(own.get("cut_line_color", HATCH_INK),
+                                layer.color),
+                self.hatch_pattern(own["pattern"]),
+                hatch_token_rgb(own.get("background",
+                                        HATCH_BACKGROUND_OBJECT),
                                 layer.color))
         return SectionFill(layer.hatch, layer.hatch_angle,
                            layer.hatch_spacing,
                            self.layers.hatch_rgb(layer.id),
                            layer.cut_line_width,
-                           hatch_token_rgb(layer.cut_line_color, layer.color))
+                           hatch_token_rgb(layer.cut_line_color, layer.color),
+                           self.hatch_pattern(layer.hatch),
+                           hatch_token_rgb(layer.hatch_background,
+                                           layer.color))
+
+    def hatch_pattern(self, name):
+        """The pattern loaded from a .pat file that a fill's name stands
+        for in this drawing, or None: for the app's own, which draw
+        themselves, and for a name it has no pattern by, which draws as
+        lines."""
+        from .hatch_patterns import is_builtin, lookup
+        return None if is_builtin(name) else lookup(self.hatch_patterns, name)
 
     def render_color_of(self, obj: SceneObject) -> tuple[float, float, float]:
         """The colour rendered mode draws the object's surfaces in.
@@ -601,6 +619,7 @@ class Scene:
         self.sheet_groups = []
         self.block_defs = {}
         self.annot_styles = {}
+        self.hatch_patterns = {}
         self.image_planes = []
         self.history_records = []
         self.trajectories = []
@@ -634,6 +653,7 @@ class Scene:
             "sheet_groups": copy.deepcopy(self.sheet_groups),
             "block_defs": {k: dict(v) for k, v in self.block_defs.items()},
             "annot_styles": {k: dict(v) for k, v in self.annot_styles.items()},
+            "hatch_patterns": dict(self.hatch_patterns),
             "image_planes": copy.deepcopy(self.image_planes),
             "history_records": copy.deepcopy(self.history_records),
             # By reference, not deep-copied: a trajectory is tens of
@@ -657,6 +677,7 @@ class Scene:
                            snap.get("block_defs", {}).items()}
         self.annot_styles = {k: dict(v) for k, v in
                              snap.get("annot_styles", {}).items()}
+        self.hatch_patterns = dict(snap.get("hatch_patterns", {}))
         if not any(obj.kind == "picture" for obj in self.all()):
             self.image_planes = copy.deepcopy(snap.get("image_planes", []))
         self.history_records = copy.deepcopy(

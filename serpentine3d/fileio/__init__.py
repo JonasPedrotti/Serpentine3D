@@ -376,7 +376,7 @@ def _written_as_a_mesh(obj) -> bool:
     if obj.kind == "curve":
         return False
     if obj.kind == "hatch":
-        return getattr(obj.shape, "pattern", "") == "solid"
+        return bool(getattr(obj.shape, "solid", False))
     return True
 
 

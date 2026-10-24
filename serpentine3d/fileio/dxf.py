@@ -89,13 +89,20 @@ def _write_hatch(msp, hatch, attribs):
     for i, ring in enumerate(rings):
         out.paths.add_polyline_path(ring, is_closed=True,
                                     flags=1 if i == 0 else 0)
-    if hatch.pattern == "solid":
+    if hatch.solid:
         out.set_solid_fill()
         return
     a = math.radians(hatch.angle)
     d = math.cos(a) * frame[:3, 0] + math.sin(a) * frame[:3, 1]
     d_ocs = ocs.from_wcs(tuple(d))
     base = math.degrees(math.atan2(d_ocs.y, d_ocs.x))
+    if hatch.definition is not None:
+        centre = ocs.from_wcs(tuple(frame[:3, 3]))
+        out.set_pattern_fill(
+            hatch.pattern, angle=0.0, scale=1.0, pattern_type=2,
+            definition=_dxf_definition(hatch.definition, base,
+                                       hatch.spacing, (centre.x, centre.y)))
+        return
 
     def line(deg):
         r = math.radians(deg)
@@ -106,6 +113,28 @@ def _write_hatch(msp, hatch, attribs):
                                  if hatch.pattern == "cross" else [])
     out.set_pattern_fill(f"SERP_{hatch.pattern.upper()}", angle=0.0,
                          scale=1.0, pattern_type=2, definition=definition)
+
+
+def _dxf_definition(pattern, turn: float, spacing: float, origin) -> list:
+    """A pattern from a .pat file as a DXF HATCH spells its lines, drawn
+    turned `turn` degrees and at `spacing` about `origin`: a DXF pattern
+    is written already turned and scaled, its offsets in the hatch's own
+    plane rather than along each line as a .pat file has them (#92)."""
+    scale = spacing / pattern.row_spacing
+    t = math.radians(turn)
+    out = []
+    for ln in pattern.lines:
+        ox, oy = ln.origin[0] * scale, ln.origin[1] * scale
+        phi = math.radians(ln.angle + turn)
+        dx, dy = ln.offset[0] * scale, ln.offset[1] * scale
+        out.append([
+            ln.angle + turn,
+            (origin[0] + ox * math.cos(t) - oy * math.sin(t),
+             origin[1] + ox * math.sin(t) + oy * math.cos(t)),
+            (dx * math.cos(phi) - dy * math.sin(phi),
+             dx * math.sin(phi) + dy * math.cos(phi)),
+            [d * scale for d in ln.dashes]])
+    return out
 
 
 def _is_straight(pts, tol=1e-7) -> bool:

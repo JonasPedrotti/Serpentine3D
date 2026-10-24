@@ -409,14 +409,15 @@ def cmd_sectionhatch(ctx):
     ByLayer, or a hatch of their own, which starts from the first one's
     layer's angle, spacing and colour."""
     from ..core.layers import section_fill_dict
-    from ..core.layout import SECTION_FILLS
+    from ..core.layout import pattern_label, pattern_named, section_fills_of
     objs = yield SelectReq("Select objects to set section hatch")
     if not objs:
         ctx.echo("Nothing selected.")
         return
     pattern = yield OptionReq(
         "Section hatch",
-        options=["ByLayer", *(p.capitalize() for p in SECTION_FILLS)],
+        options=["ByLayer", *(pattern_label(p)
+                              for p in section_fills_of(ctx.scene))],
         default="ByLayer")
     if pattern == "ByLayer":
         ctx.scene.update_many([o.id for o in objs], section_fill=None)
@@ -424,12 +425,14 @@ def cmd_sectionhatch(ctx):
         return
     layer = ctx.scene.layers.get(objs[0].layer_id)
     angle, spacing = layer.hatch_angle, layer.hatch_spacing
-    if pattern.lower() in ("lines", "cross"):
+    pattern = pattern_named(ctx.scene, pattern) or pattern
+    if pattern.lower() not in ("none", "solid"):
         angle = yield NumberReq("Hatch angle (degrees)", default=angle)
         spacing = yield NumberReq("Hatch spacing on paper (mm)",
                                   default=spacing, minimum=0.2)
     fill = section_fill_dict(pattern, angle, spacing, layer.hatch_color,
-                             layer.cut_line_width, layer.cut_line_color)
+                             layer.cut_line_width, layer.cut_line_color,
+                             layer.hatch_background)
     # one notification, not one an object; each gets its own copy
     with ctx.scene.batched():
         for o in objs:

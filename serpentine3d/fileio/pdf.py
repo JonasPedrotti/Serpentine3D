@@ -178,6 +178,14 @@ def _paint_detail_vector(painter, layout_view, detail, layout, k):
         fills = (region_fills(data) if region_fills is not None
                  else [SectionFill(p or "lines") for p in cut_patterns(data)])
         lines, outlines, floods = section_drawing(regions, cx, cy, s, fills)
+        # Under the hatching and the outline: what is poched on a section
+        # is drawn behind its own edges, a colour is opaque, and a face's
+        # background (#91) is the ground its hatch lies on.
+        from ..ui import annot_paint
+        for color, rings in floods:
+            annot_paint.fill_cut_solid(
+                painter, lambda x, y: (x * k, (layout.paper_h - y) * k),
+                [rings], color)
         for color, segs in lines:
             painter.setPen(QPen(QColor(60, 62, 70) if color is None
                                 else QColor.fromRgbF(*color[:3]), 0.15 * k))
@@ -185,13 +193,6 @@ def _paint_detail_vector(painter, layout_view, detail, layout, k):
                 painter.drawLine(
                     QPointF(a[0] * k, (layout.paper_h - a[1]) * k),
                     QPointF(b[0] * k, (layout.paper_h - b[1]) * k))
-        # Under the outline, the way the hatching is: what is poched on a
-        # section is drawn behind its own edges, and a colour is opaque.
-        from ..ui import annot_paint
-        for color, rings in floods:
-            annot_paint.fill_cut_solid(
-                painter, lambda x, y: (x * k, (layout.paper_h - y) * k),
-                [rings], color)
         # Each face's cut line at its own width on the paper, in ink unless
         # its section says a colour (#82).
         for color, width_mm, rings in outlines:

@@ -9,6 +9,10 @@ Like the text object it is a compound whose contents are real geometry, so
 drawing, picking, bounds and STEP export need nothing new; what it adds is
 the pattern, kept as data so that moving, turning, scaling, copying and
 saving a hatch give back a hatch rather than a heap of lines.
+
+A pattern loaded from a .pat file (#92) travels inside the hatch, families
+and all, so a hatch copied into another drawing, or opened where the
+pattern was never loaded, is still drawn the way it was.
 """
 
 from __future__ import annotations
@@ -36,40 +40,47 @@ class HatchShape(TopoDS_Compound):
     """
 
     def __init__(self, region, pattern: str = "lines", angle: float = 45.0,
-                 spacing: float = 1.0, xdir=None):
+                 spacing: float = 1.0, xdir=None, definition=None):
         region = _one_face(region)
         normal = np.asarray(geometry.face_normal(region), float)
         normal /= np.linalg.norm(normal) or 1.0
         frame = _frame_for(region, normal, xdir)
-        self._initialize(region, pattern, angle, spacing, frame)
+        self._initialize(region, pattern, angle, spacing, frame, definition)
 
-    def _initialize(self, region, pattern, angle, spacing, frame):
-        from .layout import HATCH_PATTERNS
-        pattern = str(pattern).lower()
-        if pattern not in HATCH_PATTERNS:
+    def _initialize(self, region, pattern, angle, spacing, frame,
+                    definition=None):
+        from .hatch_patterns import is_builtin
+        pattern = str(pattern).strip()
+        if is_builtin(pattern):
+            pattern, definition = pattern.lower(), None
+        elif definition is None or definition.key != pattern.lower():
             raise geometry.GeometryError(f"Unknown hatch pattern: {pattern}")
+        solid = pattern == "solid" or bool(definition and definition.solid)
         spacing = float(spacing)
-        if pattern != "solid" and not (math.isfinite(spacing) and spacing > 0):
+        if not solid and not (math.isfinite(spacing) and spacing > 0):
             raise geometry.GeometryError("Hatch spacing must be positive")
         region = _one_face(region)
         super().__init__()
         self._region = region
         self._pattern = pattern
+        self._definition = definition
         self._angle = float(angle)
         self._spacing = spacing
         self._frame = tuple(tuple(float(v) for v in row) for row in frame)
-        self._segments = ([] if pattern == "solid"
+        self._segments = ([] if solid
                           else _pattern_segments(region, frame, pattern,
-                                                 self._angle, spacing))
-        brep = _assemble(region, pattern, self._segments)
+                                                 self._angle, spacing,
+                                                 definition))
+        brep = _assemble(region, solid, self._segments)
         self.TShape(brep.TShape())
         self.Location(brep.Location())
         self.Orientation(brep.Orientation())
 
     @classmethod
-    def _from_parts(cls, region, pattern, angle, spacing, frame):
+    def _from_parts(cls, region, pattern, angle, spacing, frame,
+                    definition=None):
         out = cls.__new__(cls)
-        out._initialize(region, pattern, angle, spacing, frame)
+        out._initialize(region, pattern, angle, spacing, frame, definition)
         return out
 
     # --- what it is ---------------------------------------------------------
@@ -77,6 +88,17 @@ class HatchShape(TopoDS_Compound):
     @property
     def pattern(self) -> str:
         return self._pattern
+
+    @property
+    def definition(self):
+        """The HatchPattern a pattern from a .pat file is, or None for
+        Lines, Cross and Solid."""
+        return self._definition
+
+    @property
+    def solid(self) -> bool:
+        return self._pattern == "solid" or bool(
+            self._definition and self._definition.solid)
 
     @property
     def angle(self) -> float:
@@ -102,16 +124,20 @@ class HatchShape(TopoDS_Compound):
     # --- what it becomes ----------------------------------------------------
 
     def edited(self, **changes):
-        """The same region with a different pattern, angle or spacing."""
-        unknown = changes.keys() - {"pattern", "angle", "spacing"}
+        """The same region with a different pattern, angle or spacing. A
+        pattern from a .pat file comes with its `definition`."""
+        unknown = changes.keys() - {"pattern", "angle", "spacing",
+                                    "definition"}
         if unknown:
             raise TypeError(f"Unknown hatch property: {', '.join(sorted(unknown))}")
         values = dict(pattern=self._pattern, angle=self._angle,
-                      spacing=self._spacing)
+                      spacing=self._spacing, definition=self._definition)
+        if "pattern" in changes and "definition" not in changes:
+            values["definition"] = None
         values.update(changes)
         return self._from_parts(self._region, values["pattern"],
                                 values["angle"], values["spacing"],
-                                self._frame)
+                                self._frame, values["definition"])
 
     def with_region(self, region):
         """The same hatch over a different region, as a trim leaves.
@@ -121,7 +147,7 @@ class HatchShape(TopoDS_Compound):
         other across the cut instead of each restarting at its own corner.
         """
         return self._from_parts(region, self._pattern, self._angle,
-                                self._spacing, self._frame)
+                                self._spacing, self._frame, self._definition)
 
     def transformed(self, matrix):
         """Move, turn or scale the region and its pattern together.
@@ -148,12 +174,12 @@ class HatchShape(TopoDS_Compound):
         region = geometry.apply_matrix(self._region, m)
         spacing = self._spacing * math.sqrt(sx * sy)
         return self._from_parts(region, self._pattern, self._angle, spacing,
-                                new)
+                                new, self._definition)
 
     def copy(self):
         return self._from_parts(geometry.copy_shape(self._region),
                                 self._pattern, self._angle, self._spacing,
-                                self._frame)
+                                self._frame, self._definition)
 
     def to_curves(self) -> list:
         """The boundary as ordinary closed curves, outer and holes."""
@@ -180,9 +206,11 @@ class HatchShape(TopoDS_Compound):
     # --- as bytes -----------------------------------------------------------
 
     def to_bytes(self) -> bytes:
-        header = json.dumps(dict(pattern=self._pattern, angle=self._angle,
-                                 spacing=self._spacing,
-                                 frame=self._frame)).encode("utf-8")
+        head = dict(pattern=self._pattern, angle=self._angle,
+                    spacing=self._spacing, frame=self._frame)
+        if self._definition is not None:
+            head["definition"] = self._definition.to_dict()
+        header = json.dumps(head).encode("utf-8")
         return (HATCH_TAG + struct.pack("<I", len(header)) + header
                 + geometry.shape_to_bytes(self._region))
 
@@ -193,8 +221,12 @@ class HatchShape(TopoDS_Compound):
         start += 4
         head = json.loads(data[start:start + size])
         region = geometry.shape_from_bytes(data[start + size:])
+        definition = None
+        if head.get("definition"):
+            from .hatch_patterns import HatchPattern
+            definition = HatchPattern.from_dict(head["definition"])
         return cls._from_parts(region, head["pattern"], head["angle"],
-                               head["spacing"], head["frame"])
+                               head["spacing"], head["frame"], definition)
 
 
 # --- the pieces -------------------------------------------------------------
@@ -266,37 +298,41 @@ def _rings(region, frame) -> list:
     return rings
 
 
-def _pattern_segments(region, frame, pattern, angle, spacing) -> list:
-    from .layout import hatch_region
+def _pattern_segments(region, frame, pattern, angle, spacing,
+                      definition=None) -> list:
+    from .hatch_patterns import fill_segments, segment_estimate
     rings = _rings(region, frame)
     if not rings:
         return []
-    span = max(float(np.ptp(np.vstack(rings), axis=0).max()), 0.0)
-    lines = (span / spacing) * (2 if pattern == "cross" else 1)
+    if definition is not None:
+        lines = segment_estimate(rings, definition, spacing)
+        what = "segments"
+    else:
+        span = max(float(np.ptp(np.vstack(rings), axis=0).max()), 0.0)
+        lines = (span / spacing) * (2 if pattern == "cross" else 1)
+        what = "lines"
     if lines > MAX_SEGMENTS:
         raise geometry.GeometryError(
-            f"A spacing of {spacing:g} would draw {int(lines):,} lines "
+            f"A spacing of {spacing:g} would draw {int(lines):,} {what} "
             "across this region; use a larger spacing")
     frame = np.asarray(frame, float)
-    angles = [angle] + ([angle + 90.0] if pattern == "cross" else [])
     out = []
-    for ang in angles:
-        for a, b in hatch_region(rings, ang, spacing):
-            wa = frame @ np.array([a[0], a[1], 0.0, 1.0])
-            wb = frame @ np.array([b[0], b[1], 0.0, 1.0])
-            out.append((tuple(float(v) for v in wa[:3]),
-                        tuple(float(v) for v in wb[:3])))
+    for a, b in fill_segments(rings, definition, pattern, angle, spacing):
+        wa = frame @ np.array([a[0], a[1], 0.0, 1.0])
+        wb = frame @ np.array([b[0], b[1], 0.0, 1.0])
+        out.append((tuple(float(v) for v in wa[:3]),
+                    tuple(float(v) for v in wb[:3])))
     return out
 
 
-def _assemble(region, pattern, segments):
+def _assemble(region, solid, segments):
     """The compound the hatch is: its face for a solid fill, its boundary
     and pattern lines for the rest."""
     from OCP.BRep import BRep_Builder
     builder = BRep_Builder()
     compound = TopoDS_Compound()
     builder.MakeCompound(compound)
-    if pattern == "solid":
+    if solid:
         builder.Add(compound, region)
         return compound
     exp = occ.TopExp_Explorer(region, occ.WIRE)

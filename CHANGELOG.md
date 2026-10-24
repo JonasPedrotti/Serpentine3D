@@ -4,6 +4,31 @@
 
 ### Added
 
+- **Hatch patterns from .pat files (#92).** The industry's hatch patterns
+  are stored in .pat files, and `hatchpatterns` (`loadpat`) loads one into
+  the drawing: acad.pat, acadiso.pat, a Revit export or a pattern found
+  online. Its patterns are offered beside Lines, Cross and Solid wherever
+  a pattern is picked, for a hatch in the model or on a sheet and for the
+  section hatch of a layer or an object, and every pattern list in
+  Properties ends in Load patterns… for the same thing. Dashes, gaps and
+  dots are drawn as the file says, on screen, on a clipping plane's cap,
+  on a sheet and in a PDF. A pattern's spacing is the distance between
+  its rows, so a layer changed from Lines to ANSI31 keeps the look it had,
+  whatever unit the file was written in. What is loaded is saved with the
+  drawing, a hatch in the model carries its pattern with it, and a DXF
+  export writes the pattern under its own name. A layer may name a
+  pattern the drawing has not loaded yet; its cuts are drawn with lines
+  until it is.
+- **A cut's hatch has a background of its own (#91).** Layers, and objects
+  with a section style of their own, have a Hatch background: Object, a
+  darker shade of the object on screen and bare paper on a sheet as
+  before, or the layer's colour or one of its own, which fills the cut
+  under its hatch on screen and on paper alike. Scripts set it as
+  `hatch_background`.
+- **The hatch popup shows the hatch while it is open.** Changing the
+  pattern, spacing or angle redraws the hatch it would make, in the model
+  and on a sheet, before OK makes it. At the prompt each answer shows the
+  same.
 - **A clipping plane can be switched off in some views and not others.**
   Rhino lets a clipping plane choose the views it cuts, and a sheet needs
   it: a plan detail cut at sill height, a section detail cut down the

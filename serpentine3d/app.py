@@ -175,6 +175,8 @@ class MainWindow(QMainWindow):
         self.properties.textPlacementChanged.connect(
             self._text_placement_changed)
         self.properties.lookAtTextRequested.connect(self._look_at_text)
+        self.properties.loadPatternsRequested.connect(
+            lambda: self.run_command("hatchpatterns"))
         self._text_placement_choice = "CPlane"
         self._look_at_text_restore = None
         self._prop_dock = QDockWidget("Properties", self)
@@ -1584,17 +1586,35 @@ class MainWindow(QMainWindow):
         from .ui.form_dialog import FormDialog
         self._form_dialog_open = True
         try:
-            dialog = FormDialog(form, parent=self)
+            dialog = FormDialog(form, parent=self,
+                                changed=lambda values: self._ghost_form(
+                                    form, values))
             accepted = dialog.exec() == QDialog.DialogCode.Accepted
             values = dialog.values() if accepted else None
         finally:
             self._form_dialog_open = False
+            if form.preview_fn is not None:
+                for vp in self.all_viewports():
+                    vp.set_ghost(None)
         if self.processor.form is not form:
             return                      # answered another way meanwhile
         if values is None:
             self.processor.cancel()
         else:
             self.processor.provide_form(values)
+
+    def _ghost_form(self, form, values):
+        """What a popup's answers would make, ghosted in every pane while
+        it is open: a hatch's pattern, spacing and angle are seen on the
+        region before OK, not after."""
+        if form.preview_fn is None:
+            return
+        try:
+            shape = form.preview_fn(values)
+        except Exception:                                  # noqa: BLE001
+            shape = None
+        for vp in self.all_viewports():
+            vp.set_ghost(shape)
 
     def _offer_file_picker(self, req):
         """Let a live command's pending FileReq use the window chooser."""
