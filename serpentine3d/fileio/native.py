@@ -21,7 +21,7 @@ from ..core.layers import (DEFAULT_CUT_LINE_WIDTH, DEFAULT_SCREEN_WIDTH,
 
 # The newest version this reader understands. Anything newer is refused
 # with the version it asks for, never a traceback.
-FORMAT_VERSION = 7
+FORMAT_VERSION = 8
 # What a document with none of the version-3 kinds is written as.
 PLAIN_VERSION = 2
 # The Serpentine3D release a version-3 file asks its reader to be.
@@ -114,6 +114,7 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
         "layouts": layouts_to_json(scene.layouts),
         "sheet_groups": sheet_groups_to_json(scene.sheet_groups),
         "annot_styles": {k: dict(v) for k, v in scene.annot_styles.items()},
+        "hatch_patterns": [p.to_dict() for p in scene.hatch_patterns.values()],
         "history_records": scene.history_records,
         "layers": [
             {
@@ -130,6 +131,7 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
                 "hatch_angle": layer.hatch_angle,
                 "hatch_spacing": layer.hatch_spacing,
                 "hatch_color": layer.hatch_color,
+                "hatch_background": layer.hatch_background,
                 "cut_line_width": layer.cut_line_width,
                 "cut_line_color": layer.cut_line_color,
                 "parent": layer.parent,
@@ -211,6 +213,14 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
     # there makes it stick. So a file carrying one says so.
     if any(_carries_an_origin(shape) for shape in new_shapes):
         doc["version"] = 7
+        doc["requires"] = "0.12.2"
+    # A release that knows only Lines, Cross and Solid refuses a model
+    # hatch drawn with any other pattern, and the whole file with it
+    # (#92). A layer naming one is only drawn with lines there.
+    from ..core.hatch_patterns import is_legacy
+    if any(isinstance(shape, HatchShape) and not is_legacy(shape.pattern)
+           for shape in new_shapes):
+        doc["version"] = 8
         doc["requires"] = "0.12.2"
     _write_container(doc, path, thumbnail, blobs)
 
@@ -381,6 +391,10 @@ def merge_scene(scene, path: str, notes: list | None = None) -> int:
         scene.block_defs.setdefault(block_id, block)
     for name, style in incoming.annot_styles.items():
         scene.annot_styles.setdefault(name, style)
+    from ..core.hatch_patterns import lookup
+    for name, pattern in incoming.hatch_patterns.items():
+        if lookup(scene.hatch_patterns, name) is None:
+            scene.hatch_patterns[name] = pattern
     for name, view in incoming.named_views.items():
         if factor != 1.0:
             view = {**view, "target": [c * factor for c in view["target"]],
@@ -450,6 +464,8 @@ def _copy_hatch_look(layers, layer_id: str, ld: dict):
     layers.set_hatch_angle(layer_id, ld.get("hatch_angle", 45.0))
     layers.set_hatch_spacing(layer_id, ld.get("hatch_spacing", 2.5))
     layers.set_hatch_color(layer_id, ld.get("hatch_color", "ink"))
+    layers.set_hatch_background(layer_id,
+                                ld.get("hatch_background", "object"))
     layers.set_cut_line_width(layer_id, ld.get("cut_line_width",
                                                DEFAULT_CUT_LINE_WIDTH))
     layers.set_cut_line_color(layer_id, ld.get("cut_line_color", "ink"))
@@ -546,6 +562,11 @@ def _load_doc(scene, doc: dict, blobs=None):
     scene.sheet_groups = sheet_groups_from_json(doc.get("sheet_groups", []))
     scene.annot_styles = {k: dict(v) for k, v in
                           doc.get("annot_styles", {}).items()}
+    from ..core.hatch_patterns import HatchPattern
+    scene.hatch_patterns = {}
+    for data in doc.get("hatch_patterns", []):
+        pattern = HatchPattern.from_dict(data)
+        scene.hatch_patterns[pattern.name] = pattern
     scene.history_records = list(doc.get("history_records", []))
 
     for od in doc.get("objects", []):
@@ -578,7 +599,7 @@ def _load_doc(scene, doc: dict, blobs=None):
             updates["section_fill"] = section_fill_dict(**{
                 k: v for k, v in od["section_fill"].items()
                 if k in ("pattern", "angle", "spacing", "color",
-                         "cut_line_width", "cut_line_color")})
+                         "cut_line_width", "cut_line_color", "background")})
         text = user_text.cleaned(od.get("user_text"))
         if text:
             updates["user_text"] = text

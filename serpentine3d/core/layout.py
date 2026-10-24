@@ -132,11 +132,13 @@ class Leader:
     style: str = ""
 
 
-# Every fill the app can draw, in the order they are offered. A layer
-# names one of these as the material it is hatched with, so the list a
-# layer can be set to and the list the `hatch` command offers are one
-# list and cannot drift apart.
-HATCH_PATTERNS = ("lines", "cross", "solid")
+# Every fill the app has of its own, in the order they are offered. A
+# layer names one of these as the material it is hatched with, so the
+# list a layer can be set to and the list the `hatch` command offers are
+# one list and cannot drift apart. The same list as
+# hatch_patterns.BUILTIN_NAMES, kept here so this module needs no numpy.
+HATCH_PATTERNS = ("lines", "cross", "solid", "dash", "dots", "plus",
+                  "squares", "triangles", "brick")
 
 # What a layer's material can be filled with where a section cuts it: any
 # of the patterns, or none at all. None is a material's choice not to be
@@ -145,12 +147,40 @@ HATCH_PATTERNS = ("lines", "cross", "solid")
 SECTION_FILLS = ("none", *HATCH_PATTERNS)
 
 
+def hatch_patterns_of(scene) -> tuple:
+    """Every pattern a hatch in this drawing can be drawn with: the app's
+    own, then those loaded into the drawing from a .pat file (#92)."""
+    library = getattr(scene, "hatch_patterns", None) or {}
+    return (*HATCH_PATTERNS, *library)
+
+
+def section_fills_of(scene) -> tuple:
+    """Every fill a layer in this drawing can name for its material."""
+    return ("none", *hatch_patterns_of(scene))
+
+
+def pattern_label(name: str) -> str:
+    """A pattern's name as a list shows it: the app's own capitalised,
+    as they always were, a loaded one as its file spells it."""
+    return name.capitalize() if name.lower() in SECTION_FILLS else name
+
+
+def pattern_named(scene, text) -> str | None:
+    """The pattern a typed or picked name means in this drawing, spelled
+    the way it is kept, or None for one it has no pattern by."""
+    key = str(text or "").strip().lower()
+    for name in section_fills_of(scene):
+        if name.lower() == key:
+            return name
+    return None
+
+
 @dataclass
 class Hatch:
     id: str = field(default_factory=_uid)
     points: list = field(default_factory=list)   # closed polygon [[x,y],...]
     holes: list = field(default_factory=list)    # rings left empty, same form
-    pattern: str = "lines"                       # one of HATCH_PATTERNS
+    pattern: str = "lines"                       # see hatch_patterns_of
     angle: float = 45.0
     spacing: float = 3.0                         # mm
     color: list | None = None                    # [r, g, b] 0..1; None: ink
@@ -365,13 +395,22 @@ class SectionFill:
     colour they are drawn in, as an (r, g, b) in 0..1, or None for the ink
     the rest of the sheet is drawn in. Then the line round the face: its
     width on the paper in millimetres, 0 for none, and its colour, the
-    same way (#82)."""
+    same way (#82). `definition` is the pattern a name from the drawing's
+    library stands for (#92), and `background` the colour the face is
+    flooded with under its lines, or None to leave it as it was (#91)."""
     pattern: str = "lines"
     angle: float = 45.0
     spacing: float = 2.5
     color: tuple | None = None
     cut_line_width: float = 0.5
     cut_line_color: tuple | None = None
+    definition: object = None
+    background: tuple | None = None
+
+
+# Past this many segments a face's pattern is too fine for its size, and
+# the sheet draws what it has rather than locking up drawing the rest.
+MAX_PAPER_SEGMENTS = 50000
 
 
 def section_drawing(regions: list, cx: float, cy: float, s: float,
@@ -391,15 +430,18 @@ def section_drawing(regions: list, cx: float, cy: float, s: float,
       the order the pens first come up, every ring of every face that
       has a cut line; a face whose cut line is 0 wide is left out;
     - the faces to flood, as (colour, rings) with the bore among the
-      rings: solid is not a set of segments, it is the face itself.
+      rings: solid is not a set of segments, it is the face itself, and
+      a face with a background is flooded in it under its lines.
 
     "cross" goes over a face a second time square to the first, "none"
-    leaves it outlined and empty, and anything else (no pattern, or one
-    out of a file this build cannot draw) gets the plain lines it always
+    leaves it outlined and empty, a pattern from the drawing's library is
+    drawn family by family, and anything else (no pattern, or one out of
+    a file this drawing has no pattern for) gets the plain lines it always
     got. The screen and the plot both draw this, and they used to work
     it out separately: one of them was always going to be a version
     behind.
     """
+    from .hatch_patterns import fill_segments
     fills = fills or []
     lines: dict = {}
     outlines: dict = {}
@@ -410,14 +452,16 @@ def section_drawing(regions: list, cx: float, cy: float, s: float,
         if not paper:
             continue
         fill = fills[i] if i < len(fills) else SectionFill()
-        if fill.pattern == "solid":
+        solid = fill.pattern == "solid" or getattr(fill.definition, "solid",
+                                                   False)
+        if solid:
             floods.append((fill.color, paper))
         elif fill.pattern != "none":
-            segments = lines.setdefault(fill.color, [])
-            segments.extend(hatch_region(paper, fill.angle, fill.spacing))
-            if fill.pattern == "cross":
-                segments.extend(
-                    hatch_region(paper, fill.angle + 90.0, fill.spacing))
+            if fill.background is not None:
+                floods.append((fill.background, paper))
+            lines.setdefault(fill.color, []).extend(fill_segments(
+                paper, fill.definition, fill.pattern, fill.angle,
+                fill.spacing, limit=MAX_PAPER_SEGMENTS))
         if fill.cut_line_width > 0:
             outlines.setdefault((fill.cut_line_color, fill.cut_line_width),
                                 []).extend(paper)

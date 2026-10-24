@@ -8,6 +8,8 @@ answers given so far is drawn greyed rather than hidden, so the popup
 keeps its shape as you change your mind about the pattern.
 
 Cancelling the popup cancels the command, as closing a file picker does.
+While it is open, `changed` is told of the answers as they stand, so the
+window can ghost what OK would make.
 """
 
 from __future__ import annotations
@@ -61,8 +63,9 @@ def _decimals_for(default, minimum) -> int:
 class FormDialog(QDialog):
     """One command's form, with a widget per field."""
 
-    def __init__(self, form, parent=None):
+    def __init__(self, form, parent=None, changed=None):
         super().__init__(parent)
+        self._changed = changed
         self.setWindowTitle(form.title or form.prompt or "Options")
         # No icon beside the title: a few options asked about what is
         # already on screen are not a second program to be told apart
@@ -104,6 +107,7 @@ class FormDialog(QDialog):
             if req.default in req.options:
                 box.setCurrentText(req.default)
             box.currentTextChanged.connect(self._refresh_enabled)
+            box.currentTextChanged.connect(self._tell)
             return box
         if isinstance(req, NumberReq):
             spin = _NumberBox()
@@ -116,9 +120,19 @@ class FormDialog(QDialog):
             spin.setValue(float(req.default or 0.0))
             spin.setSingleStep(max(abs(float(req.default or 1.0)) / 10.0,
                                    float(req.minimum or 0.0) or 1e-6))
+            spin.valueChanged.connect(self._tell)
             return spin
         edit = QLineEdit(str(getattr(req, "default", "") or ""))
+        edit.textChanged.connect(self._tell)
         return edit
+
+    def _tell(self, *_args):
+        if self._changed is not None:
+            self._changed(self.values())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._tell()
 
     def _value(self, name):
         widget = self._widgets[name]

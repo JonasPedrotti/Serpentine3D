@@ -183,10 +183,14 @@ class FormReq(Req):
     together, not that they are a new kind of answer. The command is sent
     back a dict of {name: value}, and a window may answer the whole of it
     at once with `CommandProcessor.provide_form`.
+
+    `preview_fn(answers)` is what the answers would make, for a popup to
+    ghost while it is open and as its answers change.
     """
     prompt: str = ""
     fields: tuple = ()
     title: str = ""
+    preview_fn: object = None
 
 
 @dataclass

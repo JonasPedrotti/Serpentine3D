@@ -899,7 +899,8 @@ def cmd_layer(ctx):
             layers.set_linetype(layer.id, style)
             ctx.echo(f"Layer '{layer.name}' draws {style} lines.")
     elif action == "Hatch":
-        from ..core.layout import SECTION_FILLS
+        from ..core.layout import (pattern_label, pattern_named,
+                                   section_fills_of)
         name = yield TextReq("Layer name")
         layer = layers.find_by_name(name)
         if layer is None:
@@ -910,11 +911,12 @@ def cmd_layer(ctx):
             # leaves a cut outlined and empty.
             fill = yield OptionReq(
                 "Hatch pattern",
-                options=[p.capitalize() for p in SECTION_FILLS],
-                default=layer.hatch.capitalize())
-            layers.set_hatch(layer.id, fill)
+                options=[pattern_label(p)
+                         for p in section_fills_of(ctx.scene)],
+                default=pattern_label(layer.hatch))
+            layers.set_hatch(layer.id, pattern_named(ctx.scene, fill) or fill)
             fill = layers.get(layer.id).hatch
-            if fill in ("lines", "cross"):
+            if fill not in ("none", "solid"):
                 # the lines' angle and spacing, on the paper whatever the
                 # scale of the detail the cut is seen in
                 angle = yield NumberReq("Hatch angle (degrees)",

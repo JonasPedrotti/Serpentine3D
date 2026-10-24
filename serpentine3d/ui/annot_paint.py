@@ -10,15 +10,16 @@ import numpy as np
 from PySide6.QtCore import Qt, QPointF
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF, QTransform
 
-from ..core.layout import (annotation_style, hatch_region, note_text_height,
-                           resolve_associative)
+from ..core.layout import (MAX_PAPER_SEGMENTS, annotation_style,
+                           note_text_height, resolve_associative)
 
 INK = QColor(25, 25, 30)
 DIM_INK = QColor(45, 70, 130)
 HATCH_INK = QColor(70, 72, 80)
-# Solid is drawn see-through so the linework under it still reads:
-# a poched wall on a section is meant to sit behind its own edges.
-SOLID_FILL = QColor(120, 122, 130, 120)
+# Solid is the ink of a hatch's lines, as solid as they are: a fill drawn
+# see-through read as a tint rather than a hatch. A cut's own edges are
+# drawn after it, so a poched wall still sits behind them.
+SOLID_FILL = QColor(HATCH_INK)
 
 
 def style_of(scene, name: str) -> dict:
@@ -113,40 +114,40 @@ def fill_cut_solid(painter, to_dev, regions, color=None):
     painter.setBrush(QColor(0, 0, 0, 0))
 
 
-def draw_hatch(painter, to_dev, k, hatch):
+def draw_hatch(painter, to_dev, k, hatch, scene=None):
+    """A sheet's hatch, its pattern looked up in the drawing's library
+    when it is not one of the app's own (#92). Its fill only: the edge of
+    a hatch is the linework drawn round it, as in Rhino and AutoCAD."""
+    from ..core.hatch_patterns import fill_segments, lookup
     pts = hatch.points
     if len(pts) < 3:
         return
-    # A hole is drawn like any other edge and filled like no material at
-    # all, which is the whole of the difference between a pipe and a bar.
+    # A hole is filled like no material at all, which is the whole of the
+    # difference between a pipe and a bar.
     rings = [pts] + [r for r in (getattr(hatch, "holes", None) or [])
                      if len(r) >= 3]
     polys = [QPolygonF([QPointF(*to_dev(p[0], p[1])) for p in ring])
              for ring in rings]
     color = getattr(hatch, "color", None)
     ink = HATCH_INK if color is None else QColor.fromRgbF(*color[:3])
-    if hatch.pattern == "solid":
+    definition = lookup(getattr(scene, "hatch_patterns", None), hatch.pattern)
+    if hatch.pattern == "solid" or (definition and definition.solid):
         from PySide6.QtGui import QPainterPath
         path = QPainterPath()
         path.setFillRule(Qt.OddEvenFill)      # the holes stay unpainted
         for poly in polys:
             path.addPolygon(poly)
             path.closeSubpath()
-        painter.setPen(QPen(ink, 0))
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(SOLID_FILL if color is None else ink)
         painter.drawPath(path)
         painter.setBrush(QColor(0, 0, 0, 0))
         return
     painter.setPen(QPen(ink, max(0.15 * k, 1.0)))
     painter.setBrush(QColor(0, 0, 0, 0))
-    for poly in polys:
-        painter.drawPolygon(poly)
-    angles = [hatch.angle]
-    if hatch.pattern == "cross":
-        angles.append(hatch.angle + 90)
-    for ang in angles:
-        for a, b in hatch_region(rings, ang, hatch.spacing):
-            _line(painter, to_dev, a, b)
+    for a, b in fill_segments(rings, definition, hatch.pattern, hatch.angle,
+                              hatch.spacing, limit=MAX_PAPER_SEGMENTS):
+        _line(painter, to_dev, a, b)
 
 
 def draw_lin_dim(painter, to_dev, k, dim, scene=None):
@@ -349,7 +350,7 @@ def draw_all(painter, to_dev, k, layout, scene=None, sheet_index=1,
     """Every annotation for one layout, in drawing order."""
     resolve_associative(layout)
     for hatch in layout.hatches:
-        draw_hatch(painter, to_dev, k, hatch)
+        draw_hatch(painter, to_dev, k, hatch, scene)
     for note in layout.notes:
         draw_note(painter, to_dev, k, note, scene)
     for leader in layout.leaders:

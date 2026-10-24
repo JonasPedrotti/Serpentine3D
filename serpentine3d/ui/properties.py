@@ -28,12 +28,14 @@ from PySide6.QtWidgets import (
 from ..core import clipping
 from ..core import geometry as g
 from ..core import user_text as ut
-from ..core.layers import (HATCH_INK, HATCH_LAYER_COLOR, MAX_CUT_LINE_WIDTH,
+from ..core.layers import (HATCH_BACKGROUND_OBJECT, HATCH_INK,
+                           HATCH_LAYER_COLOR, MAX_CUT_LINE_WIDTH,
                            MIN_HATCH_SPACING, PATH_SEPARATOR,
                            hatch_token_rgb, section_fill_dict)
 from ..core.layout import (PAPER_SIZES, SECTION_FILLS, DetailView,
-                           PaperObject, TextNote, parse_scale, scale_presets,
-                           sheet_label)
+                           PaperObject, TextNote, hatch_patterns_of,
+                           parse_scale, pattern_label, scale_presets,
+                           section_fills_of, sheet_label)
 from ..core.text import TextShape
 from ..core.linetype import LINETYPES
 from . import icons, theme
@@ -54,7 +56,33 @@ HATCH_ANGLES = ("0", "30", "45", "60", "90", "135")
 HATCH_SPACINGS = ("1", "1.5", "2", "2.5", "3", "4", "5")
 CUT_LINE_NONE = "None"                 # a cut with no line round it
 _INK_SWATCH = (0.06, 0.06, 0.07)       # how Ink shows in the colour list
-_LINED = ("lines", "cross")            # the fills that are drawn as lines
+_UNLINED = ("none", "solid")           # the fills with no lines to space
+# the pattern lists' last entries: {item data: hatchpatterns action}
+_PATTERN_ACTIONS = {"load-patterns": "Load", "delete-patterns": "Delete"}
+
+
+def _fill_patterns(combo, names, keep: int = 0):
+    """Put a drawing's patterns in a pattern drop-down, after its first
+    `keep` entries, then Load patterns… and Delete patterns…, which run
+    `hatchpatterns` (#92).
+    A pattern list is filled each time it is shown, so a pattern loaded
+    since is offered at once."""
+    with QSignalBlocker(combo):
+        while combo.count() > keep:
+            combo.removeItem(keep)
+        for name in names:
+            combo.addItem(pattern_label(name), name)
+        combo.insertSeparator(combo.count())
+        combo.addItem("Load patterns…", "load-patterns")
+        combo.addItem("Delete patterns…", "delete-patterns")
+
+
+def _with(names, extra) -> tuple:
+    """`names`, then whichever of `extra` they leave out: a pattern a
+    layer or a hatch names that the drawing has not loaded is still
+    shown as what it is."""
+    known = {n.lower() for n in names}
+    return (*names, *(e for e in extra if e and e.lower() not in known))
 _BY_LAYER = "By layer"                 # an object taking its layer's value
 
 # the tab mark for more than one layer, which have no one colour between them
@@ -114,10 +142,13 @@ class _Look(NamedTuple):
     cut_line_width: float
     cut_line_color: str
     cut_rgb: tuple | None
+    background: str = HATCH_BACKGROUND_OBJECT
+    background_rgb: tuple | None = None
 
 
 # how each part of a section's look is named in an undo step
 _LOOK_WORDS = {"angle": "angle", "spacing": "spacing", "color": "colour",
+               "background": "background",
                "cut_line_width": "cut line width",
                "cut_line_color": "cut line colour"}
 
@@ -138,20 +169,26 @@ def _number_combo(values, setter, tip: str) -> QComboBox:
 class _TokenColour:
     """A colour kept as a token, "ink", "layer" or "#rrggbb", as a
     drop-down: Ink, Layer colour, the colour of its own when it has one,
-    and Choose…, which asks for one.
+    and Choose…, which asks for one. A hatch's background starts from
+    Object instead of Ink (`first`).
 
     `chosen(token)` is told of every pick; `revert()` puts the page back
     when the colour dialog is closed without a choice.
     """
 
-    def __init__(self, chosen, revert, title: str, tip: str):
+    def __init__(self, chosen, revert, title: str, tip: str,
+                 first=("Ink", HATCH_INK, _INK_SWATCH)):
         self._chosen = chosen
         self._revert = revert
         self._title = title
         self._start = None
         self._showing = False
         self.combo = QComboBox()
-        self.combo.addItem(icons.swatch(_INK_SWATCH), "Ink", HATCH_INK)
+        label, token, swatch = first
+        if swatch is None:
+            self.combo.addItem(label, token)
+        else:
+            self.combo.addItem(icons.swatch(swatch), label, token)
         self.combo.addItem("Layer colour", HATCH_LAYER_COLOR)
         self.combo.addItem("Choose…", "choose")
         self.combo.setToolTip(tip)
@@ -205,9 +242,10 @@ class _HatchLook:
     "color", "cut_line_width" or "cut_line_color", and only of one that
     changes something; `revert()` puts the page back when what was typed
     is not a number, or a colour dialog closed without a choice. A hatch
-    row shows only where the patterns shown have a use for it: angle and
-    spacing are a line pattern's, and None has no colour to be drawn in.
-    Every pattern has a cut line, None too: an empty cut is all outline.
+    row shows only where the patterns shown have a use for it: angle,
+    spacing and background are a line pattern's, and None has no colour
+    to be drawn in. Every pattern has a cut line, None too: an empty cut
+    is all outline.
     """
 
     def __init__(self, changed, revert):
@@ -230,6 +268,14 @@ class _HatchLook:
             "The colour a cut's hatch or fill is drawn in: Ink is the near "
             "black the rest of the sheet is drawn in")
         self.color = self._hatch_ink.combo
+        self._ground = _TokenColour(
+            lambda token: self._offer("background", token), revert,
+            "Hatch background",
+            "What a cut shows under its hatch: Object is a darker shade of "
+            "the object on screen and bare paper on a sheet; a colour fills "
+            "the cut with it on both",
+            first=("Object", HATCH_BACKGROUND_OBJECT, None))
+        self.background = self._ground.combo
         self.cut_width = _number_combo(
             (CUT_LINE_NONE, *PRINT_WIDTHS), self._cut_width_edited,
             "How wide the line round a cut face is on the printed sheet, in "
@@ -246,6 +292,7 @@ class _HatchLook:
         form.addRow("Hatch angle (°)", self.angle)
         form.addRow("Hatch spacing (mm)", self.spacing)
         form.addRow("Hatch colour", self.color)
+        form.addRow("Hatch background", self.background)
         form.addRow("Cut line (mm)", self.cut_width)
         form.addRow("Cut line colour", self.cut_color)
 
@@ -261,15 +308,18 @@ class _HatchLook:
                               {_width_text(k.spacing) for k in looks})
             self._hatch_ink.show({k.color for k in looks}, looks[0].rgb,
                                  layer_rgb)
+            self._ground.show({k.background for k in looks},
+                              looks[0].background_rgb, layer_rgb)
             _show_common_text(self.cut_width,
                               {_cut_width_text(k.cut_line_width)
                                for k in looks})
             self._cut_ink.show({k.cut_line_color for k in looks},
                                looks[0].cut_rgb, layer_rgb)
             patterns = {k.pattern for k in looks}
-            lined = any(p in _LINED for p in patterns)
+            lined = any(p.lower() not in _UNLINED for p in patterns)
             self._form.setRowVisible(self.angle, lined)
             self._form.setRowVisible(self.spacing, lined)
+            self._form.setRowVisible(self.background, lined)
             self._form.setRowVisible(self.color, bool(patterns - {"none"}))
             self._form.setRowVisible(self.cut_width, True)
             self._form.setRowVisible(self.cut_color, True)
@@ -277,14 +327,15 @@ class _HatchLook:
             self._showing = False
 
     def hide(self):
-        for row in (self.angle, self.spacing, self.color, self.cut_width,
-                    self.cut_color):
+        for row in (self.angle, self.spacing, self.color, self.background,
+                    self.cut_width, self.cut_color):
             self._form.setRowVisible(row, False)
 
     def _offer(self, key: str, value):
         """Pass an edit on, unless every look shown has it already."""
         if all(getattr(k, key) == value for k in self._looks):
-            if key in ("color", "cut_line_color", "cut_line_width"):
+            if key in ("color", "background", "cut_line_color",
+                       "cut_line_width"):
                 self._revert()          # the row has moved off it
             return
         self._changed(key, value)
@@ -892,6 +943,9 @@ class PropertiesPanel(QWidget):
     # What is live, or which of it is shown, may have changed: the title bar
     # redraws its tabs from subjects() and shown().
     subjectsChanged = Signal()
+    # Load or Delete patterns… was picked in a pattern list: the
+    # hatchpatterns action to run (#92)
+    hatchPatternsRequested = Signal(str)
 
     def __init__(self, scene, selection, history, parent=None,
                  viewport_source=None, panes_source=None):
@@ -962,8 +1016,7 @@ class PropertiesPanel(QWidget):
             self._change_print_width)
         self.section_hatch = QComboBox()
         self.section_hatch.addItem(_BY_LAYER, "bylayer")
-        for name in SECTION_FILLS:
-            self.section_hatch.addItem(name.capitalize(), name)
+        _fill_patterns(self.section_hatch, SECTION_FILLS, keep=1)
         self.section_hatch.setToolTip(
             "What a section cut through this object is filled with: By "
             "layer takes its layer's, anything else is its own, starting "
@@ -1115,8 +1168,7 @@ class PropertiesPanel(QWidget):
         self.hatch_pattern = QComboBox()
         self.hatch_pattern.setObjectName("hatch_pattern")
         from ..core.layout import HATCH_PATTERNS
-        for name in HATCH_PATTERNS:
-            self.hatch_pattern.addItem(name.capitalize(), name)
+        _fill_patterns(self.hatch_pattern, HATCH_PATTERNS)
         self.hatch_pattern.currentIndexChanged.connect(self._change_hatch)
         form.addRow("Pattern", self.hatch_pattern)
         self.hatch_spacing = QDoubleSpinBox()
@@ -1833,8 +1885,7 @@ class PropertiesPanel(QWidget):
         self.layer_print.lineEdit().editingFinished.connect(
             self._set_layer_print)
         self.layer_hatch = QComboBox()
-        for name in SECTION_FILLS:
-            self.layer_hatch.addItem(name.capitalize(), name)
+        _fill_patterns(self.layer_hatch, SECTION_FILLS)
         self.layer_hatch.setToolTip(
             "What a section cut through this layer's objects is filled with, "
             "and what a hatch drawn on it starts out as")
@@ -1845,6 +1896,7 @@ class PropertiesPanel(QWidget):
         self.layer_hatch_angle = self.layer_look.angle
         self.layer_hatch_spacing = self.layer_look.spacing
         self.layer_hatch_color = self.layer_look.color
+        self.layer_hatch_background = self.layer_look.background
         self.layer_cut_width = self.layer_look.cut_width
         self.layer_cut_color = self.layer_look.cut_color
         self.layer_visible = QCheckBox("Visible")
@@ -1921,6 +1973,8 @@ class PropertiesPanel(QWidget):
                                     else _width_text(la.print_width)
                                     for la in layers})
             hatches = {la.hatch for la in layers}
+            _fill_patterns(self.layer_hatch,
+                           _with(section_fills_of(self.scene), hatches))
             self.layer_hatch.setCurrentIndex(
                 self.layer_hatch.findData(next(iter(hatches)))
                 if len(hatches) == 1 else -1)
@@ -1928,7 +1982,9 @@ class PropertiesPanel(QWidget):
                 [_Look(la.hatch, la.hatch_angle, la.hatch_spacing,
                        la.hatch_color, self.scene.layers.hatch_rgb(la.id),
                        la.cut_line_width, la.cut_line_color,
-                       hatch_token_rgb(la.cut_line_color, la.color))
+                       hatch_token_rgb(la.cut_line_color, la.color),
+                       la.hatch_background,
+                       hatch_token_rgb(la.hatch_background, la.color))
                  for la in layers],
                 layers[0].color if len({la.color for la in layers}) == 1
                 else _MIXED_MARK)
@@ -2042,6 +2098,10 @@ class PropertiesPanel(QWidget):
         if index < 0:
             return
         pattern = self.layer_hatch.itemData(index)
+        if pattern in _PATTERN_ACTIONS:
+            self._refresh_layer_page()
+            self._ask_patterns(pattern, self.layer_hatch)
+            return
         self._edit_layers("layer hatch",
                           lambda i: self.scene.layers.set_hatch(i, pattern))
 
@@ -2052,6 +2112,7 @@ class PropertiesPanel(QWidget):
         setter = {"angle": layers.set_hatch_angle,
                   "spacing": layers.set_hatch_spacing,
                   "color": layers.set_hatch_color,
+                  "background": layers.set_hatch_background,
                   "cut_line_width": layers.set_cut_line_width,
                   "cut_line_color": layers.set_cut_line_color}[key]
         what = _LOOK_WORDS[key]
@@ -2262,8 +2323,11 @@ class PropertiesPanel(QWidget):
         if not cut:
             self.section_look.hide()
             return
+        _fill_patterns(self.section_hatch,
+                       _with(section_fills_of(self.scene),
+                             {own["pattern"]} if own else ()), keep=1)
         self.section_hatch.setItemText(
-            0, f"{_BY_LAYER} ({layer.hatch.capitalize()})")
+            0, f"{_BY_LAYER} ({pattern_label(layer.hatch)})")
         self.section_hatch.setCurrentIndex(
             0 if not own else self.section_hatch.findData(own["pattern"]))
         if own:
@@ -2272,7 +2336,9 @@ class PropertiesPanel(QWidget):
                 [_Look(own["pattern"], own["angle"], own["spacing"],
                        own["color"], fill.color, fill.cut_line_width,
                        own.get("cut_line_color", HATCH_INK),
-                       fill.cut_line_color)],
+                       fill.cut_line_color,
+                       own.get("background", HATCH_BACKGROUND_OBJECT),
+                       fill.background)],
                 layer.color)
         else:
             self.section_look.hide()
@@ -2314,6 +2380,10 @@ class PropertiesPanel(QWidget):
         if obj is None or paper:
             return
         choice = self.section_hatch.itemData(index)
+        if choice in _PATTERN_ACTIONS:
+            self.refresh()
+            self._ask_patterns(choice, self.section_hatch)
+            return
         own = obj.section_fill
         if choice == "bylayer":
             if own is None:
@@ -2328,9 +2398,32 @@ class PropertiesPanel(QWidget):
             fill = section_fill_dict(choice, layer.hatch_angle,
                                      layer.hatch_spacing, layer.hatch_color,
                                      layer.cut_line_width,
-                                     layer.cut_line_color)
+                                     layer.cut_line_color,
+                                     layer.hatch_background)
         self.history.checkpoint("object section hatch")
         self.scene.update(obj.id, section_fill=fill)
+
+    def _ask_patterns(self, item: str, combo):
+        """Load or Delete patterns… picked in a pattern list. A load
+        remembers the list it was picked in, so the first pattern the file
+        brings is what the layer, object or hatch is set to next."""
+        action = _PATTERN_ACTIONS[item]
+        self._pattern_combo = combo if action == "Load" else None
+        self.hatchPatternsRequested.emit(action)
+
+    def use_loaded_pattern(self, names):
+        """Set the list Load patterns… was picked in to the first of the
+        patterns that load brought, as if it had been picked there."""
+        combo, self._pattern_combo = \
+            getattr(self, "_pattern_combo", None), None
+        if combo is None or not names:
+            return
+        if combo is self.layer_hatch:
+            self._refresh_layer_page()
+        else:
+            self.refresh()
+        if combo.isEnabled() and combo.findData(names[0]) >= 0:
+            combo.setCurrentIndex(combo.findData(names[0]))
 
     def _set_object_look(self, key: str, value):
         """An edit to the hatch angle, spacing or colour of an object's own
@@ -2536,7 +2629,7 @@ class PropertiesPanel(QWidget):
         obj = self._editable_hatch()
         if obj is None or obj.id != self._hatch_checkpoint_id:
             self._hatch_checkpoint_id = None
-        lines = obj is not None and obj.shape.pattern != "solid"
+        lines = obj is not None and not obj.shape.solid
         self.form.setRowVisible(self.hatch_pattern, obj is not None)
         self.form.setRowVisible(self.hatch_spacing, lines)
         self.form.setRowVisible(self.hatch_angle, lines)
@@ -2547,6 +2640,8 @@ class PropertiesPanel(QWidget):
                               (self.hatch_angle, hatch.angle)):
             with QSignalBlocker(widget):
                 widget.setValue(value)
+        _fill_patterns(self.hatch_pattern,
+                       _with(hatch_patterns_of(self.scene), {hatch.pattern}))
         with QSignalBlocker(self.hatch_pattern):
             self.hatch_pattern.setCurrentIndex(
                 self.hatch_pattern.findData(hatch.pattern))
@@ -2562,6 +2657,16 @@ class PropertiesPanel(QWidget):
                       spacing=self.hatch_spacing.value(),
                       angle=self.hatch_angle.value())
         hatch = obj.shape
+        if values["pattern"] in _PATTERN_ACTIONS:
+            self._show_hatch()
+            self._ask_patterns(values["pattern"], self.hatch_pattern)
+            return
+        # A pattern from a .pat file is drawn from its definition: the
+        # drawing's, or the one the hatch carries from where it was made.
+        values["definition"] = (hatch.definition
+                                if values["pattern"] == hatch.pattern
+                                else self.scene.hatch_pattern(
+                                    values["pattern"]))
         if (values["pattern"], values["spacing"], values["angle"]) == \
                 (hatch.pattern, hatch.spacing, hatch.angle):
             return

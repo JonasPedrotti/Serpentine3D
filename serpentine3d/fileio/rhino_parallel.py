@@ -213,8 +213,12 @@ _DOWNCAST = None
 
 def _encode(shape):
     """A shape as something pickle can carry."""
+    from ..core.hatch import HatchShape
     if isinstance(shape, MeshShape):
         return ("mesh", shape.vertices, shape.triangles, shape.normals)
+    if isinstance(shape, HatchShape):
+        # its pattern and frame, which BinTools knows nothing of
+        return ("hatch", shape.to_bytes(), None, None)
     from OCP.BinTools import BinTools
     buf = io.BytesIO()
     BinTools.Write_s(shape, buf)
@@ -225,6 +229,9 @@ def _decode(payload):
     kind, first, second, third = payload
     if kind == "mesh":
         return MeshShape(first, second, third)
+    if kind == "hatch":
+        from ..core.hatch import HatchShape
+        return HatchShape.from_bytes(first)
     from OCP.BinTools import BinTools
     from OCP.TopoDS import TopoDS_Shape
     shape = TopoDS_Shape()
@@ -256,6 +263,7 @@ def _init_worker(path: str):
     _LAYERS = rhino.read_layers(_MODEL)
     _MATERIALS = rhino.read_materials(_MODEL)
     _BLOCKS = rhino.read_blocks(_MODEL)
+    rhino._HATCH_PATTERNS = rhino.read_hatch_patterns(path)
 
 
 def _convert(indices: list[int]):

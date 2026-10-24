@@ -219,6 +219,7 @@ class LayoutView:
         self.entered_detail: str | None = None
         self.ghost_detail = None                 # detail a command is sizing
         self._ghost_note = None
+        self._ghost_hatch = None                 # hatch a command is placing
         self._ghost_picture = None
         self.selected: list = []                 # [(kind, obj)] on this sheet
         self.corners: list = []                  # [(detail, index)] grips
@@ -824,6 +825,12 @@ class LayoutView:
             annot_paint.draw_note(painter, self.paper_to_screen,
                                   self.px_per_mm, self._ghost_note, scene)
             painter.restore()
+        if self._ghost_hatch is not None:
+            painter.save()
+            painter.setOpacity(.7)
+            annot_paint.draw_hatch(painter, self.paper_to_screen,
+                                   self.px_per_mm, self._ghost_hatch, scene)
+            painter.restore()
         # Last of all, over the ink and under nothing: a handle is a thing to
         # take hold of, so a detail's own linework must not cover it.
         self.gumball.paint(painter)
@@ -837,7 +844,9 @@ class LayoutView:
         so it comes back over here to the painter. Under the labels and
         the annotations, the way a detail's own ink is. A flood is opaque,
         so the cut lines GL drew are stroked again over it, every one of
-        them in its own pen: the order the plot draws them in.
+        them in its own pen: the order the plot draws them in. A face with
+        a background of its own (#91) is flooded here too, and its hatch
+        drawn again over the flood.
         """
         from ..core.layout import section_drawing
         from . import annot_paint
@@ -847,15 +856,20 @@ class LayoutView:
             details.append(self.ghost_detail)
         for detail in details:
             # Same test the GL pass makes, so asking a shaded detail what
-            # it cut does not set a hidden-line pass going for nothing.
-            if detail.display_mode in MODES_3D or detail.perspective \
-                    or detail.section_offset is None:
+            # it cut does not set a hidden-line pass going for nothing. A
+            # detail with no section of its own can still be cut, by a
+            # clipping plane (#94), so it is what it cut that decides.
+            if detail.display_mode in MODES_3D or detail.perspective:
                 continue
             data = self._detail_hlr(detail)
-            fills = self._region_fills(data)
-            if not any(f.pattern == "solid" for f in fills):
+            if not data.get("cut"):
                 continue
-            _lines, outlines, floods = section_drawing(
+            fills = self._region_fills(data)
+            if not any(f.pattern == "solid" or f.background is not None
+                       or getattr(f.definition, "solid", False)
+                       for f in fills):
+                continue
+            lines, outlines, floods = section_drawing(
                 data.get("cut") or [], detail.x + detail.w / 2,
                 detail.y + detail.h / 2, 1.0 / detail.scale_denom, fills)
             x0, y0 = self.paper_to_screen(detail.x, detail.y + detail.h)
@@ -867,6 +881,12 @@ class LayoutView:
                 annot_paint.fill_cut_solid(painter, self.paper_to_screen,
                                            [rings], color)
             painter.setBrush(Qt.BrushStyle.NoBrush)
+            for color, segs in lines:
+                painter.setPen(QPen(QColor.fromRgbF(
+                    *(HATCH_INK[:3] if color is None else color[:3])), 1.0))
+                for a, b in segs:
+                    painter.drawLine(QPointF(*self.paper_to_screen(*a)),
+                                     QPointF(*self.paper_to_screen(*b)))
             for color, width_mm, rings in outlines:
                 path = QPainterPath()
                 for ring in rings:

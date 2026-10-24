@@ -143,7 +143,8 @@ Commands that need a file open a filtered chooser by default. Append
 | `exportdxf` | Export the active layout sheet (or the model) to DXF. |
 | `exportpdf` (`pdf`) | Exportpdf |
 | `exportsvg` | Exportsvg |
-| `hatch` | Fill a region with a pattern, on a sheet or in the model, starting from its layer's hatch. Curves that cross ask which of the regions they make to fill (All, or Alt+A, for every one). |
+| `hatch` | Fill a region with a pattern, on a sheet or in the model, starting from its layer's hatch. Curves that cross ask which of the regions they make to fill (All, or Alt+A, for every one). The popup shows the hatch it would make while it is open. |
+| `hatchpatterns` (`loadpat`) | The drawing's hatch patterns: Load those in a .pat file, to offer them wherever a hatch or a section hatch is picked, Delete one that was loaded, or Purge every loaded one nothing uses. |
 | `layout` | Layout |
 | `leader` | Leader |
 | `make2d` | Make2d |

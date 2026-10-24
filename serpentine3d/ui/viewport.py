@@ -2871,6 +2871,15 @@ class Viewport(QOpenGLWidget):
         GL.glUniform1f(self._uloc(prog, "uAngle"), style.angle)
         GL.glUniform3f(self._uloc(prog, "uFill"), *style.fill)
         GL.glUniform4f(self._uloc(prog, "uLine"), *style.line)
+        if pattern == _caps.FAMILIES:
+            fam_a, fam_b, dashes = _caps.family_uniforms(style.families)
+            GL.glUniform1i(self._uloc(prog, "uFamilyCount"),
+                           len(style.families))
+            GL.glUniform4fv(self._uloc(prog, "uFamA"), _caps.MAX_FAMILIES,
+                            fam_a)
+            GL.glUniform4fv(self._uloc(prog, "uFamB"), _caps.MAX_FAMILIES,
+                            fam_b)
+            GL.glUniform1fv(self._uloc(prog, "uDash"), len(dashes), dashes)
         self._cap_quad.draw(extent)
         GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
 
@@ -3514,14 +3523,23 @@ class Viewport(QOpenGLWidget):
         so there is nothing to tessellate: the sheet draws it the way it draws
         the details already on it.
         """
-        from ..core.layout import DetailView, TextNote
+        from ..core.layout import DetailView, Hatch, TextNote
         from ..core.picture import PictureShape
         had_picture = (self._ghost_picture is not None
                        or self.layout_view._ghost_picture is not None)
         self._ghost_picture = None
         self.layout_view._ghost_picture = None
-        had_note = self.layout_view._ghost_note is not None
+        had_note = (self.layout_view._ghost_note is not None
+                    or self.layout_view._ghost_hatch is not None)
         self.layout_view._ghost_note = None
+        self.layout_view._ghost_hatch = None
+        if isinstance(shape, Hatch):
+            # a sheet's hatch, about to be placed: drawn the way it will be
+            self.layout_view.set_ghost_detail(None)
+            self.layout_view._ghost_hatch = shape
+            self._ghost = None
+            self.update()
+            return
         if isinstance(shape, TextNote):
             self.layout_view.set_ghost_detail(None)
             self.layout_view._ghost_note = shape
@@ -3551,6 +3569,11 @@ class Viewport(QOpenGLWidget):
                 self._ghost = None
                 self.update()
             return
+        # A solid hatch about to be placed is ghosted as a fill as strong
+        # as the lines of any other, not as a tint: it is what it will be.
+        from ..core.hatch import HatchGroup, HatchShape
+        self._ghost_solid = (isinstance(shape, (HatchShape, HatchGroup))
+                             and shape.solid)
         try:
             from ..core.tessellate import tessellate
             self._ghost = tessellate(shape)
@@ -3662,7 +3685,8 @@ class Viewport(QOpenGLWidget):
         if tris is not None:
             pts = rebased(tris, self._frame_anchor)
             self._preview.update(pts)
-            self._set_line_uniforms(mvp, (*gold, 0.22))
+            self._set_line_uniforms(mvp, (*gold, 0.85 if getattr(
+                self, "_ghost_solid", False) else 0.22))
             GL.glDepthMask(False)
             GL.glBindVertexArray(self._preview.vao)
             GL.glDrawArrays(GL.GL_TRIANGLES, 0, len(pts))

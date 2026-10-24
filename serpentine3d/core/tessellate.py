@@ -458,6 +458,20 @@ def _face_isocurves(face) -> list[np.ndarray]:
     return polylines
 
 
+def _hatch_outline(shape):
+    """The edges round a hatch's region, which are not drawn: a hatch is
+    its fill, as in Rhino and AutoCAD, and its boundary is whatever curves
+    were drawn round it (#92). None for anything that is not a hatch."""
+    from .hatch import HatchShape
+    if not isinstance(shape, HatchShape):
+        return None
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+    edges = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape.region, occ.EDGE, edges)
+    return edges
+
+
 def tessellate(shape, deflection: float | None = None) -> DisplayMesh:
     from .mesh import MeshShape, mesh_to_display
     from .pointcloud import PointCloudShape, cloud_to_display
@@ -497,7 +511,10 @@ def tessellate(shape, deflection: float | None = None) -> DisplayMesh:
 
     segments = []
     seg_edge_ids = []
+    outline = _hatch_outline(shape)
     for edge_index, edge in enumerate(geometry.edges_of(shape)):
+        if outline is not None and outline.Contains(edge):
+            continue
         pts = _edge_polyline(edge, deflection)
         if pts is not None and len(pts) >= 2:
             seg = np.stack([pts[:-1], pts[1:]], axis=1)
