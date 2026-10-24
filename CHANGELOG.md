@@ -74,6 +74,21 @@
 
 ### Fixed
 
+- **A detail's scale is real size in any units (#102).** A detail took
+  the model units one millimetre of paper shows for its ratio, which it
+  is only in millimetres. In an inch document "1:4" showed four inches to
+  the millimetre, 1:101.6, so an 18" part plotted 4.5 mm wide instead of
+  114.3 mm. A scale is now a ratio of real lengths wherever it is typed,
+  picked or printed. Inch and feet documents are also offered
+  architectural and engineering scales by name, from 1" = 1'-0" to
+  1/16" = 1'-0" and 1" = 10' to 1" = 100', and `detailscale` and
+  Properties take them typed. A sheet drawn before plots as it did;
+  outside millimetres its label now says the scale it always plotted at,
+  so an inch detail saved as "1:4" reads 1:101.6 until it is set again.
+  Changing the document's units keeps every detail, dimension and scale
+  bar at its scale, and one undo puts the units, the model and the sheets
+  back together; a change of units without a rescale could not be undone
+  at all. Reported by DarkBiscuits.
 - **A clipping plane cuts a detail as well (#94).** A detail is a view of
   the model, and a section is what most wants putting on a sheet, but
   every detail drew the model whole, whatever the clipping planes said.
@@ -182,6 +197,44 @@
   of scan, everything was clipped away until the grid was hidden. The
   grid writes no depth, so it now stretches only the far plane, and the
   near plane is measured against the drawing.
+
+- **A command that finishes before its inputs run out says so (#103).**
+  The API's `command` (and so MCP's `serp_command`) and a script's
+  `doc.run` raised an error for too few inputs but dropped spare ones
+  without a word. With a layout active, `exportpdf` does not ask which
+  layout, so `["Seat blank", "C:/work/seat.pdf"]` had the sheet name
+  answer the PDF path: the real path was ignored and the reply said it had
+  exported, to `Seat blank.pdf` in the working folder. Spare inputs are now
+  an error that names them, says which prompt each used input answered,
+  and says what the command did, since its result stands. The MCP tool's
+  own example passed `extrude` a cap answer it never asks for, and no
+  longer does.
+
+- **A model keeps its real size across STEP, Rhino, DXF and .serp (#101).**
+  The drawing's units were ignored by most exchange. STEP was written with
+  the drawing's numbers and a millimetre label, so a 1 in cube from an inch
+  drawing arrived elsewhere as a 1 mm one, and STEP came in as millimetres
+  whatever the drawing was in. A Rhino file came in at its numbers rather
+  than its unit system, and a .3dm we wrote always said millimetres.
+  Merging a .serp saved in other units kept its numbers. STEP is now
+  written in the drawing's unit, and STEP, .3dm and merged .serp files are
+  scaled into it, objects on hidden layers too, with a merged file's named
+  views and history lengths along with them. Import and Open say when they
+  converted ("converted from inches to millimetres"), and the API's
+  `import_file` returns that as `notes`. Every DXF we wrote, model or
+  sheet, also said it was in metres, which is ezdxf's default; it now says
+  what it is in. DXF import still takes a file's numbers as they are.
+
+- **A Front or Right view of a far model sorts its faces again.** A
+  parallel view spreads the depth buffer evenly through its depth range,
+  and that range reached back to the grid as well as the model, so the
+  grid and whatever is drawn on the construction plane stayed inside it.
+  With the model 6,200 km out and the construction plane still at the
+  world's origin, faces were sorted in steps of 0.4 units: a window 4 mm
+  proud of its wall went behind it. The range now wraps the model alone,
+  and the grid, a rubber band on a far construction plane or a ghost
+  outside the model are drawn with their depth clamped rather than
+  clipped away.
 
 ## 0.12.1 (2026-10-22)
 

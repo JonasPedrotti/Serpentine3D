@@ -53,8 +53,10 @@ def _unmatched(ref, ours, tol):
 
 @pytest.fixture(scope="module")
 def rhino_hatches():
+    """The file's hatches in its own unit, metres, as Rhino's lines are. A
+    millimetre drawing takes them a thousand times larger (#101)."""
     from serpentine3d.fileio import rhino
-    items = rhino.import_3dm(str(DATA / "rhino_hatches.3dm"))
+    items = rhino.import_3dm(str(DATA / "rhino_hatches.3dm"), units="m")
     return {name: shape for name, shape, _meta in items}
 
 
@@ -113,6 +115,25 @@ def test_every_line_is_where_rhino_draws_it(rhino_hatches, rhino_lines,
 def test_a_hatch_off_the_xy_plane_stays_in_its_plane(rhino_hatches):
     for a, b in rhino_hatches["H8"].pattern_segments():
         assert a[1] == pytest.approx(40.0) and b[1] == pytest.approx(40.0)
+
+
+def test_a_drawing_in_other_units_takes_the_pattern_at_its_size(
+        rhino_hatches):
+    """Into millimetres, each hatch's lines are a thousand times longer and
+    further apart, as its region is: the pattern scales with the drawing,
+    not just the boundary round it."""
+    from serpentine3d.fileio import rhino
+
+    mm = {name: shape for name, shape, _meta in
+          rhino.import_3dm(str(DATA / "rhino_hatches.3dm"), units="mm")}
+    for name in ("H0", "H3", "H4", "H8"):
+        hatch = rhino_hatches[name]
+        assert mm[name].spacing == pytest.approx(1000 * hatch.spacing)
+        ours = mm[name].pattern_segments()
+        ref = [tuple(tuple(1000 * c for c in end) for end in seg)
+               for seg in hatch.pattern_segments()]
+        assert len(ours) == len(ref)
+        assert _unmatched(ref, ours, 1e-3) == 0
 
 
 def test_an_imported_pattern_is_offered_in_the_drawing():

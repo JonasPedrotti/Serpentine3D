@@ -419,6 +419,7 @@ def _convert_in_pool(path: str, workers: int, cancel=None):
 
     total = len(_MODEL.Objects)
     yield ("total", total)
+    yield ("units", _MODEL.Settings.ModelUnitSystem.name)
     batches = _batches(total)
     if not batches:
         return
@@ -556,8 +557,9 @@ def _is_deferred(payload) -> bool:
             and payload[0] == DEFERRED)
 
 
-def _assemble(messages, report, opening: str = "",
-              path: str = "") -> list[tuple[str, object, dict]]:
+def _assemble(messages, report, opening: str = "", path: str = "",
+              units: str = "mm",
+              notes: list | None = None) -> list[tuple[str, object, dict]]:
     """Turn the reader's message stream into what import_3dm returns.
 
     Shapes are decoded as they land rather than at the end, so the bytes are
@@ -568,7 +570,7 @@ def _assemble(messages, report, opening: str = "",
     bytes, and is turned into a `DeferredShape` at the end, once the count
     of them is known and they can share one reopening of the file.
     """
-    total, rows = None, []
+    total, rows, file_units = None, [], None
     # What to repaint between messages. The bar must not creep while the
     # helper is thinking, so a heartbeat repeats the last real update rather
     # than inventing one.
@@ -594,6 +596,8 @@ def _assemble(messages, report, opening: str = "",
             report(*latest)
         elif kind == "total":
             total = message[1]
+        elif kind == "units":
+            file_units = message[1]
         elif kind == "error":
             exc, text = message[1], message[2]
             raise exc if isinstance(exc, BaseException) else RuntimeError(text)
@@ -624,7 +628,7 @@ def _assemble(messages, report, opening: str = "",
                     shape = rhino_module()._deferred_from_file(
                         pending, shape[1], shape[2])
                 out.append((name or f"3dm object {counter:02d}", shape, meta))
-    return out
+    return rhino_module().in_units(out, file_units, units, notes)
 
 
 def rhino_module():
@@ -635,7 +639,8 @@ def rhino_module():
 
 
 def import_3dm_parallel(path: str, progress=None,
-                        workers: int | None = None
+                        workers: int | None = None, units: str = "mm",
+                        notes: list | None = None
                         ) -> list[tuple[str, object, dict]]:
     """import_3dm's answer, converted across processes.
 
@@ -663,7 +668,8 @@ def import_3dm_parallel(path: str, progress=None,
         # _assemble returns only once the message stream ends, which is the
         # reader closing the pipe — so a normal return means it got to the end.
         items = _assemble(_messages(receiver), report,
-                          f"Reading {os.path.basename(path)}…", path)
+                          f"Reading {os.path.basename(path)}…", path,
+                          units, notes)
         finished = True
         return items
     finally:
