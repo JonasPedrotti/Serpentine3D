@@ -523,10 +523,8 @@ def _pattern_answer(ctx, answer) -> tuple:
     """(name, definition) for the pattern a prompt was answered with: the
     name as the drawing keeps it, and the HatchPattern a loaded pattern
     is drawn from, None for the app's own."""
-    from ..core.hatch_patterns import is_builtin
     name = pattern_named(ctx.scene, answer) or str(answer).lower()
-    return name, (None if is_builtin(name)
-                  else ctx.scene.hatch_pattern(name))
+    return name, ctx.scene.hatch_pattern(name)
 
 
 def _layer_pattern(ctx) -> str:
@@ -673,10 +671,12 @@ def _hatch_in_the_model(ctx):
     def live(answers):
         # What OK would make, while the popup is still open; a spacing too
         # fine to draw shows the regions instead, as before.
+        from ..core.hatch import HatchGroup
         try:
-            return _region_ghost(hatches(answers)[1])
+            made = hatches(answers)[1]
         except g.GeometryError:
             return _region_ghost(regions)
+        return made[0] if len(made) == 1 else HatchGroup(made)
 
     answers = yield _hatch_form(ctx, spacing=_round_spacing(size),
                                 preview=_region_ghost(regions), live=live)
@@ -844,34 +844,105 @@ def _regions_to_fill(ctx, curves):
 
 @command("hatchpatterns", aliases=("loadpat", "loadhatchpatterns"))
 def cmd_hatchpatterns(ctx):
-    """Load the hatch patterns in a .pat file into the drawing (#92).
+    """The drawing's hatch patterns (#92): Load the patterns in a .pat
+    file, Delete one that was loaded, or Purge every loaded one nothing
+    is drawn with. The app's own patterns are always there.
 
     AutoCAD's acad.pat and acadiso.pat, a Revit export and most patterns
     found online are .pat files. What is loaded is saved with the drawing,
     and offered wherever a hatch or a layer's section hatch is picked.
     """
+    # Patterns are the drawing's, not the picked objects': whatever was
+    # picked, often the very hatch a pattern is being loaded for, stays.
+    held = list(ctx.selection.ids)
+    action = yield OptionReq("Hatch patterns",
+                             options=["Load", "Delete", "Purge"],
+                             default="Load")
+    if action == "Delete":
+        yield from _delete_pattern(ctx)
+    elif action == "Purge":
+        _purge_patterns(ctx)
+    else:
+        yield from _load_patterns(ctx)
+    if held:
+        ctx.select_result(held)
+
+
+def _load_patterns(ctx):
     import os
     from ..core.hatch_patterns import PatternError, merge_into, read_pat
     path = yield FileReq("Hatch pattern file", default="~/",
                          title="Load hatch patterns",
                          filters="Hatch patterns (*.pat);;All files (*)")
     path = os.path.abspath(os.path.expanduser(path.strip()))
+    source = os.path.splitext(os.path.basename(path))[0]
     try:
         patterns = read_pat(path)
     except (OSError, PatternError) as exc:
         ctx.echo(f"Could not read {os.path.basename(path)}: {exc}")
         return
-    added, skipped = merge_into(ctx.scene.hatch_patterns, patterns)
+    named = merge_into(ctx.scene.hatch_patterns, patterns, source=source)
+    # what the drawing calls them now, in the file's order, for the window
+    # that asked for the file to switch to the first
+    ctx.scene.loaded_patterns = list(dict.fromkeys(named.values()))
     ctx.scene.notify()
-    if not added:
+    if not named:
         ctx.echo(f"No hatch patterns in {os.path.basename(path)}.")
         return
-    shown = ", ".join(added[:8]) + (", …" if len(added) > 8 else "")
-    ctx.echo(f"Loaded {len(added)} hatch pattern"
-             f"{'s' if len(added) != 1 else ''} from "
-             f"{os.path.basename(path)}: {shown}.")
-    if skipped:
-        ctx.echo(f"Kept the app's own {', '.join(skipped)}.")
+    shown = [new if new == old else f"{old} as {pattern_label(new)}"
+             for old, new in named.items()]
+    listed = ", ".join(shown[:8]) + (", …" if len(shown) > 8 else "")
+    ctx.echo(f"Loaded {len(named)} hatch pattern"
+             f"{'s' if len(named) != 1 else ''} from "
+             f"{os.path.basename(path)}: {listed}.")
+
+
+def _delete_pattern(ctx):
+    """Take a loaded pattern out of the drawing. Whatever names it draws
+    as lines from then on, as a name the drawing has no pattern by always
+    has; a hatch in the model keeps drawing it, since it carries its own."""
+    names = list(ctx.scene.hatch_patterns)
+    if not names:
+        ctx.echo("No loaded hatch patterns to delete; the app's own "
+                 "always stay.")
+        return
+    name = yield OptionReq("Pattern to delete", options=names,
+                           default=names[0])
+    name = next((n for n in names if n.lower() == str(name).lower()), None)
+    if name is None:
+        return
+    users = ctx.scene.hatch_pattern_users(name)
+    del ctx.scene.hatch_patterns[name]
+    ctx.scene.notify()
+    ctx.echo(f"Deleted hatch pattern {name}.")
+    redrawn = {k: v for k, v in users.items() if k != "hatch"}
+    if any(redrawn.values()):
+        ctx.echo(f"{_users_text(redrawn)} named it, and now draw lines.")
+    if users.get("hatch"):
+        ctx.echo(f"{_users_text({'hatch': users['hatch']})} in the model "
+                 "keep drawing it.")
+
+
+def _purge_patterns(ctx):
+    """Every loaded pattern nothing in the drawing is drawn with."""
+    unused = [n for n in ctx.scene.hatch_patterns
+              if not any(ctx.scene.hatch_pattern_users(n).values())]
+    for name in unused:
+        del ctx.scene.hatch_patterns[name]
+    if unused:
+        ctx.scene.notify()
+        ctx.echo(f"Purged {len(unused)} unused hatch pattern"
+                 f"{'s' if len(unused) != 1 else ''}: {', '.join(unused)}.")
+    else:
+        ctx.echo("Every loaded hatch pattern is in use.")
+
+
+def _users_text(users: dict) -> str:
+    words = {"layer": ("layer", "layers"), "object": ("object", "objects"),
+             "sheet": ("sheet hatch", "sheet hatches"),
+             "hatch": ("hatch", "hatches")}
+    parts = [f"{n} {words[kind][n != 1]}" for kind, n in users.items() if n]
+    return " and ".join(parts)
 
 
 def _round_spacing(size: float) -> float:

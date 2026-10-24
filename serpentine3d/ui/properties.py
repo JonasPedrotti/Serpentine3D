@@ -57,12 +57,14 @@ HATCH_SPACINGS = ("1", "1.5", "2", "2.5", "3", "4", "5")
 CUT_LINE_NONE = "None"                 # a cut with no line round it
 _INK_SWATCH = (0.06, 0.06, 0.07)       # how Ink shows in the colour list
 _UNLINED = ("none", "solid")           # the fills with no lines to space
-_LOAD_PATTERNS = "load-patterns"       # the pattern lists' last entry
+# the pattern lists' last entries: {item data: hatchpatterns action}
+_PATTERN_ACTIONS = {"load-patterns": "Load", "delete-patterns": "Delete"}
 
 
 def _fill_patterns(combo, names, keep: int = 0):
     """Put a drawing's patterns in a pattern drop-down, after its first
-    `keep` entries, then Load patterns…, which reads a .pat file (#92).
+    `keep` entries, then Load patterns… and Delete patterns…, which run
+    `hatchpatterns` (#92).
     A pattern list is filled each time it is shown, so a pattern loaded
     since is offered at once."""
     with QSignalBlocker(combo):
@@ -71,7 +73,8 @@ def _fill_patterns(combo, names, keep: int = 0):
         for name in names:
             combo.addItem(pattern_label(name), name)
         combo.insertSeparator(combo.count())
-        combo.addItem("Load patterns…", _LOAD_PATTERNS)
+        combo.addItem("Load patterns…", "load-patterns")
+        combo.addItem("Delete patterns…", "delete-patterns")
 
 
 def _with(names, extra) -> tuple:
@@ -943,8 +946,9 @@ class PropertiesPanel(QWidget):
     # What is live, or which of it is shown, may have changed: the title bar
     # redraws its tabs from subjects() and shown().
     subjectsChanged = Signal()
-    # Load patterns… was picked in a pattern list: a .pat file to read (#92)
-    loadPatternsRequested = Signal()
+    # Load or Delete patterns… was picked in a pattern list: the
+    # hatchpatterns action to run (#92)
+    hatchPatternsRequested = Signal(str)
 
     def __init__(self, scene, selection, history, parent=None,
                  viewport_source=None, panes_source=None):
@@ -2094,9 +2098,9 @@ class PropertiesPanel(QWidget):
         if index < 0:
             return
         pattern = self.layer_hatch.itemData(index)
-        if pattern == _LOAD_PATTERNS:
+        if pattern in _PATTERN_ACTIONS:
             self._refresh_layer_page()
-            self.loadPatternsRequested.emit()
+            self._ask_patterns(pattern, self.layer_hatch)
             return
         self._edit_layers("layer hatch",
                           lambda i: self.scene.layers.set_hatch(i, pattern))
@@ -2376,9 +2380,9 @@ class PropertiesPanel(QWidget):
         if obj is None or paper:
             return
         choice = self.section_hatch.itemData(index)
-        if choice == _LOAD_PATTERNS:
+        if choice in _PATTERN_ACTIONS:
             self.refresh()
-            self.loadPatternsRequested.emit()
+            self._ask_patterns(choice, self.section_hatch)
             return
         own = obj.section_fill
         if choice == "bylayer":
@@ -2398,6 +2402,28 @@ class PropertiesPanel(QWidget):
                                      layer.hatch_background)
         self.history.checkpoint("object section hatch")
         self.scene.update(obj.id, section_fill=fill)
+
+    def _ask_patterns(self, item: str, combo):
+        """Load or Delete patterns… picked in a pattern list. A load
+        remembers the list it was picked in, so the first pattern the file
+        brings is what the layer, object or hatch is set to next."""
+        action = _PATTERN_ACTIONS[item]
+        self._pattern_combo = combo if action == "Load" else None
+        self.hatchPatternsRequested.emit(action)
+
+    def use_loaded_pattern(self, names):
+        """Set the list Load patterns… was picked in to the first of the
+        patterns that load brought, as if it had been picked there."""
+        combo, self._pattern_combo = \
+            getattr(self, "_pattern_combo", None), None
+        if combo is None or not names:
+            return
+        if combo is self.layer_hatch:
+            self._refresh_layer_page()
+        else:
+            self.refresh()
+        if combo.isEnabled() and combo.findData(names[0]) >= 0:
+            combo.setCurrentIndex(combo.findData(names[0]))
 
     def _set_object_look(self, key: str, value):
         """An edit to the hatch angle, spacing or colour of an object's own
@@ -2621,9 +2647,9 @@ class PropertiesPanel(QWidget):
                       spacing=self.hatch_spacing.value(),
                       angle=self.hatch_angle.value())
         hatch = obj.shape
-        if values["pattern"] == _LOAD_PATTERNS:
+        if values["pattern"] in _PATTERN_ACTIONS:
             self._show_hatch()
-            self.loadPatternsRequested.emit()
+            self._ask_patterns(values["pattern"], self.hatch_pattern)
             return
         # A pattern from a .pat file is drawn from its definition: the
         # drawing's, or the one the hatch carries from where it was made.

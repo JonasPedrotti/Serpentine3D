@@ -203,6 +203,8 @@ class Scene:
         self.annot_styles: dict = {}    # name -> text/dim style overrides
         # name -> HatchPattern, the patterns loaded from .pat files (#92)
         self.hatch_patterns: dict = {}
+        # the names the last load gave, a fresh list each time; not saved
+        self.loaded_patterns: list = []
         self.record_history = False     # new surfaces remember their inputs
         self.history_records: list = []   # {"op", "inputs", "output", ...}
         self._regen_active = False
@@ -589,12 +591,32 @@ class Scene:
                                            layer.color))
 
     def hatch_pattern(self, name):
-        """The pattern loaded from a .pat file that a fill's name stands
-        for in this drawing, or None: for the app's own, which draw
-        themselves, and for a name it has no pattern by, which draws as
-        lines."""
-        from .hatch_patterns import is_builtin, lookup
-        return None if is_builtin(name) else lookup(self.hatch_patterns, name)
+        """The families a fill's name is drawn from in this drawing: one
+        of the app's patterns or one loaded from a file, or None for Lines,
+        Cross and Solid, which draw themselves, and for a name it has no
+        pattern by, which draws as lines."""
+        from .hatch_patterns import definition_for
+        return definition_for(self.hatch_patterns, name)
+
+    def hatch_pattern_users(self, name) -> dict:
+        """How many of each thing in the drawing name a pattern: layers,
+        objects with a section style of their own, hatches on sheets and
+        hatches in the model, by those four keys."""
+        key = str(name or "").lower()
+        hatches = objects = 0
+        for obj in self.objects.values():
+            if obj.kind == "hatch" and \
+                    str(getattr(obj.shape, "pattern", "")).lower() == key:
+                hatches += 1
+            own = obj.section_fill
+            if own and str(own.get("pattern", "")).lower() == key:
+                objects += 1
+        return {"layer": sum(1 for la in self.layers.all()
+                             if la.hatch.lower() == key),
+                "object": objects,
+                "sheet": sum(1 for lay in self.layouts for h in lay.hatches
+                             if str(h.pattern).lower() == key),
+                "hatch": hatches}
 
     def render_color_of(self, obj: SceneObject) -> tuple[float, float, float]:
         """The colour rendered mode draws the object's surfaces in.

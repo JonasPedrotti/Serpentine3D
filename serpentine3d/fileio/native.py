@@ -214,10 +214,10 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
         doc["version"] = 7
         doc["requires"] = "0.12.2"
     # A release that knows only Lines, Cross and Solid refuses a model
-    # hatch drawn with a pattern from a .pat file, and the whole file with
-    # it (#92). A layer naming one is only drawn with lines there.
-    from ..core.hatch_patterns import is_builtin
-    if any(isinstance(shape, HatchShape) and not is_builtin(shape.pattern)
+    # hatch drawn with any other pattern, and the whole file with it
+    # (#92). A layer naming one is only drawn with lines there.
+    from ..core.hatch_patterns import is_legacy
+    if any(isinstance(shape, HatchShape) and not is_legacy(shape.pattern)
            for shape in new_shapes):
         doc["version"] = 8
         doc["requires"] = "0.12.2"

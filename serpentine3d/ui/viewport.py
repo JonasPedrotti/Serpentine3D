@@ -3544,6 +3544,11 @@ class Viewport(QOpenGLWidget):
                 self._ghost = None
                 self.update()
             return
+        # A solid hatch about to be placed is ghosted as a fill as strong
+        # as the lines of any other, not as a tint: it is what it will be.
+        from ..core.hatch import HatchGroup, HatchShape
+        self._ghost_solid = (isinstance(shape, (HatchShape, HatchGroup))
+                             and shape.solid)
         try:
             from ..core.tessellate import tessellate
             self._ghost = tessellate(shape)
@@ -3655,7 +3660,8 @@ class Viewport(QOpenGLWidget):
         if tris is not None:
             pts = rebased(tris, self._frame_anchor)
             self._preview.update(pts)
-            self._set_line_uniforms(mvp, (*gold, 0.22))
+            self._set_line_uniforms(mvp, (*gold, 0.85 if getattr(
+                self, "_ghost_solid", False) else 0.22))
             GL.glDepthMask(False)
             GL.glBindVertexArray(self._preview.vao)
             GL.glDrawArrays(GL.GL_TRIANGLES, 0, len(pts))

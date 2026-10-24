@@ -49,10 +49,11 @@ class HatchShape(TopoDS_Compound):
 
     def _initialize(self, region, pattern, angle, spacing, frame,
                     definition=None):
-        from .hatch_patterns import is_builtin
+        from .hatch_patterns import BUILTIN, is_builtin, is_legacy
         pattern = str(pattern).strip()
         if is_builtin(pattern):
-            pattern, definition = pattern.lower(), None
+            pattern = pattern.lower()
+            definition = None if is_legacy(pattern) else BUILTIN[pattern]
         elif definition is None or definition.key != pattern.lower():
             raise geometry.GeometryError(f"Unknown hatch pattern: {pattern}")
         solid = pattern == "solid" or bool(definition and definition.solid)
@@ -231,6 +232,20 @@ class HatchShape(TopoDS_Compound):
 
 # --- the pieces -------------------------------------------------------------
 
+class HatchGroup(TopoDS_Compound):
+    """Several hatches as one shape, for a window to ghost while a command
+    asks about them: a pick of several regions is one question."""
+
+    def __init__(self, hatches):
+        from OCP.BRep import BRep_Builder
+        super().__init__()
+        builder = BRep_Builder()
+        builder.MakeCompound(self)
+        for hatch in hatches:
+            builder.Add(self, hatch)
+        self.solid = bool(hatches) and all(h.solid for h in hatches)
+
+
 def _one_face(shape):
     """The single face a region is, whatever it arrived wrapped in: a
     region with a hole comes out of the boolean as a compound of one face,
@@ -266,7 +281,7 @@ def _rings(region, frame) -> list:
     from OCP.GCPnts import GCPnts_QuasiUniformDeflection
     from OCP.TopAbs import TopAbs_REVERSED
     lo, hi = geometry.bbox(region)
-    deflection = max(float(np.linalg.norm(np.subtract(hi, lo))) * 1e-4, 1e-7)
+    deflection = max(float(np.linalg.norm(np.subtract(hi, lo))) * 1e-5, 1e-7)
     inv = np.linalg.inv(np.asarray(frame, float))
     rings = []
     exp = occ.TopExp_Explorer(region, occ.WIRE)
@@ -317,7 +332,11 @@ def _pattern_segments(region, frame, pattern, angle, spacing,
             "across this region; use a larger spacing")
     frame = np.asarray(frame, float)
     out = []
+    shortest = geometry.tight()
     for a, b in fill_segments(rings, definition, pattern, angle, spacing):
+        # a dash the boundary cuts to a sliver is no edge the kernel takes
+        if math.dist(a, b) < shortest:
+            continue
         wa = frame @ np.array([a[0], a[1], 0.0, 1.0])
         wb = frame @ np.array([b[0], b[1], 0.0, 1.0])
         out.append((tuple(float(v) for v in wa[:3]),
@@ -340,6 +359,6 @@ def _assemble(region, solid, segments):
         builder.Add(compound, exp.Current())
         exp.Next()
     for a, b in segments:
-        if math.dist(a, b) > 1e-12:
+        if math.dist(a, b) >= geometry.tight():
             builder.Add(compound, geometry.make_line(a, b))
     return compound

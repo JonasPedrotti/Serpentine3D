@@ -109,11 +109,13 @@ class Leader:
     style: str = ""
 
 
-# Every fill the app can draw, in the order they are offered. A layer
-# names one of these as the material it is hatched with, so the list a
-# layer can be set to and the list the `hatch` command offers are one
-# list and cannot drift apart.
-HATCH_PATTERNS = ("lines", "cross", "solid")
+# Every fill the app has of its own, in the order they are offered. A
+# layer names one of these as the material it is hatched with, so the
+# list a layer can be set to and the list the `hatch` command offers are
+# one list and cannot drift apart. The same list as
+# hatch_patterns.BUILTIN_NAMES, kept here so this module needs no numpy.
+HATCH_PATTERNS = ("lines", "cross", "solid", "dash", "dots", "plus",
+                  "squares", "triangles", "brick")
 
 # What a layer's material can be filled with where a section cuts it: any
 # of the patterns, or none at all. None is a material's choice not to be

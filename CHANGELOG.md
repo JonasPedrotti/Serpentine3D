@@ -7,18 +7,33 @@
 - **Hatch patterns from .pat files (#92).** The industry's hatch patterns
   are stored in .pat files, and `hatchpatterns` (`loadpat`) loads one into
   the drawing: acad.pat, acadiso.pat, a Revit export or a pattern found
-  online. Its patterns are offered beside Lines, Cross and Solid wherever
-  a pattern is picked, for a hatch in the model or on a sheet and for the
-  section hatch of a layer or an object, and every pattern list in
-  Properties ends in Load patterns… for the same thing. Dashes, gaps and
-  dots are drawn as the file says, on screen, on a clipping plane's cap,
-  on a sheet and in a PDF. A pattern's spacing is the distance between
-  its rows, so a layer changed from Lines to ANSI31 keeps the look it had,
-  whatever unit the file was written in. What is loaded is saved with the
-  drawing, a hatch in the model carries its pattern with it, and a DXF
-  export writes the pattern under its own name. A layer may name a
-  pattern the drawing has not loaded yet; its cuts are drawn with lines
-  until it is.
+  online. Its patterns are offered beside the app's own wherever a
+  pattern is picked, for a hatch in the model or on a sheet and for the
+  section hatch of a layer or an object. Every pattern list in Properties
+  ends in Load patterns… and Delete patterns…; a load keeps what is picked
+  and switches it to the first pattern the file brought. `hatchpatterns`
+  also deletes a loaded pattern, whatever named it then drawing lines,
+  and purges every loaded one nothing uses. Dashes, gaps and dots are
+  drawn as the file says, on screen, on a clipping plane's cap, on a sheet
+  and in a PDF. A pattern's spacing is the distance between its rows, so
+  a layer changed from Lines to ANSI31 keeps the look it had, whatever
+  unit the file was written in. What is loaded is saved with the drawing,
+  a hatch in the model carries its pattern with it, and a DXF export
+  writes the pattern under its own name, Lines and Cross where they lie
+  here. A layer may name a pattern the drawing has not loaded yet; its
+  cuts are drawn with lines until it is.
+- **A few patterns every drawing has.** As in Rhino, one of each basic
+  form and none that is another turned or scaled: Lines, Cross and Solid
+  as before, and now Dash, Dots, Plus, Squares, Triangles and Brick.
+- **Hatches from Rhino and AutoCAD look as they did there (#92).** A
+  .3dm's hatches come in with the patterns of the file's own pattern
+  table, at their scale and rotation and laid from their base points, and
+  a .dxf's with the lines the file writes out, or, where it only names a
+  predefined pattern, the one of that name. Checked line for line against
+  Rhino's own and against the DXF lines, so a section drawn in either
+  comes in looking the same. A pattern that draws like one of the app's
+  own becomes that one, and one that only shares a name with one is kept
+  apart as, say, "BRICK (dxf)". The patterns come into the drawing's list.
 - **A cut's hatch has a background of its own (#91).** Layers, and objects
   with a section style of their own, have a Hatch background: Object, a
   darker shade of the object on screen and bare paper on a sheet as
@@ -28,7 +43,9 @@
 - **The hatch popup shows the hatch while it is open.** Changing the
   pattern, spacing or angle redraws the hatch it would make, in the model
   and on a sheet, before OK makes it. At the prompt each answer shows the
-  same.
+  same. A solid hatch is ghosted as a fill as strong as any other
+  pattern's lines, and Solid on a sheet is the ink of a hatch's lines
+  rather than a see-through grey.
 - **A clipping plane can be switched off in some views and not others.**
   Rhino lets a clipping plane choose the views it cuts, and a sheet needs
   it: a plan detail cut at sill height, a section detail cut down the

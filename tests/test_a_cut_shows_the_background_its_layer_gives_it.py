@@ -207,7 +207,7 @@ def test_the_pattern_list_offers_loaded_patterns_and_a_way_to_load(_qapp):
 
     scene, _h, props, walls = _layer_page("Walls")
     asked = []
-    props.loadPatternsRequested.connect(lambda: asked.append(True))
+    props.hatchPatternsRequested.connect(asked.append)
     merge_into(scene.hatch_patterns,
                parse_pat("*ANSI31, Iron\n45, 0,0, 0,.125\n"))
     scene.notify()
@@ -221,7 +221,7 @@ def test_the_pattern_list_offers_loaded_patterns_and_a_way_to_load(_qapp):
 
     combo.setCurrentIndex(combo.findData("load-patterns"))
     QApplication.processEvents()
-    assert asked == [True]
+    assert asked == ["Load"]
     assert scene.layers.get(walls.id).hatch == "ANSI31", \
         "asking to load a file is not a pattern"
     assert combo.currentData() == "ANSI31"

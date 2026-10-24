@@ -16,9 +16,10 @@ from ..core.layout import (MAX_PAPER_SEGMENTS, annotation_style,
 INK = QColor(25, 25, 30)
 DIM_INK = QColor(45, 70, 130)
 HATCH_INK = QColor(70, 72, 80)
-# Solid is drawn see-through so the linework under it still reads:
-# a poched wall on a section is meant to sit behind its own edges.
-SOLID_FILL = QColor(120, 122, 130, 120)
+# Solid is the ink of a hatch's lines, as solid as they are: a fill drawn
+# see-through read as a tint rather than a hatch. A cut's own edges are
+# drawn after it, so a poched wall still sits behind them.
+SOLID_FILL = QColor(HATCH_INK)
 
 
 def style_of(scene, name: str) -> dict:

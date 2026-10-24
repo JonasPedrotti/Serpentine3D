@@ -175,8 +175,8 @@ class MainWindow(QMainWindow):
         self.properties.textPlacementChanged.connect(
             self._text_placement_changed)
         self.properties.lookAtTextRequested.connect(self._look_at_text)
-        self.properties.loadPatternsRequested.connect(
-            lambda: self.run_command("hatchpatterns"))
+        self.properties.hatchPatternsRequested.connect(
+            self._run_hatch_patterns)
         self._text_placement_choice = "CPlane"
         self._look_at_text_restore = None
         self._prop_dock = QDockWidget("Properties", self)
@@ -249,6 +249,7 @@ class MainWindow(QMainWindow):
         self.ctx.add_echo_listener(self.command_line.echo)
         self.processor.add_listener(self._sync_command_state)
         self.processor.add_listener(self._resume_dropped_imports)
+        self.processor.add_listener(self._after_hatch_patterns)
 
         # wiring
         self.command_line.submitted.connect(self._on_submit)
@@ -1602,6 +1603,24 @@ class MainWindow(QMainWindow):
             self.processor.cancel()
         else:
             self.processor.provide_form(values)
+
+    def _run_hatch_patterns(self, action: str):
+        """Load or Delete patterns… from a pattern list in Properties. A
+        load that brings patterns switches that list to the first of them
+        once the command is over, so the pick that asked for the file gets
+        what was in it."""
+        before = self.scene.loaded_patterns
+        self._patterns_awaited = before if action == "Load" else None
+        self.run_command(f"hatchpatterns {action}")
+
+    def _after_hatch_patterns(self):
+        before = getattr(self, "_patterns_awaited", None)
+        if before is None or self.processor.busy:
+            return
+        self._patterns_awaited = None
+        loaded = self.scene.loaded_patterns
+        if loaded is not before:
+            self.properties.use_loaded_pattern(loaded)
 
     def _ghost_form(self, form, values):
         """What a popup's answers would make, ghosted in every pane while

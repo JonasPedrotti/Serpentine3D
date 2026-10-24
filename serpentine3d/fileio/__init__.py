@@ -243,6 +243,7 @@ def _add_items(scene, items: list, adding) -> int:
     layer_map = {}
     for done, (name, shape, meta) in enumerate(items, 1):
         layer_id = _layer_for(scene, meta, layer_map)
+        adopt_hatch_pattern(scene, shape)
         added = scene.add(shape, name=name, layer_id=layer_id)
         # An override only: leaving it None keeps the object following its
         # layer, the way it does in Rhino.
@@ -261,6 +262,21 @@ def _add_items(scene, items: list, adding) -> int:
             added.user_text = dict(meta["user_text"])
         adding.tick(done / count, f"Adding object {done} of {count}")
     return len(items)
+
+
+def adopt_hatch_pattern(scene, shape):
+    """Offer an imported hatch's pattern in the drawing from then on, as
+    Rhino's and AutoCAD's own lists would (#92). A pattern the drawing
+    already has by that name is left as the drawing has it; the hatch
+    carries its own either way, so it is drawn as the file drew it."""
+    from ..core.hatch import HatchShape
+    from ..core.hatch_patterns import is_builtin, lookup
+    definition = getattr(shape, "definition", None) \
+        if isinstance(shape, HatchShape) else None
+    if definition is None or is_builtin(definition.name):
+        return
+    if lookup(scene.hatch_patterns, definition.name) is None:
+        scene.hatch_patterns[definition.name] = definition
 
 
 def _layer_for(scene, meta: dict, made: dict) -> str | None:

@@ -24,10 +24,14 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-# The app's own fills. Lines and Cross are families of lines too, and are
-# spelled that way here so a pattern library lists them like any other;
-# they keep their own drawing, which centres the lines on the region.
-BUILTIN_NAMES = ("lines", "cross", "solid")
+# The app's own fills, always there, in the order they are offered: one of
+# each basic form, the way Rhino's defaults are, and none that is another
+# turned or scaled. Lines, Cross and Solid keep the drawing they always
+# had, which centres the lines on the region (LEGACY); the rest are drawn
+# from their families like a pattern from a file.
+BUILTIN_NAMES = ("lines", "cross", "solid", "dash", "dots", "plus",
+                 "squares", "triangles", "brick")
+LEGACY = ("lines", "cross", "solid")
 
 # A dot in a dash run is drawn as a dash this short, against the pattern's
 # row spacing, so a screen, a plot and a model hatch all have a mark to show.
@@ -103,11 +107,60 @@ BUILTIN = {
     "cross": HatchPattern("cross", "Lines both ways",
                           (PatternLine(0.0), PatternLine(90.0))),
     "solid": HatchPattern("solid", "Solid fill", solid=True),
+    # a whole line, then a dashed one between
+    "dash": HatchPattern("dash", "Lines and dashed lines between", (
+        PatternLine(0.0, (0.0, 0.0), (0.0, 1.0)),
+        PatternLine(0.0, (0.0, 0.5), (0.0, 1.0), (0.5, -0.5)))),
+    "dots": HatchPattern("dots", "A grid of dots", (
+        PatternLine(0.0, (0.0, 0.0), (0.0, 1.0), (0.0, -1.0)),)),
+    "plus": HatchPattern("plus", "Plus signs", (
+        PatternLine(0.0, (-0.125, 0.0), (0.0, 1.0), (0.25, -0.75)),
+        PatternLine(90.0, (0.0, -0.125), (0.0, 1.0), (0.25, -0.75)))),
+    "squares": HatchPattern("squares", "Steps of squares", (
+        PatternLine(0.0, (0.0, 0.0), (0.0, 1.0), (1.0, -1.0)),
+        PatternLine(90.0, (0.0, 0.0), (0.0, 1.0), (1.0, -1.0)))),
+    "triangles": HatchPattern("triangles", "Lines three ways", (
+        PatternLine(0.0), PatternLine(60.0), PatternLine(120.0))),
+    "brick": HatchPattern("brick", "Running bond", (
+        PatternLine(0.0, (0.0, 0.0), (0.0, 1.0)),
+        PatternLine(90.0, (0.0, 0.0), (1.0, 1.0), (1.0, -1.0)))),
 }
 
 
 def is_builtin(name) -> bool:
     return str(name or "").strip().lower() in BUILTIN_NAMES
+
+
+def is_legacy(name) -> bool:
+    """Lines, Cross and Solid: drawn the way they always were, with no
+    definition of their own to carry."""
+    return str(name or "").strip().lower() in LEGACY
+
+
+def same_pattern(a: HatchPattern, b: HatchPattern, tol: float = 1e-6) -> bool:
+    """Whether two patterns draw the same at the same spacing: the same
+    families, each measured in rows of its own pattern, so one written in
+    inches and one in millimetres are the same pattern."""
+    if a.solid or b.solid:
+        return a.solid and b.solid
+    if len(a.lines) != len(b.lines):
+        return False
+
+    def norm(p):
+        r = p.row_spacing
+        return sorted((round(ln.angle % 360.0, 6),
+                       tuple(v / r for v in ln.origin),
+                       tuple(v / r for v in ln.offset),
+                       tuple(d / r for d in ln.dashes)) for ln in p.lines)
+
+    for x, y in zip(norm(a), norm(b)):
+        if x[0] != y[0] or len(x[3]) != len(y[3]):
+            return False
+        flat_x = (*x[1], *x[2], *x[3])
+        flat_y = (*y[1], *y[2], *y[3])
+        if any(abs(u - v) > tol for u, v in zip(flat_x, flat_y)):
+            return False
+    return True
 
 
 def _pair(values) -> tuple:
@@ -263,6 +316,12 @@ def _family(out, edges, ln, origin, angle, scale, limit):
     period = sum(abs(d) for d in run)
     dot = DOT_FRACTION * max(step, 1e-12) if step else DOT_FRACTION * scale
     pieces = _dash_pieces(run, dot) if period > 1e-12 else None
+    # Edges the family's lines run along. A line lying on one is the
+    # boundary itself, which is drawn already; Rhino and AutoCAD leave it
+    # out, and drawn twice it would only thicken the outline.
+    tol = 1e-9 * max(hi - lo, float(np.ptp(local[:, :, 0])), 1.0)
+    level = np.abs(ya - yb) <= tol
+    along = (ya[level], np.minimum(xa, xb)[level], np.maximum(xa, xb)[level])
     for k in rows:
         y = k * step
         crosses = (ya > y) != (yb > y)
@@ -272,8 +331,14 @@ def _family(out, edges, ln, origin, angle, scale, limit):
         xs = np.sort(xa[crosses] + t * (xb[crosses] - xa[crosses])).tolist()
         start = k * shift
         ox, oy = origin[0] - s * y, origin[1] + c * y
+        on_edge = np.abs(along[0] - y) <= tol
         for i in range(0, len(xs) - 1, 2):
             a, b = xs[i], xs[i + 1]
+            if on_edge.any():
+                mid = (a + b) / 2
+                if np.any((along[1][on_edge] <= mid + tol)
+                          & (mid - tol <= along[2][on_edge])):
+                    continue
             if pieces is None:
                 spans = [(a, b)]
             else:
@@ -320,16 +385,18 @@ def fill_segments(rings, pattern: HatchPattern | None, name: str,
                   limit: int | None = None) -> list:
     """The segments a fill draws over a region, whatever it is called.
 
-    Lines and Cross are drawn as they always were; a pattern from the
-    library is drawn family by family; a name this drawing has no pattern
-    for draws Lines, which is what such a fill has always drawn. Solid and
-    None draw no segments at all.
+    Lines and Cross are drawn as they always were; the app's other
+    patterns and those from the library are drawn family by family; a name
+    this drawing has no pattern for draws Lines, which is what such a fill
+    has always drawn. Solid and None draw no segments at all.
     """
     from .layout import hatch_region
     key = str(name or "").lower()
+    if key not in LEGACY and pattern is None:
+        pattern = BUILTIN.get(key)
     if key in ("solid", "none") or (pattern is not None and pattern.solid):
         return []
-    if pattern is not None and key not in BUILTIN_NAMES:
+    if pattern is not None and key not in LEGACY:
         return pattern_segments(rings, pattern, angle, spacing, limit)
     out = list(hatch_region(rings, angle, spacing))
     if key == "cross":
@@ -337,24 +404,52 @@ def fill_segments(rings, pattern: HatchPattern | None, name: str,
     return out
 
 
-def merge_into(library: dict, patterns) -> tuple:
-    """Add patterns to a drawing's library, by name, case aside.
+def import_name(pattern: HatchPattern, source: str = "") -> tuple:
+    """(name, definition) a pattern from a file is drawn as here.
 
-    A pattern named like one of the app's own is left out, since a layer
-    set to Lines means the app's; one already in the library is replaced,
-    as loading a newer copy of the same file should. Returns the names
-    added and the names left out.
+    One that draws the same as one of the app's own is that one: Rhino's
+    Plus is Plus, any solid is Solid. One that only shares a name with one
+    of them is kept apart as "BRICK (acad)" after its `source`, so a hatch
+    from a file is drawn as that file drew it and a layer set to Brick
+    keeps the app's.
     """
-    added, skipped = [], []
+    if pattern.solid:
+        return "solid", None
+    for key in BUILTIN_NAMES:
+        if key not in LEGACY and same_pattern(pattern, BUILTIN[key]):
+            return key, BUILTIN[key]
+    if is_builtin(pattern.name):
+        name = f"{pattern.name} ({source or 'file'})"
+        return name, HatchPattern(name, pattern.description, pattern.lines)
+    return pattern.name, pattern
+
+
+def merge_into(library: dict, patterns, source: str = "") -> dict:
+    """Add patterns to a drawing's library, by name, case aside, and say
+    what each is called in the drawing: {name in the file: name here}.
+
+    Each is named as `import_name` says. One already in the library under
+    its name is replaced, as loading a newer copy of the same file should.
+    """
+    named = {}
     for pattern in patterns:
-        if is_builtin(pattern.name):
-            skipped.append(pattern.name)
+        name, definition = import_name(pattern, source)
+        named[pattern.name] = name
+        if is_builtin(name):
             continue
-        for key in [k for k in library if k.lower() == pattern.key]:
+        for key in [k for k in library if k.lower() == name.lower()]:
             del library[key]
-        library[pattern.name] = pattern
-        added.append(pattern.name)
-    return added, skipped
+        library[name] = definition
+    return named
+
+
+def definition_for(library: dict | None, name) -> HatchPattern | None:
+    """The families a fill is drawn from: None for Lines, Cross and Solid,
+    which draw themselves, and for a name the drawing has no pattern by,
+    which draws as Lines."""
+    if is_legacy(name):
+        return None
+    return lookup(library, name)
 
 
 def lookup(library: dict | None, name) -> HatchPattern | None:
