@@ -232,3 +232,26 @@ def test_a_solid_on_paper_is_not_see_through():
     from serpentine3d.ui.annot_paint import HATCH_INK, SOLID_FILL
     assert SOLID_FILL.alpha() == 255
     assert SOLID_FILL == HATCH_INK
+
+
+# --- no edge of its own -------------------------------------------------------
+
+@pytest.mark.parametrize("pattern", ["lines", "brick", "solid"])
+def test_a_hatch_draws_its_fill_and_not_its_edge(pattern):
+    """As in Rhino and AutoCAD, a hatch's boundary is the curves drawn
+    round it; the hatch itself is only its fill."""
+    from serpentine3d.core.tessellate import tessellate
+    hatch = HatchShape(_face(), pattern, spacing=1.0)
+    mesh = tessellate(hatch)
+    assert len(mesh.edge_segments) == len(hatch.pattern_segments())
+    if pattern == "solid":
+        assert mesh.has_faces and not len(mesh.edge_segments)
+
+
+def test_its_edge_is_still_there_to_snap_to():
+    hatch = HatchShape(_face(), "lines", spacing=1.0)
+    kinds = {kind for _p, kind in hatch.snap_points()}
+    assert {"end", "mid", "center"} <= kinds
+    assert hatch.drawn() is not hatch
+    edges = g.edges_of(hatch.drawn())
+    assert len(edges) == len(hatch.pattern_segments())

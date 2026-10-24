@@ -225,3 +225,46 @@ def test_the_pattern_list_offers_loaded_patterns_and_a_way_to_load(_qapp):
     assert scene.layers.get(walls.id).hatch == "ANSI31", \
         "asking to load a file is not a pattern"
     assert combo.currentData() == "ANSI31"
+
+
+def test_a_detail_cut_by_a_clipping_plane_shows_the_background(
+        _qapp, monkeypatch):
+    """A detail with no section of its own is still cut by a clipping
+    plane (#94), and its cut lies on the background the layer gives it,
+    as one with a section does."""
+    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtWidgets import QApplication
+
+    from serpentine3d.app import MainWindow
+    from serpentine3d.core.layout import DetailView, Layout
+    from serpentine3d.ui import annot_paint
+
+    w = MainWindow()
+    try:
+        box = w.scene.add(g.make_box((0, 0, 0), 5, 5, 5))
+        w.scene.layers.set_hatch_background(box.layer_id, "#0055ff")
+        lay = Layout(name="Sheet")
+        detail = DetailView(x=0, y=0, w=50, h=50, display_mode="hidden")
+        assert detail.section_offset is None
+        lay.details.append(detail)
+        w.scene.layouts.append(lay)
+        view = w.viewport.layout_view
+        view.layout_id = lay.id
+        monkeypatch.setattr(type(view), "layout", property(lambda s: lay))
+        monkeypatch.setattr(view, "_detail_hlr", lambda d: {
+            "cut": [[SQUARE]], "cut_by_obj": [(box.id, "lines", [SQUARE])]})
+        flooded = []
+        monkeypatch.setattr(annot_paint, "fill_cut_solid",
+                            lambda p, f, regions, color=None:
+                            flooded.append(color))
+        image = QImage(100, 100, QImage.Format.Format_ARGB32)
+        painter = QPainter(image)
+        try:
+            view._paint_cut_fills(painter)
+        finally:
+            painter.end()
+        assert flooded == [pytest.approx((0.0, 1 / 3, 1.0))]
+    finally:
+        w.mark_saved()
+        w.close()
+        QApplication.processEvents()

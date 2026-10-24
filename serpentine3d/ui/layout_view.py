@@ -856,11 +856,14 @@ class LayoutView:
             details.append(self.ghost_detail)
         for detail in details:
             # Same test the GL pass makes, so asking a shaded detail what
-            # it cut does not set a hidden-line pass going for nothing.
-            if detail.display_mode in MODES_3D or detail.perspective \
-                    or detail.section_offset is None:
+            # it cut does not set a hidden-line pass going for nothing. A
+            # detail with no section of its own can still be cut, by a
+            # clipping plane (#94), so it is what it cut that decides.
+            if detail.display_mode in MODES_3D or detail.perspective:
                 continue
             data = self._detail_hlr(detail)
+            if not data.get("cut"):
+                continue
             fills = self._region_fills(data)
             if not any(f.pattern == "solid" or f.background is not None
                        or getattr(f.definition, "solid", False)

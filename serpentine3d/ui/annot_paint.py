@@ -116,13 +116,14 @@ def fill_cut_solid(painter, to_dev, regions, color=None):
 
 def draw_hatch(painter, to_dev, k, hatch, scene=None):
     """A sheet's hatch, its pattern looked up in the drawing's library
-    when it is not one of the app's own (#92)."""
+    when it is not one of the app's own (#92). Its fill only: the edge of
+    a hatch is the linework drawn round it, as in Rhino and AutoCAD."""
     from ..core.hatch_patterns import fill_segments, lookup
     pts = hatch.points
     if len(pts) < 3:
         return
-    # A hole is drawn like any other edge and filled like no material at
-    # all, which is the whole of the difference between a pipe and a bar.
+    # A hole is filled like no material at all, which is the whole of the
+    # difference between a pipe and a bar.
     rings = [pts] + [r for r in (getattr(hatch, "holes", None) or [])
                      if len(r) >= 3]
     polys = [QPolygonF([QPointF(*to_dev(p[0], p[1])) for p in ring])
@@ -137,15 +138,13 @@ def draw_hatch(painter, to_dev, k, hatch, scene=None):
         for poly in polys:
             path.addPolygon(poly)
             path.closeSubpath()
-        painter.setPen(QPen(ink, 0))
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(SOLID_FILL if color is None else ink)
         painter.drawPath(path)
         painter.setBrush(QColor(0, 0, 0, 0))
         return
     painter.setPen(QPen(ink, max(0.15 * k, 1.0)))
     painter.setBrush(QColor(0, 0, 0, 0))
-    for poly in polys:
-        painter.drawPolygon(poly)
     for a, b in fill_segments(rings, definition, hatch.pattern, hatch.angle,
                               hatch.spacing, limit=MAX_PAPER_SEGMENTS):
         _line(painter, to_dev, a, b)

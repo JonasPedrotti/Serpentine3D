@@ -182,6 +182,14 @@ class HatchShape(TopoDS_Compound):
                                 self._pattern, self._angle, self._spacing,
                                 self._frame, self._definition)
 
+    def drawn(self):
+        """What is drawn of the hatch: its pattern's lines, or for a solid
+        fill the face. Not its boundary, which Rhino and AutoCAD do not
+        draw either; that is the curves round it (#92)."""
+        if self.solid:
+            return self._region
+        return _assemble(self._region, False, self._segments, outline=False)
+
     def to_curves(self) -> list:
         """The boundary as ordinary closed curves, outer and holes."""
         wires = []
@@ -344,9 +352,10 @@ def _pattern_segments(region, frame, pattern, angle, spacing,
     return out
 
 
-def _assemble(region, solid, segments):
+def _assemble(region, solid, segments, outline=True):
     """The compound the hatch is: its face for a solid fill, its boundary
-    and pattern lines for the rest."""
+    and pattern lines for the rest. The boundary stays in the shape, for
+    picking, snapping and its bounds, and is left out of what is drawn."""
     from OCP.BRep import BRep_Builder
     builder = BRep_Builder()
     compound = TopoDS_Compound()
@@ -355,7 +364,7 @@ def _assemble(region, solid, segments):
         builder.Add(compound, region)
         return compound
     exp = occ.TopExp_Explorer(region, occ.WIRE)
-    while exp.More():
+    while outline and exp.More():
         builder.Add(compound, exp.Current())
         exp.Next()
     for a, b in segments:

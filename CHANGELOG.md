@@ -22,6 +22,10 @@
   writes the pattern under its own name, Lines and Cross where they lie
   here. A layer may name a pattern the drawing has not loaded yet; its
   cuts are drawn with lines until it is.
+- **A hatch is its fill.** As in Rhino and AutoCAD, a hatch no longer
+  draws a line round itself or its holes, in the model, in a detail or on
+  a sheet; its edge is the linework it was made from. It still snaps to
+  its edge's ends and middles.
 - **A few patterns every drawing has.** As in Rhino, one of each basic
   form and none that is another turned or scaled: Lines, Cross and Solid
   as before, and now Dash, Dots, Plus, Squares, Triangles and Brick.
