@@ -27,6 +27,13 @@
   draws a line round itself or its holes, in the model, in a detail or on
   a sheet; its edge is the linework it was made from. It still snaps to
   its edge's ends and middles.
+- **A hatch has a colour and a background.** A hatch in the model takes
+  its layer's Hatch colour and Hatch background, and its Properties can
+  give it its own of either, By layer to begin with. A background fills
+  the hatch under its lines, in the model, on a sheet and in the PDF, and
+  a click anywhere inside a hatch picks it, as in Rhino. A detail draws
+  its hatches under the rest of its linework, each in its colour and at
+  its print width.
 - **A few patterns every drawing has.** As in Rhino, one of each basic
   form and none that is another turned or scaled: Lines, Cross and Solid
   as before, and now Dash, Dots, Plus, Squares, Triangles and Brick.
@@ -40,7 +47,7 @@
   own becomes that one, and one that only shares a name with one is kept
   apart as, say, "BRICK (dxf)". The patterns come into the drawing's list.
 - **A cut's hatch has a background of its own (#91).** Layers, and objects
-  with a section style of their own, have a Hatch background: Object, a
+  with a section style of their own, have a Hatch background: None, a
   darker shade of the object on screen and bare paper on a sheet as
   before, or the layer's colour or one of its own, which fills the cut
   under its hatch on screen and on paper alike. Scripts set it as
@@ -71,8 +78,39 @@
   setting from `scene_info`. Enter on nothing at any of the four
   commands' prompts now means every plane, as the prompts always said,
   rather than cancelling.
+- **A picked solid shows where it is cut.** Where a clipping plane cuts a
+  solid, its cut line turns gold while the solid is picked, in the model
+  and in a detail, where the cut can be all there is to see of it.
+- **A hidden-line detail shows its print widths.** On the sheet, each of
+  a hidden-line detail's lines is drawn by its print width, as a layer
+  that follows its print width is in the model, so a heavy wall reads
+  heavy before the sheet is printed. A line with no print width is drawn
+  as before.
+
+### Changed
+
+- **A hidden clipping plane still cuts.** As in Rhino, hiding a clipping
+  plane, or turning its layer off, now only puts the plane out of sight:
+  it goes on cutting, so a section is kept without the plane in the way,
+  and pausing it with `disableclippingplane` or switching it off in a
+  view is what stops the cut. Before, a hidden plane stopped cutting. As
+  nothing on screen then shows why part of a model is missing, a pane a
+  plane cuts says so in its title, "Perspective · Shaded · Cut", and the
+  title's menu lists every plane that cuts it, the hidden ones marked
+  hidden, with Show Hidden Planes to bring them back in sight. A detail's
+  list of planes in Properties names the hidden ones too, and hiding a
+  plane that cuts, with `hide`, `isolate`, `layer` or a layer's
+  visibility box, says that it still cuts. Only a plane in sight draws
+  its arrow. A drawing saved before this opens with the planes it hid
+  paused, so it looks as it was saved.
 
 ### Fixed
+
+- **A section on a sheet keeps its corners.** A detail traced each face a
+  cut leaves at points spaced evenly round its loops, so every corner was
+  cut off, and the cut line and the hatching drew the chamfer, on the
+  sheet and in the PDF. Each loop is now followed edge by edge: a
+  straight side is its two ends, and a curve is followed closely.
 
 - **A sheet reads in inches in an inch or feet document.** A dimension on
   bare paper wrote its paper millimetres with the document's unit after
@@ -149,9 +187,8 @@
   have both at once. A shaded one closes what it cuts with the model
   view's caps, hatched at the hatch's spacing on the paper and outlined
   at its print width, so the two kinds of detail read alike on one sheet.
-  The plane itself still draws in a detail, as everywhere else; leave its
-  layer out of the detail for a clean section that still cuts. Reported
-  by lourencovp.
+  The plane itself is not drawn on a sheet, so a section there is clean.
+  Reported by lourencovp.
 
 - **Inside a detail, Properties and Delete follow what you pick (#93).**
   The click before a double-click picks the detail on the sheet, as the
