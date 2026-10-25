@@ -172,6 +172,31 @@ def test_dots_are_drawn_as_small_circles():
     assert all(r == pytest.approx(0.05) for _c, r in marks)
 
 
+def test_a_dot_is_one_circle_in_the_model():
+    """So a dot costs a hatch no more than the dash it used to be drawn
+    as: a Dots hatch as big as before is still drawn, rather than refused
+    as a spacing too fine."""
+    from OCP.GeomAbs import GeomAbs_CurveType
+
+    from serpentine3d.core import occ
+    from serpentine3d.core.hatch_patterns import DOT_FRACTION
+
+    hatch = HatchShape(_face(300.0), "Dots", spacing=2.5)
+    assert len(hatch.dots()) > 14000
+
+    edges = g.edges_of(hatch.drawn())
+    assert len(edges) == len(hatch.dots())
+    for edge in edges[:50]:
+        circle = occ.edge_adaptor(edge)
+        assert circle.GetType() == GeomAbs_CurveType.GeomAbs_Circle
+        assert circle.Circle().Radius() == pytest.approx(DOT_FRACTION * 2.5 / 2)
+
+
+def test_a_spacing_too_fine_for_dots_is_still_refused():
+    with pytest.raises(g.GeometryError, match="use a larger spacing"):
+        HatchShape(_face(300.0), "Dots", spacing=0.5)
+
+
 def test_every_family_is_drawn_and_stays_in_the_region():
     segs = pattern_segments([SQUARE], _patterns()["AR-BRICK"], 30.0, 1.0)
     directions = {round(math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))

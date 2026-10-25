@@ -262,8 +262,8 @@ def segment_estimate(rings, pattern: HatchPattern, spacing: float) -> int:
         dy = abs(ln.offset[1]) * scale
         rows = span / dy if dy > 1e-12 else 1.0
         run = sum(abs(d) for d in ln.dashes) * scale
-        # a dot is drawn as the sides of a small circle
-        marks = sum(DOT_SIDES if d == 0 else 1 for d in ln.dashes if d >= 0)
+        # a dot is one small circle, as a dash is one line
+        marks = sum(1 for d in ln.dashes if d >= 0)
         per_row = (span / run * max(1, marks) if run > 1e-12 else 1.0)
         total += rows * max(per_row, 1.0)
     return int(total)
