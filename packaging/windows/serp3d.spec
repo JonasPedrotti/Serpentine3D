@@ -26,6 +26,9 @@ a = Analysis(
     binaries=vtk_bins + e57_bins,
     datas=[],
     hiddenimports=[],
+    # A hook here replaces contrib's hook of the same name: hook-OpenGL.py
+    # leaves out the DLLs PyOpenGL never loads on this Python.
+    hookspath=[str(Path(SPECPATH) / "hooks")],
     excludes=[
         "tkinter",
         "matplotlib.backends.backend_tkagg",
