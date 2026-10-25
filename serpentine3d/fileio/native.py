@@ -467,19 +467,34 @@ def _check_version(doc: dict):
 def _patterns_used(scene) -> list:
     """The patterns a drawing is drawn with that are not the app's own,
     its own or installed: saved with it, so it is drawn the same where
-    they were never installed. One nothing names is not kept (#92)."""
-    from ..core.hatch_patterns import is_builtin
+    they were never installed. One nothing names is not kept (#92).
+
+    A hatch carries the pattern it is drawn with, so one that is neither
+    the drawing's nor installed any more is saved from the hatch."""
+    from ..core.hatch import HatchShape
+    from ..core.hatch_patterns import HatchPattern, is_builtin
     names = {la.hatch for la in scene.layers.all()}
     names.update(str(h.pattern) for lay in scene.layouts
                  for h in lay.hatches)
     for obj in scene.all():
         if obj.section_fill:
             names.add(obj.section_fill.get("pattern", ""))
+    shapes = [obj.shape for obj in scene.all()]
+    shapes.extend(obj.shape for lay in scene.layouts for obj in lay.objects)
+    shapes.extend(shape for block in scene.block_defs.values()
+                  for shape in block["shapes"])
+    carried = {}
+    for shape in shapes:
+        if isinstance(shape, HatchShape):
+            names.add(str(shape.pattern))
+            if isinstance(shape.definition, HatchPattern):
+                carried.setdefault(str(shape.pattern).lower(),
+                                   shape.definition)
     out, seen = [], set()
     for name in names:
         if not name or is_builtin(name) or name.lower() in seen:
             continue
-        pattern = scene.hatch_pattern(name)
+        pattern = scene.hatch_pattern(name) or carried.get(name.lower())
         if pattern is not None:
             seen.add(name.lower())
             out.append(pattern)

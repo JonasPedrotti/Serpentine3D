@@ -294,8 +294,10 @@ def test_a_drawing_keeps_its_patterns_and_hatches_through_a_save(tmp_path):
 
     back = Scene()
     native.load_scene(back, path)
-    # what the drawing uses is saved with it, and nothing it does not
-    assert back.hatch_patterns == {"ANSI31": _patterns()["ANSI31"]}
+    # what the drawing uses is saved with it, a layer's and a hatch's, and
+    # nothing it does not
+    assert back.hatch_patterns == {"ANSI31": _patterns()["ANSI31"],
+                                   "AR-BRICK": _patterns()["AR-BRICK"]}
     assert back.layers.get(DEFAULT_LAYER_ID).hatch == "ANSI31"
     (hatch,) = [o.shape for o in back.all() if o.kind == "hatch"]
     assert hatch.definition == _patterns()["AR-BRICK"]
@@ -373,6 +375,48 @@ def test_a_drawing_saves_an_installed_pattern_it_uses(env, tmp_path):
     back = Scene()
     native.load_scene(back, path)
     assert back.hatch_pattern("ANSI37") == _patterns()["ANSI37"]
+
+
+@pytest.mark.parametrize("where", ["model", "block"])
+def test_a_drawing_saves_a_pattern_only_a_hatch_uses(env, tmp_path, where):
+    """A hatch carries its pattern's lines, so it is drawn anywhere, but
+    the pattern is offered for hatching more there only if the drawing
+    saved it."""
+    from serpentine3d.core.hatch_patterns import install, uninstall
+    from serpentine3d.fileio import native
+
+    install(parse_pat(PAT))
+    scene = Scene()
+    hatch = HatchShape(_face(), "ANSI37", spacing=1.0,
+                       definition=scene.hatch_pattern("ANSI37"))
+    if where == "model":
+        scene.add(hatch, name="Hatch")
+    else:
+        scene.block_defs["b1"] = {"name": "Hatched", "shapes": [hatch]}
+    path = str(tmp_path / "uses.serp")
+    native.save_scene(scene, path)
+    uninstall("ANSI37")
+
+    back = Scene()
+    native.load_scene(back, path)
+    assert back.hatch_pattern("ANSI37") == _patterns()["ANSI37"]
+
+
+def test_a_drawing_saves_a_pattern_only_its_hatch_still_knows(tmp_path):
+    """Neither installed nor the drawing's, as in a file saved before a
+    hatch's pattern was kept with it: the hatch still has it, and the
+    next save keeps it for the drawing."""
+    from serpentine3d.fileio import native
+
+    scene = Scene()
+    scene.add(HatchShape(_face(), "AR-BRICK", spacing=1.0,
+                         definition=_patterns()["AR-BRICK"]), name="Hatch")
+    path = str(tmp_path / "carried.serp")
+    native.save_scene(scene, path)
+
+    back = Scene()
+    native.load_scene(back, path)
+    assert back.hatch_pattern("AR-BRICK") == _patterns()["AR-BRICK"]
 
 
 def test_a_hatch_can_be_drawn_with_a_loaded_pattern(env, tmp_path):
