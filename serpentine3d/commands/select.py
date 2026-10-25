@@ -92,15 +92,21 @@ def cmd_invert(ctx):
 
 @command("isolate")
 def cmd_isolate(ctx):
+    from ..core import clipping
     objs = yield SelectReq("Select objects to isolate")
     keep = {o.id for o in objs}
     hidden = [o.id for o in ctx.scene.all()
               if o.id not in keep and o.visible]
+    in_sight = clipping.in_sight(ctx.scene)
     ctx.scene.update_many(hidden, visible=False)
     ctx._isolated = getattr(ctx, "_isolated", [])
     ctx._isolated.extend(hidden)
     ctx.echo(f"Isolated {len(keep)} object(s); {len(hidden)} hidden. "
              "Run 'unisolate' to restore.")
+    # a hidden clipping plane still cuts what is left in sight
+    note = clipping.still_cuts(clipping.hidden_since(ctx.scene, in_sight))
+    if note:
+        ctx.echo(note)
 
 
 @command("unisolate")

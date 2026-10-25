@@ -795,9 +795,15 @@ def cmd_dir(ctx):
 
 @command("hide")
 def cmd_hide(ctx):
+    from ..core import clipping
     objs = yield SelectReq("Select objects to hide")
+    in_sight = clipping.in_sight(ctx.scene)
     ctx.scene.update_many([o.id for o in objs], visible=False)
     ctx.echo(f"Hid {len(objs)} object(s).")
+    # a hidden clipping plane still cuts, with nothing on screen to say so
+    note = clipping.still_cuts(clipping.hidden_since(ctx.scene, in_sight))
+    if note:
+        ctx.echo(note)
 
 
 @command("show", aliases=("unhide",))
@@ -870,13 +876,20 @@ def cmd_layer(ctx):
             layers.current_id = layer.id
             ctx.echo(f"Current layer: {layer.name}.")
     elif action in ("Show", "Hide"):
+        from ..core import clipping
         name = yield TextReq("Layer name")
         layer = layers.find_by_name(name)
         if layer is None:
             ctx.echo(f"No layer named '{name}'.")
         else:
+            in_sight = clipping.in_sight(ctx.scene)
             layers.set_visible(layer.id, action == "Show")
-            ctx.echo(f"Layer '{layer.name}' {action.lower()}n.")
+            ctx.echo(f"Layer '{layer.name}' "
+                     f"{'shown' if action == 'Show' else 'hidden'}.")
+            note = clipping.still_cuts(
+                clipping.hidden_since(ctx.scene, in_sight))
+            if note:
+                ctx.echo(note)
     elif action == "Weight":
         name = yield TextReq("Layer name")
         layer = layers.find_by_name(name)

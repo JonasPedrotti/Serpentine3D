@@ -258,11 +258,16 @@ class MainWindow(QMainWindow):
         self.command_line.keywordClicked.connect(self._on_keyword_chip)
         self.command_line.tabPressed.connect(self._toggle_direction_lock)
         self.command_line.input.textEdited.connect(self._live_preview)
+        self.layers_panel.said.connect(self.command_line.echo)
         self._wire_viewport(self.viewport)
         self.scene.add_listener(self._update_status)
         self.selection.add_listener(self._update_status)
         self.scene.add_listener(self._refresh_space_tabs)
         self._refresh_space_tabs()
+        # A plane added, paused or switched off in a view starts or stops
+        # it cutting a pane, which the pane's title says.
+        self.scene.add_listener(self._refresh_viewport_titles,
+                                kinds=("objects",))
 
         self._user_shortcuts: list = []
         self.apply_user_aliases()
@@ -548,15 +553,27 @@ class MainWindow(QMainWindow):
 
     def _viewport_title(self, vp) -> str:
         """What a pane is showing, in the order you would say it: the view,
-        then how it is drawn. A layout says which sheet instead of the view,
-        since a sheet has no camera to name."""
+        then how it is drawn, then whether a clipping plane cuts it. A
+        layout says which sheet instead of the view, since a sheet has no
+        camera to name.
+
+        A hidden plane still cuts, as in Rhino, with nothing on screen to
+        show it, so a model missing a part says why where you look first,
+        and the title's menu lists the planes."""
         if vp.space == "model":
             place = vp._view_name.capitalize()
         else:
             lay = next((l for l in self.scene.layouts if l.id == vp.space),
                        None)
             place = lay.name if lay else "Layout"
-        return f"{place} · {vp.display_mode.capitalize()}"
+        title = f"{place} · {vp.display_mode.capitalize()}"
+        return f"{title} · Cut" if vp.is_cut() else title
+
+    def _refresh_viewport_titles(self):
+        """Every pane's title again: a change to the drawing can start or
+        stop a clipping plane cutting one."""
+        for vp in self.all_viewports():
+            self._update_viewport_dock_title(vp)
 
     def _update_viewport_dock_title(self, vp):
         dock = vp.parentWidget()
@@ -634,9 +651,13 @@ class MainWindow(QMainWindow):
         """Which clipping planes cut this pane, each one a tick to switch
         it off or on here and nowhere else (core/clipping.py). Inside a
         detail it is the detail that is cut; on bare paper, or with no
-        planes to list, there is nothing to offer."""
+        planes to list, there is nothing to offer.
+
+        A hidden plane cuts too, so it is listed, said to be hidden, and
+        Show Hidden Planes brings every one of them back in sight."""
+        from .core import clipping
         view = vp.clip_view()
-        planes = [o for o in self.scene.visible_objects() if o.clip_plane]
+        planes = clipping.planes_of(self.scene)
         if view is None or not planes:
             return
         # Made with its parent rather than by addMenu(title), whose menu
@@ -644,13 +665,42 @@ class MainWindow(QMainWindow):
         sub = QMenu("Clipping Planes", menu)
         menu.addMenu(sub)
         for obj in planes:
-            label = obj.name if obj.clip_plane.get("enabled") \
-                else f"{obj.name} (paused)"
-            act = sub.addAction(label)
+            act = sub.addAction(clipping.label(self.scene, obj))
             act.setCheckable(True)
             act.setChecked(view not in obj.clip_plane.get("off_in", ()))
             act.triggered.connect(
                 lambda on, i=obj.id: self.set_clip_view(i, view, on))
+        hidden = [o.id for o in planes if clipping.hidden(self.scene, o)]
+        if hidden:
+            sub.addSeparator()
+            act = sub.addAction("Show Hidden Planes")
+            act.triggered.connect(
+                lambda _on=False, ids=tuple(hidden):
+                self.show_clipping_planes(ids))
+
+    def show_clipping_planes(self, plane_ids) -> int:
+        """Bring hidden clipping planes back in sight, as one undo step:
+        each plane, and its layer and the layers above that. Returns how
+        many came back."""
+        from .core import clipping
+        scene = self.scene
+        planes = [scene.get(i) for i in plane_ids]
+        planes = [o for o in planes
+                  if o is not None and clipping.hidden(scene, o)]
+        if not planes:
+            return 0
+        self.history.checkpoint("show clipping planes")
+        layers = scene.layers
+        with scene.batched():
+            for obj in planes:
+                if not obj.visible:
+                    scene.update(obj.id, visible=True)
+                for layer in [layers.get(obj.layer_id),
+                              *layers.ancestors(obj.layer_id)]:
+                    if not layer.visible:
+                        layers.set_visible(layer.id, True)
+            scene.notify()
+        return len(planes)
 
     def set_clip_view(self, plane_id: str, view: str, on: bool) -> bool:
         """Switch one clipping plane on or off in one view, as one undo

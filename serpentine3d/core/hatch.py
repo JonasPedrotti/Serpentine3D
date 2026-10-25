@@ -68,11 +68,12 @@ class HatchShape(TopoDS_Compound):
         self._angle = float(angle)
         self._spacing = spacing
         self._frame = tuple(tuple(float(v) for v in row) for row in frame)
-        self._segments = ([] if solid
-                          else _pattern_segments(region, frame, pattern,
-                                                 self._angle, spacing,
-                                                 definition))
-        brep = _assemble(region, solid, self._segments)
+        self._lines, self._dots = (
+            ([], []) if solid
+            else _pattern_segments(region, frame, pattern, self._angle,
+                                   spacing, definition))
+        brep = _assemble(region, solid, self._lines, self._dots,
+                         self.frame[:3, 2])
         self.TShape(brep.TShape())
         self.Location(brep.Location())
         self.Orientation(brep.Orientation())
@@ -118,9 +119,20 @@ class HatchShape(TopoDS_Compound):
     def frame(self) -> np.ndarray:
         return np.asarray(self._frame, float)
 
+    def line_segments(self) -> list:
+        """The pattern's lines without its dots' circles."""
+        return list(self._lines)
+
+    def dots(self) -> list:
+        """The pattern's dots as [((x, y, z), radius), ...]: drawn among
+        `pattern_segments` as small circles, and here for a sheet to fill
+        them, which reads better than a circle a pixel or two across."""
+        return list(self._dots)
+
     def pattern_segments(self) -> list:
-        """The pattern's lines in the world, as [((x,y,z), (x,y,z)), ...]."""
-        return list(self._segments)
+        """The pattern's lines in the world, as [((x,y,z), (x,y,z)), ...],
+        each dot's small circle as its sides."""
+        return self._lines + _dot_sides(self._dots, self._frame)
 
     # --- what it becomes ----------------------------------------------------
 
@@ -188,7 +200,8 @@ class HatchShape(TopoDS_Compound):
         draw either; that is the curves round it (#92)."""
         if self.solid:
             return self._region
-        return _assemble(self._region, False, self._segments, outline=False)
+        return _assemble(self._region, False, self._lines, self._dots,
+                         self.frame[:3, 2], outline=False)
 
     def to_curves(self) -> list:
         """The boundary as ordinary closed curves, outer and holes."""
@@ -251,7 +264,18 @@ class HatchGroup(TopoDS_Compound):
         builder.MakeCompound(self)
         for hatch in hatches:
             builder.Add(self, hatch)
+        self.hatches = list(hatches)
         self.solid = bool(hatches) and all(h.solid for h in hatches)
+
+    def drawn(self):
+        """What is drawn of every hatch in it, as `HatchShape.drawn`."""
+        from OCP.BRep import BRep_Builder
+        builder = BRep_Builder()
+        out = TopoDS_Compound()
+        builder.MakeCompound(out)
+        for hatch in self.hatches:
+            builder.Add(out, hatch.drawn())
+        return out
 
 
 def _one_face(shape):
@@ -322,11 +346,14 @@ def _rings(region, frame) -> list:
 
 
 def _pattern_segments(region, frame, pattern, angle, spacing,
-                      definition=None) -> list:
+                      definition=None) -> tuple:
+    """(lines, dots) of the pattern in the world: its lines, and its dots
+    as (centre, radius), each drawn as a small circle and filled on a
+    sheet."""
     from .hatch_patterns import fill_segments, segment_estimate
     rings = _rings(region, frame)
     if not rings:
-        return []
+        return [], []
     if definition is not None:
         lines = segment_estimate(rings, definition, spacing)
         what = "segments"
@@ -339,35 +366,64 @@ def _pattern_segments(region, frame, pattern, angle, spacing,
             f"A spacing of {spacing:g} would draw {int(lines):,} {what} "
             "across this region; use a larger spacing")
     frame = np.asarray(frame, float)
-    out = []
+
+    def world(p):
+        return tuple(float(v) for v in
+                     (frame @ np.array([p[0], p[1], 0.0, 1.0]))[:3])
+
+    lines = []
     shortest = geometry.tight()
-    for a, b in fill_segments(rings, definition, pattern, angle, spacing):
+    segs, dots = fill_segments(rings, definition, pattern, angle, spacing,
+                               dots=True)
+    for a, b in segs:
         # a dash the boundary cuts to a sliver is no edge the kernel takes
-        if math.dist(a, b) < shortest:
-            continue
-        wa = frame @ np.array([a[0], a[1], 0.0, 1.0])
-        wb = frame @ np.array([b[0], b[1], 0.0, 1.0])
-        out.append((tuple(float(v) for v in wa[:3]),
-                    tuple(float(v) for v in wb[:3])))
-    return out
+        if math.dist(a, b) >= shortest:
+            lines.append((world(a), world(b)))
+    return lines, [(world(centre), radius) for centre, radius in dots]
 
 
-def _assemble(region, solid, segments, outline=True):
-    """The compound the hatch is: its face for a solid fill, its boundary
-    and pattern lines for the rest. The boundary stays in the shape, for
-    picking, snapping and its bounds, and is left out of what is drawn."""
+def _assemble(region, solid, segments, dots=(), normal=(0.0, 0.0, 1.0),
+              outline=True):
+    """The compound the hatch is: its face, then its pattern's lines and
+    dots.
+
+    The face is the fill of a solid one and the background of the rest,
+    which is drawn only when there is one (#91); it is also what a click
+    inside a hatch picks, as in Rhino, and what its bounds and snaps are
+    taken from. Its edges are the hatch's boundary, which is not drawn.
+    A dot is one small circle on the hatch's plane (`normal`), so it costs
+    the hatch no more than the dash it was once drawn as. `outline` False
+    leaves the face out of a line hatch: what a sheet's hidden-line pass
+    is given to draw."""
     from OCP.BRep import BRep_Builder
     builder = BRep_Builder()
     compound = TopoDS_Compound()
     builder.MakeCompound(compound)
-    if solid:
+    if solid or outline:
         builder.Add(compound, region)
+    if solid:
         return compound
-    exp = occ.TopExp_Explorer(region, occ.WIRE)
-    while outline and exp.More():
-        builder.Add(compound, exp.Current())
-        exp.Next()
     for a, b in segments:
         if math.dist(a, b) >= geometry.tight():
             builder.Add(compound, geometry.make_line(a, b))
+    normal = tuple(float(v) for v in normal)
+    for centre, radius in dots:
+        if radius >= geometry.tight():
+            builder.Add(compound, geometry.make_circle(centre, radius, normal))
     return compound
+
+
+def _dot_sides(dots, frame) -> list:
+    """The sides of the small circle each dot is, in the world."""
+    from .hatch_patterns import dot_ring
+    frame = np.asarray(frame, float)
+    x, y = frame[:3, 0], frame[:3, 1]
+    shortest = geometry.tight()
+    out = []
+    for centre, radius in dots:
+        c = np.asarray(centre, float)
+        for a, b in dot_ring((0.0, 0.0), radius):
+            if math.dist(a, b) >= shortest:
+                out.append((tuple((c + a[0] * x + a[1] * y).tolist()),
+                            tuple((c + b[0] * x + b[1] * y).tolist())))
+    return out

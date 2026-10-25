@@ -9,8 +9,8 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtCore import QMarginsF, QPointF, QSizeF, Qt
 from PySide6.QtGui import (
-    QColor, QFont, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen,
-    QPolygonF,
+    QColor, QFont, QPageLayout, QPageSize, QPainter, QPainterPath,
+    QPdfWriter, QPen, QPolygonF,
 )
 
 from ..core import linetype as _lt
@@ -148,6 +148,32 @@ def _paint_detail_vector(painter, layout_view, detail, layout, k):
                 qpoly.append(QPointF(x, y))
             painter.drawPolyline(qpoly)
 
+    # Hatches under everything else, each on its background and in its
+    # colour, as the sheet shows them (#91).
+    hatches = data.get("hatches") or []
+    looks = getattr(layout_view, "hatch_looks", None)
+    if hatches and looks is not None:
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QPolygonF
+
+        from ..core.layout import detail_hatches
+        from ..ui.annot_paint import HATCH_INK, SOLID_FILL
+        floods, lines = detail_hatches(hatches, looks(data), cx, cy, s)
+        painter.setPen(Qt.PenStyle.NoPen)
+        for color, tris in floods:
+            painter.setBrush(SOLID_FILL if color is None
+                             else QColor.fromRgbF(*color[:3]))
+            painter.drawPath(_triangles_path(tris, k, layout.paper_h))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for color, width, segs in lines:
+            painter.setPen(QPen(HATCH_INK if color is None
+                                else QColor.fromRgbF(*color[:3]),
+                                (width if width > 0 else 0.15) * k))
+            for a, b in segs:
+                painter.drawLine(
+                    QPointF(a[0] * k, (layout.paper_h - a[1]) * k),
+                    QPointF(b[0] * k, (layout.paper_h - b[1]) * k))
+
     if detail.display_mode == "hidden":
         pen_h = QPen(QColor(110, 110, 120), 0.18 * k)
         pen_h.setDashPattern([4.0, 2.5])
@@ -207,6 +233,31 @@ def _paint_detail_vector(painter, layout_view, detail, layout, k):
                     [QPointF(x * k, (layout.paper_h - y) * k)
                      for x, y in ring]))
     painter.restore()
+
+
+def _triangles_path(tris, k: float, paper_h: float) -> QPainterPath:
+    """Triangles in paper mm as one path to fill on the page.
+
+    A hatch's background is its face and a dot is a small circle, both
+    handed over as triangles, and filled one by one every two of them
+    leave a hairline where a viewer's antialiasing of their two edges
+    meets. Filled as one path the edges they share are inside it. Each is
+    turned the same way first, so the winding rule fills where they touch
+    rather than cancelling there."""
+    path = QPainterPath()
+    path.setFillRule(Qt.FillRule.WindingFill)
+    dev = np.asarray(tris, float).reshape(-1, 3, 2) * k
+    if not len(dev):
+        return path
+    dev[..., 1] = paper_h * k - dev[..., 1]
+    a, b, c = dev[:, 0], dev[:, 1], dev[:, 2]
+    turned = ((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1])
+              - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])) < 0
+    dev[turned] = dev[turned][:, ::-1]
+    for tri in dev.tolist():
+        path.addPolygon(QPolygonF([QPointF(x, y) for x, y in tri]))
+        path.closeSubpath()
+    return path
 
 
 def _paint_detail_raster(painter, window, detail, layout, k):
