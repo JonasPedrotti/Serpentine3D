@@ -15,7 +15,7 @@ import re
 import uuid
 from dataclasses import dataclass, field, fields, replace
 
-from ..utils.units import TO_MM, parse_length
+from ..utils.units import TO_MM, paper_units, parse_length
 
 # landscape (width, height) in mm
 PAPER_SIZES = {
@@ -121,6 +121,8 @@ class LinearDim:
     detail_id: str = ""
     m1: list | None = None     # [x, y, z]
     m2: list | None = None
+    # drawn on bare paper, so it measures the paper and not the model
+    measures_paper: bool = False
 
 
 @dataclass
@@ -203,6 +205,21 @@ class RadialDim:
     scale_denom: float = 1.0
     text: str = ""
     style: str = ""
+    measures_paper: bool = False
+
+
+def measured_text(dim, paper_length: float, scene=None) -> str:
+    """What a dimension says it measures, `paper_length` millimetres of
+    paper apart: the paper itself in the units its sheet is read in, if it
+    was drawn on bare paper, or else the model through a detail, at
+    `scale_denom` model units to the millimetre, in the document's units.
+    Its own text, when it has one, is the caller's to put first."""
+    if dim.measures_paper:
+        return (scene.format_paper_length(paper_length) if scene is not None
+                else f"{paper_length:g}")
+    measured = paper_length * dim.scale_denom
+    return (scene.format_length(measured) if scene is not None
+            else f"{measured:g}")
 
 
 @dataclass
@@ -556,12 +573,62 @@ DEFAULT_STYLES = {
     "Heading":  {"text_height": 6.0, "arrow_size": 2.2, "dim_offset": 8.0},
 }
 
+# A sheet read in inches is lettered from round inches near the metric
+# sizes, 1/8" text for Standard, though they are kept in millimetres too.
+INCH_STYLES = {
+    name: {key: inches * TO_MM["in"] for key, inches in sizes.items()}
+    for name, sizes in {
+        "Standard": {"text_height": 0.125, "arrow_size": 0.09,
+                     "dim_offset": 0.3},
+        "Small":    {"text_height": 0.09, "arrow_size": 0.06,
+                     "dim_offset": 0.2},
+        "Heading":  {"text_height": 0.25, "arrow_size": 0.09,
+                     "dim_offset": 0.3},
+    }.items()
+}
+
+# What a new note is lettered at when nothing else says, in either set.
+NOTE_HEIGHTS = {"metric": 4.0, "inch": 0.15 * TO_MM["in"]}
+
+
+def style_set(scene) -> str:
+    """The built-in styles `scene` is lettered in, "metric" or "inch".
+
+    They are the ones for the units its sheets are read in, unless what is
+    lettered already was lettered in the others (`Scene.annot_style_set`):
+    lettering keeps its sizes when the units change, and a drawing written
+    before inch documents had inch styles stays metric."""
+    chosen = getattr(scene, "annot_style_set", None)
+    if chosen in ("metric", "inch"):
+        return chosen
+    units = paper_units(getattr(scene, "units", "mm"))
+    return "inch" if units == "in" else "metric"
+
+
+def builtin_styles(scene) -> dict:
+    """Standard, Small and Heading as `scene` letters them."""
+    return INCH_STYLES if style_set(scene) == "inch" else DEFAULT_STYLES
+
+
+def default_note_height(scene) -> float:
+    """A new note's cap height, in millimetres."""
+    return NOTE_HEIGHTS[style_set(scene)]
+
+
+def lettered_in_builtin_styles(scene) -> bool:
+    """Whether anything on a sheet takes its size from a built-in style:
+    every linear dimension, an unstyled one from Standard, and any styled
+    note. Radial and angular dimensions are lettered at their own size."""
+    return any(lay.dims or any(note.style for note in lay.notes)
+               for lay in getattr(scene, "layouts", ()))
+
 
 def annotation_style(scene, name: str) -> dict:
     """Named annotation style merged over the Standard defaults."""
-    props = dict(DEFAULT_STYLES["Standard"])
+    builtin = builtin_styles(scene)
+    props = dict(builtin["Standard"])
     if name:
-        props.update(DEFAULT_STYLES.get(name, {}))
+        props.update(builtin.get(name, {}))
         if scene is not None:
             props.update(getattr(scene, "annot_styles", {}).get(name, {}))
     return props
@@ -572,6 +639,34 @@ def note_text_height(note, scene=None) -> float:
     if getattr(note, "style", ""):
         return float(annotation_style(scene, note.style)["text_height"])
     return float(note.height)
+
+
+def letters_capitals(scene) -> bool:
+    """Whether a text height on `scene`'s sheets is the height of its
+    capitals, as drafting measures it. In a drawing saved before it was,
+    dimensions, leaders and notes not made in the on-screen editor gave
+    their height to the font as its size, which printed their capitals
+    about 0.71 of it, and they go on printing as they did
+    (`Scene.text_height_measures`). Without a drawing, as in a new one."""
+    return getattr(scene, "text_height_measures", "capitals") == "capitals"
+
+
+def font_size(height: float, scene=None) -> float:
+    """The font size, in paper millimetres, that sheet text `height` high
+    is lettered in."""
+    if not letters_capitals(scene):
+        return height
+    from .text import cap_height_ratio
+    return height / cap_height_ratio()
+
+
+def lettered_by_font_size(scene) -> bool:
+    """Whether anything on a sheet would print otherwise if its height were
+    the capitals' (`letters_capitals`): any dimension or leader, and a note
+    not made in the on-screen editor, which letters its own by them."""
+    return any(lay.dims or lay.rdims or lay.adims or lay.leaders
+               or any(not note.font_family for note in lay.notes)
+               for lay in getattr(scene, "layouts", ()))
 
 
 def _on_axis(v, tol: float = 5e-3):
@@ -673,17 +768,8 @@ def annotation_at(layout, px: float, py: float, tol: float = 2.0,
     Kinds: note, leader, dim, rdim, adim, hatch (dims before hatches so
     outlines don't shadow them)."""
     for note in reversed(layout.notes):
-        if note.font_family:
-            x0, y0, x1, y1 = annotation_bounds("note", note, scene)
-            if x0 - tol <= px <= x1 + tol and y0 - tol <= py <= y1 + tol:
-                return ("note", note)
-            continue
-        height = note_text_height(note, scene)
-        w = max(len(line) for line in (note.text or " ").split("\n")) \
-            * height * 0.62
-        h = height * (1 + (note.text or "").count("\n") * 1.6)
-        if note.x - tol <= px <= note.x + w + tol \
-                and note.y - tol <= py <= note.y + h + tol:
+        x0, y0, x1, y1 = annotation_bounds("note", note, scene)
+        if x0 - tol <= px <= x1 + tol and y0 - tol <= py <= y1 + tol:
             return ("note", note)
     for dim in reversed(layout.dims):
         import numpy as np
@@ -1085,8 +1171,10 @@ def annotation_bounds(kind: str, obj, scene=None) -> tuple:
                              alignment=obj.alignment).boundingRect()
             return (obj.x + rect.left(), obj.y - rect.bottom(),
                     obj.x + rect.right(), obj.y - rect.top())
+        from .text import text_advance
         lines = (obj.text or " ").split("\n")
-        w = max(len(line) for line in lines) * height * 0.62
+        w = max(text_advance(line) for line in lines) \
+            * font_size(height, scene)
         return (obj.x, obj.y - (len(lines) - 1) * height * 1.6,
                 obj.x + w, obj.y + height)
     if kind == "dim":
@@ -1272,7 +1360,8 @@ class Layout:
                 if det.section_offset is not None:
                     det.section_offset *= factor
         for dim in [*self.dims, *self.rdims]:
-            dim.scale_denom *= factor
+            if not dim.measures_paper:
+                dim.scale_denom *= factor
         for bar in self.scale_bars:
             bar[2] *= factor
         if rescaled:
@@ -1493,11 +1582,29 @@ def layouts_from_json(data: list) -> list:
             pool = getattr(lay, key)
             for d in ld.get(key, []):
                 pool.append(_rebuild(cls, d))
+                if key in ("dims", "rdims") and "measures_paper" not in d:
+                    pool[-1].measures_paper = _drawn_on_paper(lay, pool[-1])
         lay.scale_bars = [list(b) for b in ld.get("scale_bars", [])]
         lay.title_block = dict(ld.get("title_block", {}))
         lay.revisions = [list(r) for r in ld.get("revisions", [])]
         layouts.append(lay)
     return layouts
+
+
+def _drawn_on_paper(lay: Layout, dim) -> bool:
+    """Whether a dimension saved before they said what they measure was
+    drawn on bare paper: one is given a scale of one there, and nothing
+    over a detail is unless the detail shows a model unit to the paper
+    millimetre, which a centimetre detail at 1:10 does. So it also has to
+    have no detail under it, and not be anchored to one."""
+    if getattr(dim, "detail_id", "") or abs(dim.scale_denom - 1.0) > 1e-12:
+        return False
+    if isinstance(dim, RadialDim):
+        x, y = dim.cx, dim.cy
+    else:
+        x, y = (dim.x1 + dim.x2) / 2, (dim.y1 + dim.y2) / 2
+    detail = lay.detail_at(x, y)
+    return detail is None or detail.perspective
 
 
 def _scale_ratio(text: str, units: str) -> float | None:

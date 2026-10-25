@@ -7,16 +7,16 @@ import numpy as np
 from ..core import clipping
 from ..core import geometry as g
 from ..core.layout import (
-    PAPER_SIZES, DetailView, Layout, LinearDim, TextNote, format_scale,
-    hatch_patterns_of, parse_scale, pattern_label, pattern_named,
-    unique_layout_name,
+    PAPER_SIZES, DetailView, Layout, LinearDim, TextNote, annotation_style,
+    default_note_height, format_scale, hatch_patterns_of, parse_scale,
+    pattern_label, pattern_named, unique_layout_name,
 )
-from ..utils.units import TO_MM
+from ..utils.units import TO_MM, format_paper_size, paper_units
 # a detail view named "front" should look where the front view looks
 from ..ui.camera import STANDARD_VIEWS as _VIEW_ANGLES
 from .base import (
-    FileReq, FormField, FormReq, NumberReq, OptionReq, PointReq, SelectReq,
-    TextReq, TextEditorReq, command, has_text_editor,
+    FileReq, FormField, FormReq, LengthReq, NumberReq, OptionReq, PointReq,
+    SelectReq, TextReq, TextEditorReq, command, has_text_editor,
 )
 from .regions import coplanar_curves, pick_regions
 
@@ -61,7 +61,8 @@ def cmd_layout(ctx):
             ctx.echo("No layouts. Use 'layout' > New to create one.")
         else:
             ctx.echo("Layouts: " + ", ".join(
-                f"{lay.name} ({lay.paper_w:g}x{lay.paper_h:g}mm, "
+                f"{lay.name} ("
+                f"{format_paper_size(lay.paper_w, lay.paper_h, scene.units)}, "
                 f"{len(lay.details)} details)" for lay in scene.layouts))
         return
 
@@ -71,11 +72,19 @@ def cmd_layout(ctx):
         size = yield OptionReq(
             "Paper size", options=list(PAPER_SIZES) + ["Custom"],
             default="A3")
-        if size == "Custom":
+        if size == "Custom" and paper_units(scene.units) == "mm":
             w = yield NumberReq("Paper width (mm)", default=420.0,
                                 minimum=10)
             h = yield NumberReq("Paper height (mm)", default=297.0,
                                 minimum=10)
+        elif size == "Custom":
+            # in the units the sheet is read in, from Tabloid
+            per = TO_MM["in"]
+            w = yield NumberReq("Paper width (in)", default=17.0,
+                                minimum=10 / per)
+            h = yield NumberReq("Paper height (in)", default=11.0,
+                                minimum=10 / per)
+            w, h = w * per, h * per
         else:
             orientation = yield OptionReq(
                 "Orientation", options=["Landscape", "Portrait"],
@@ -88,7 +97,8 @@ def cmd_layout(ctx):
         scene.notify()
         if _window(ctx) is not None:
             _window(ctx).switch_space(lay.id)
-        ctx.echo(f"Created layout '{name}' ({w:g}x{h:g}mm). "
+        ctx.echo(f"Created layout '{name}' "
+                 f"({format_paper_size(w, h, scene.units)}). "
                  "Use 'detail' to place views of the model.")
         return
 
@@ -434,15 +444,18 @@ def cmd_text(ctx):
     pos = yield PointReq("Text position (baseline anchor)")
     if has_text_editor(ctx) or getattr(ctx, "replay_text_inline", False):
         answer = yield TextEditorReq(
-            "Text", units="mm", anchor=pos, paper_layout=lay)
+            "Text", units=paper_units(ctx.scene.units), anchor=pos,
+            paper_layout=lay,
+            values={"height": default_note_height(ctx.scene)})
         if isinstance(answer, dict):
             ctx.echo("Note placed.")
             return
     content = yield TextReq(r"Text (\n for a new line)")
     content = content.replace("\\n", "\n")
-    height = yield NumberReq("Text height (mm)", default=4.0, minimum=0.5,
-                             choices={"Style": ["None", "Standard", "Small",
-                                                "Heading"]})
+    height = yield LengthReq(
+        "Text height", paper=True, default=default_note_height(ctx.scene),
+        minimum=0.5, choices={"Style": ["None", "Standard", "Small",
+                                        "Heading"]})
     style = ctx.opt("Style", "None")
     lay.notes.append(TextNote(x=pos[0], y=pos[1], text=content,
                               height=float(height),
@@ -471,13 +484,14 @@ def cmd_dim(ctx):
         return
     n = np.array([-d[1], d[0]]) / length
     offset = float(np.dot(np.array(p3[:2]) - a, n))
-    # dimensions over a detail read in model units at the detail's scale
+    # dimensions over a detail read in model units at the detail's scale,
+    # and ones on bare paper read the paper
     mid = (a + b) / 2
     detail = lay.detail_at(float(mid[0]), float(mid[1]))
-    scale_denom = detail.scale_denom if (detail and
-                                         not detail.perspective) else 1.0
+    scale_denom, on_paper = _dim_scale_at(lay, float(mid[0]), float(mid[1]))
     dim = LinearDim(x1=p1[0], y1=p1[1], x2=p2[0], y2=p2[1],
-                    offset=offset, scale_denom=scale_denom)
+                    offset=offset, scale_denom=scale_denom,
+                    measures_paper=on_paper)
     # anchor to the detail: the dim follows detail pan/zoom/rescale
     if detail is not None and not detail.perspective \
             and detail.contains(p1[0], p1[1]) \
@@ -488,11 +502,14 @@ def cmd_dim(ctx):
         dim.m2 = detail_unproject(detail, p2[0], p2[1])
     lay.dims.append(dim)
     ctx.scene.notify()
-    measured = length * scale_denom
-    ctx.echo(f"Dimension placed: {measured:g}"
-             + (f" (anchored to detail at "
-                f"{detail.scale_text(ctx.scene.units)})"
-                if dim.detail_id else " mm on paper"))
+    if on_paper:
+        ctx.echo(f"Dimension placed: {ctx.scene.format_paper_length(length)}"
+                 " on paper")
+    else:
+        ctx.echo(f"Dimension placed: "
+                 f"{ctx.scene.format_length(length * scale_denom)} "
+                 f"({'anchored to' if dim.detail_id else 'through'} the detail "
+                 f"at {detail.scale_text(ctx.scene.units)})")
 
 @command("leader", space="paper")
 def cmd_leader(ctx):
@@ -957,9 +974,13 @@ def _round_spacing(size: float) -> float:
 
 
 def _dim_scale_at(lay, x, y):
+    """The scale a dimension placed at paper (x, y) measures at, and whether
+    it measures the paper: it does on bare paper, and over a perspective
+    detail, which has no scale to read the model at."""
     detail = lay.detail_at(x, y)
-    return (detail.scale_denom if detail and not detail.perspective
-            else 1.0)
+    if detail is None or detail.perspective:
+        return 1.0, True
+    return detail.scale_denom, False
 
 
 @command("dimradius", aliases=("dimr",), space="paper")
@@ -972,10 +993,10 @@ def cmd_dimradius(ctx):
     from ..core.layout import RadialDim
     center = yield PointReq("Circle centre (on the paper)")
     edge = yield PointReq("Point on the circle", rubber_from=center)
+    scale_denom, on_paper = _dim_scale_at(lay, center[0], center[1])
     lay.rdims.append(RadialDim(
         cx=center[0], cy=center[1], px=edge[0], py=edge[1],
-        diameter=False,
-        scale_denom=_dim_scale_at(lay, center[0], center[1])))
+        diameter=False, scale_denom=scale_denom, measures_paper=on_paper))
     ctx.scene.notify()
     ctx.echo("Radius dimension placed.")
 
@@ -990,9 +1011,10 @@ def cmd_dimdiameter(ctx):
     from ..core.layout import RadialDim
     center = yield PointReq("Circle centre (on the paper)")
     edge = yield PointReq("Point on the circle", rubber_from=center)
+    scale_denom, on_paper = _dim_scale_at(lay, center[0], center[1])
     lay.rdims.append(RadialDim(
         cx=center[0], cy=center[1], px=edge[0], py=edge[1], diameter=True,
-        scale_denom=_dim_scale_at(lay, center[0], center[1])))
+        scale_denom=scale_denom, measures_paper=on_paper))
     ctx.scene.notify()
     ctx.echo("Diameter dimension placed.")
 
@@ -1205,12 +1227,11 @@ def cmd_dimstyle(ctx):
     ctx.echo("Styles: " + ", ".join(known))
     name = yield TextReq("Style name (new or existing)", default="Standard")
     name = name.strip() or "Standard"
-    from ..ui.annot_paint import style_of
-    cur = style_of(ctx.scene, name)
-    th = yield NumberReq("Text height (mm)", default=cur["text_height"],
-                         minimum=0.5)
-    ar = yield NumberReq("Arrow size (mm)", default=cur["arrow_size"],
-                         minimum=0.2)
+    cur = annotation_style(ctx.scene, name)
+    th = yield LengthReq("Text height", paper=True,
+                         default=cur["text_height"], minimum=0.5)
+    ar = yield LengthReq("Arrow size", paper=True,
+                         default=cur["arrow_size"], minimum=0.2)
     ctx.scene.annot_styles[name] = {"text_height": float(th),
                                     "arrow_size": float(ar),
                                     "dim_offset": cur["dim_offset"]}
@@ -1283,8 +1304,9 @@ def cmd_sheetindex(ctx):
     for i, l in enumerate(ctx.scene.layouts, start=1):
         title = l.title_block.get("fields", {}).get("title", "")
         lines.append(f"{i:>2}  {l.name}" + (f" — {title}" if title else ""))
+    height = annotation_style(ctx.scene, "Standard")["text_height"]
     lay.notes.append(TextNote(x=pos[0], y=pos[1], text="\n".join(lines),
-                              height=3.2))
+                              height=height))
     ctx.scene.notify()
     ctx.echo(f"Sheet index placed ({len(ctx.scene.layouts)} sheets).")
 

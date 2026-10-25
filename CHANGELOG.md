@@ -74,6 +74,57 @@
 
 ### Fixed
 
+- **A sheet reads in inches in an inch or feet document.** A dimension on
+  bare paper wrote its paper millimetres with the document's unit after
+  them, so 50.8 mm of paper read 50.8" in an inch document and 50.8 cm in
+  a centimetre one. Typing on paper took a bare number as millimetres but
+  a unit as the document's, so `1in,1in` on an inch sheet landed 1 mm in.
+  A sheet now reads and is typed in the units Rhino's templates give their
+  layouts: inches in an inch or feet document, millimetres in a metric
+  one. That goes for dimensions on bare paper, on screen and in the PDF
+  and DXF, the length beside the cursor, the gumball, Properties, sheet
+  sizes and whatever is typed there, where `50mm` and `1in` still mean
+  what they say. A dimension over a detail reads the model, as before, and
+  print widths and hatch spacing stay in millimetres. A sheet is still kept
+  in millimetres, so a drawing opens and plots as it did, and its
+  dimensions on bare paper read in the sheet's units too.
+- **Text on a sheet is sized in the sheet's units.** In an inch or feet
+  document a note's cap height, in Properties and at the `text` prompt, and
+  a style's text and arrow sizes at `dimstyle` read and were typed in
+  millimetres, so 1/8" text had to be typed as 3.175. They now read and are
+  typed in inches there, as CAD letters a drawing in its own units, and
+  `5mm` or `1/8"` still mean what they say. An inch drawing's built-in
+  styles letter at round inches: Standard 1/8", Small 0.09" and Heading
+  1/4", in place of 3.2, 2.2 and 6 mm. A drawing lettered before keeps the
+  sizes it was lettered at, and so does one whose units change.
+- **Text on a sheet prints as tall as its height.** Drafting measures a
+  text height as the height of the capitals, and a note made in the
+  on-screen editor was drawn that way. Dimension and leader text and a note
+  placed at the `text` prompt gave their height to the font as its size,
+  which also holds room for the tails of g and p and for accents, so their
+  capitals printed about 0.71 of it: 1/8" Standard text came out 0.09",
+  and two notes the same height disagreed. They all print capitals at
+  their height now, and a dimension's text sits centred on its line. A
+  drawing saved before goes on printing as it did, as text 40% larger
+  could crowd what is around it, and the title block, scale bar and
+  revision table keep their sizes in any drawing. A note picks anywhere on
+  its letters, the end of a long line and a second line included.
+- **A solid measures its true volume, whatever its faces are made of
+  (#104).** A bow limb from Rhino, a valid solid of 18 NURBS faces, read
+  0.8% light, while its area and a fine mesh of it were right. The exact
+  volume came from OpenCascade's default integration, which lays one rule
+  of up to 61 points across a whole face and, for a volume, counts them
+  from the face's edges and one direction of its surface but never the
+  other. A small face at the limb's tip, 16 spans across, got as few as 8
+  points and read 12% short, and that was nearly all of the 0.8%. A face
+  of many spans now has its volume, area and centre integrated span by
+  span; a face that is one smooth piece is measured as before. The same
+  blind spot read an extrusion of a curve through 30 points 2% heavy, and
+  openNURBS sample files up to 1.6% out in volume and 0.8% in area. None
+  of those is now off by more than 0.01%, though an area takes about
+  twice as long to work out. A NURBS face closed both ways, as a ring
+  scaled to an oval is, no longer reads half its volume. Reported by
+  DarkBiscuits.
 - **A detail's scale is real size in any units (#102).** A detail took
   the model units one millimetre of paper shows for its ratio, which it
   is only in millimetres. In an inch document "1:4" showed four inches to

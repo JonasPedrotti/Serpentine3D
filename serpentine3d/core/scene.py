@@ -204,6 +204,13 @@ class Scene:
         self.units: str = "mm"          # document units (utils/units.py)
         self.block_defs: dict = {}      # id -> {"name", "shapes": [TopoDS]}
         self.annot_styles: dict = {}    # name -> text/dim style overrides
+        # the built-in styles the sheets are lettered in, "metric" or
+        # "inch"; None for the ones the units give (layout.style_set)
+        self.annot_style_set: str | None = None
+        # what a text height on a sheet measures: "capitals", as drafting
+        # measures it, or "em", the font's size, in a drawing saved before
+        # that (layout.letters_capitals)
+        self.text_height_measures: str = "capitals"
         # name -> HatchPattern, the patterns loaded from .pat files (#92)
         self.hatch_patterns: dict = {}
         # the names the last load gave, a fresh list each time; not saved
@@ -659,6 +666,8 @@ class Scene:
         self.sheet_groups = []
         self.block_defs = {}
         self.annot_styles = {}
+        self.annot_style_set = None
+        self.text_height_measures = "capitals"
         self.hatch_patterns = {}
         self.image_planes = []
         self.history_records = []
@@ -670,6 +679,11 @@ class Scene:
     def format_length(self, value: float) -> str:
         from ..utils.units import format_length
         return format_length(value, self.units)
+
+    def format_paper_length(self, mm: float) -> str:
+        """A length on a sheet, in the units the sheet is read in."""
+        from ..utils.units import format_paper_length
+        return format_paper_length(mm, self.units)
 
     def bbox(self) -> tuple[tuple, tuple] | None:
         objs = self.visible_objects()
@@ -693,6 +707,8 @@ class Scene:
             "sheet_groups": copy.deepcopy(self.sheet_groups),
             "block_defs": {k: dict(v) for k, v in self.block_defs.items()},
             "annot_styles": {k: dict(v) for k, v in self.annot_styles.items()},
+            "annot_style_set": self.annot_style_set,
+            "text_height_measures": self.text_height_measures,
             "hatch_patterns": dict(self.hatch_patterns),
             "image_planes": copy.deepcopy(self.image_planes),
             "history_records": copy.deepcopy(self.history_records),
@@ -717,6 +733,9 @@ class Scene:
                            snap.get("block_defs", {}).items()}
         self.annot_styles = {k: dict(v) for k, v in
                              snap.get("annot_styles", {}).items()}
+        self.annot_style_set = snap.get("annot_style_set")
+        self.text_height_measures = snap.get("text_height_measures",
+                                             "capitals")
         self.hatch_patterns = dict(snap.get("hatch_patterns", {}))
         if not any(obj.kind == "picture" for obj in self.all()):
             self.image_planes = copy.deepcopy(snap.get("image_planes", []))

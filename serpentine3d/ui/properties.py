@@ -38,6 +38,8 @@ from ..core.layout import (PAPER_SIZES, SECTION_FILLS, DetailView,
                            section_fills_of, sheet_label)
 from ..core.text import TextShape
 from ..core.linetype import LINETYPES
+from ..utils.units import (TO_MM, format_paper_length, format_paper_size,
+                           paper_units)
 from . import icons, theme
 from .dock_title import DockTitleBar
 from .layout_view import LINE_VISIBLE
@@ -384,13 +386,14 @@ def _paper_and_turn(layout) -> tuple:
     return None, turn
 
 
-def _paper_name(w: float, h: float) -> str:
-    """A3 landscape, or the size in millimetres when it is not a standard."""
+def _paper_name(w: float, h: float, units: str) -> str:
+    """A3 landscape, or the size when it is not a standard, in the units
+    the sheet is read in."""
     class _Sheet:
         paper_w, paper_h = w, h
     name, turn = _paper_and_turn(_Sheet)
     return (f"{name} {turn.lower()}" if name
-            else f"{w:g} × {h:g} mm {turn.lower()}")
+            else f"{format_paper_size(w, h, units)} {turn.lower()}")
 
 
 class _DetailLayers(QWidget):
@@ -1472,7 +1475,8 @@ class PropertiesPanel(QWidget):
             n = len(details)
             if n == 1:
                 detail = details[0]
-                frame = f"frame {detail.w:g} × {detail.h:g} mm"
+                frame = ("frame "
+                         + format_paper_size(detail.w, detail.h, self.scene.units))
                 line = (frame if detail.perspective else
                         f"{detail.scale_text(self.scene.units)} · {frame}")
                 return said("Detail", f"{self._detail_view_name(detail)} view",
@@ -1524,7 +1528,7 @@ class PropertiesPanel(QWidget):
         if len(sheets) == 1:
             lay = sheets[0]
             n = len(lay.details)
-            parts = [_paper_name(lay.paper_w, lay.paper_h),
+            parts = [_paper_name(lay.paper_w, lay.paper_h, self.scene.units),
                      "no details" if n == 0 else
                      f"{n} detail{'s' if n != 1 else ''}"]
             path = self._group_path(lay.group)
@@ -2181,16 +2185,42 @@ class PropertiesPanel(QWidget):
             family = default_typography()["font_family"]
         self.text_font_family.setCurrentFont(QFont(family))
         self._populate_text_styles(family, source.font_style)
-        height = source.height
-        if isinstance(editable, TextNote) and editable.style:
-            from .annot_paint import style_of
-            height = style_of(self.scene, editable.style)["text_height"]
-        self.text_height.setSuffix(
-            " mm" if isinstance(editable, TextNote)
-            else " " + self.scene.units)
-        self.text_height.setValue(float(height))
+        unit, per = self._text_height_units(editable)
+        self.text_height.setSuffix(" " + unit)
+        # a step of one inch would take 1/8" text to 1 1/8"
+        self.text_height.setSingleStep(0.01 if unit == "in" else 1.0)
+        self.text_height.setValue(self._text_height_of(editable) / per)
         index = self.text_alignment.findData(source.alignment)
         self.text_alignment.setCurrentIndex(max(0, index))
+
+    def _text_height_units(self, editable) -> tuple[str, float]:
+        """The units the cap height box reads, and the millimetres in one
+        of them for a note, which is kept in millimetres but read in the
+        sheet's units; model lettering is in the document's."""
+        if isinstance(editable, TextNote):
+            unit = paper_units(self.scene.units)
+            return unit, TO_MM[unit]
+        return self.scene.units, 1.0
+
+    def _text_height_of(self, editable) -> float:
+        """The cap height `editable` is drawn at, a named style's if any."""
+        if isinstance(editable, TextNote):
+            from ..core.layout import note_text_height
+            return note_text_height(editable, self.scene)
+        return float(editable.shape.height)
+
+    def _typed_text_height(self, editable) -> float:
+        """The box's cap height, kept in the units the text is kept in.
+
+        The box rounds what it shows, a 3.2 mm note reading 0.126" on an
+        inch sheet, so while it still shows the height the text has, that
+        height is kept exactly rather than 0.126" of it."""
+        _unit, per = self._text_height_units(editable)
+        current = self._text_height_of(editable)
+        shown = round(current / per, self.text_height.decimals())
+        if abs(self.text_height.value() - shown) < 1e-9:
+            return current
+        return self.text_height.value() * per
 
     def _populate_text_styles(self, family, preferred=""):
         blocker = QSignalBlocker(self.text_font_style)
@@ -2487,7 +2517,8 @@ class PropertiesPanel(QWidget):
         frame on the sheet, in paper millimetres like `_paper_measures`, and
         the scale row below."""
         self._blank_editors()
-        self.measure_label.setText(f"Frame: {detail.w:g} × {detail.h:g} mm")
+        self.measure_label.setText(
+            "Frame: " + format_paper_size(detail.w, detail.h, self.scene.units))
 
     def _show_scale(self, detail: DetailView):
         """Say what the detail's scale is: the list highlights it when it is a
@@ -2617,7 +2648,7 @@ class PropertiesPanel(QWidget):
         values = dict(
             font_family=self.text_font_family.currentFont().family(),
             font_style=self.text_font_style.currentText(),
-            height=self.text_height.value(),
+            height=self._typed_text_height(obj),
             alignment=self.text_alignment.currentData(),
         )
         source = obj if isinstance(obj, TextNote) else obj.shape
@@ -2840,14 +2871,21 @@ class PropertiesPanel(QWidget):
         return "—"
 
     def _paper_measures(self, obj) -> str:
-        """Millimetres of paper, not the document's units: a border is 320mm
-        around on the sheet whether the model is drawn in metres or inches."""
+        """In the sheet's units, not the model's: a border is 320 mm around on
+        a sheet whether the model is drawn in metres or in millimetres, and
+        12.6" in an inch or a feet document, as its sheet is read."""
         try:
             kind = g.shape_kind(obj.shape)
+            units = self.scene.units
             if kind == "curve":
-                return f"Length: {g.curve_length(obj.shape):.2f} mm"
+                length = g.curve_length(obj.shape)
+                if paper_units(units) == "mm":
+                    return f"Length: {length:.2f} mm"
+                return f"Length: {format_paper_length(length, units)}"
             if kind in ("surface", "solid"):
-                return f"Area: {g.surface_area(obj.shape):.2f} mm²"
+                area = g.surface_area(obj.shape)
+                unit = paper_units(units)
+                return f"Area: {area / TO_MM[unit] ** 2:.2f} {unit}²"
         except Exception:
             pass
         return "—"
