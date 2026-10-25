@@ -118,6 +118,9 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
         "annot_style_set": style_set(scene),
         # whether its text heights are capital heights, or font sizes
         "text_height_measures": scene.text_height_measures,
+        # that a clipping plane it hides still cuts, which before this one
+        # hidden did not
+        "hidden_planes_cut": True,
         "hatch_patterns": [p.to_dict() for p in _patterns_used(scene)],
         "history_records": scene.history_records,
         "layers": [
@@ -682,6 +685,15 @@ def _load_doc(scene, doc: dict, blobs=None):
             updates["block_id"] = od["block"]
         if updates:
             scene.update(obj.id, **updates)
+
+    # A drawing from before a hidden clipping plane cut stopped a plane by
+    # hiding it, or its layer: one it hid is paused, so it opens as saved.
+    if not doc.get("hidden_planes_cut"):
+        from ..core import clipping
+        for obj in clipping.planes_of(scene):
+            if obj.clip_plane.get("enabled") and clipping.hidden(scene, obj):
+                scene.update(obj.id, clip_plane={**obj.clip_plane,
+                                                 "enabled": False})
 
     for cd in doc.get("pointclouds", []):
         cloud = _cloud_from_json(cd, blobs)

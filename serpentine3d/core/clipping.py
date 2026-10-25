@@ -15,6 +15,12 @@ four standard panes) or a detail's id.
 The views it is off in rather than the ones it is on in, so a plane cuts
 a view made after it, the way it always has, and a file from before this
 opens with every plane cutting every view.
+
+Hiding a plane, or its layer, only puts it out of sight, as in Rhino: it
+goes on cutting, which is how a section is kept without the plane in the
+way. Nothing on screen then shows why the model is missing a part, so
+everything that lists the planes cutting a view names the hidden ones,
+and hiding one that cuts says it still does.
 """
 
 from __future__ import annotations
@@ -72,3 +78,51 @@ def carry_views(scene, pairs) -> None:
         added = [new for old, new in pairs if old in off and new not in off]
         if added:
             scene.update(obj.id, clip_plane={**cp, "off_in": off + added})
+
+
+def planes_of(scene) -> list:
+    """Every clipping plane in the drawing, hidden ones too: a hidden plane
+    cuts as well as one in sight."""
+    return [obj for obj in scene.all() if obj.clip_plane]
+
+
+def hidden(scene, obj) -> bool:
+    """Whether a plane is out of sight: hidden itself, or on a layer that
+    is off or under one that is."""
+    return not (obj.visible and scene.layers.is_visible(obj.layer_id))
+
+
+def label(scene, obj) -> str:
+    """A plane as a list of planes names it, paused or hidden said."""
+    notes = [word for word, applies in (
+        ("paused", not obj.clip_plane.get("enabled")),
+        ("hidden", hidden(scene, obj))) if applies]
+    return f"{obj.name} ({', '.join(notes)})" if notes else obj.name
+
+
+def in_sight(scene) -> set:
+    """The planes in sight, by id: taken before a change that hides
+    things, for `hidden_since` after it."""
+    return {obj.id for obj in planes_of(scene) if not hidden(scene, obj)}
+
+
+def hidden_since(scene, was_in_sight: set) -> list:
+    """The planes of `was_in_sight` out of sight now."""
+    return [obj for obj in planes_of(scene)
+            if obj.id in was_in_sight and hidden(scene, obj)]
+
+
+def still_cuts(planes) -> str:
+    """What to say of planes just put out of sight that still cut, or ""
+    when none do."""
+    names = [obj.name for obj in planes if cuts(obj.clip_plane)]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return (f"{names[0]} still cuts while hidden; "
+                "'disableclippingplane' pauses it.")
+    shown = names if len(names) <= 4 else [*names[:3],
+                                           f"{len(names) - 3} more"]
+    listed = ", ".join(shown[:-1]) + " and " + shown[-1]
+    return (f"{listed} still cut while hidden; "
+            "'disableclippingplane' pauses them.")

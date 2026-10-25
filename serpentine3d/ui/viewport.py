@@ -3683,6 +3683,13 @@ class Viewport(QOpenGLWidget):
         detail = self.layout_view._entered()
         return None if detail is None else detail.id
 
+    def is_cut(self) -> bool:
+        """Whether a clipping plane cuts this model pane, in sight or not:
+        what the pane's title says, since a hidden plane cuts with nothing
+        on screen to show it. A sheet's details are cut to be drawn so."""
+        return self.space == "model" and any(
+            on for _o, _n, on in self._clip_frames(self.view_key))
+
     def _set_clip_uniforms(self, prog, clips):
         self._use(prog)
         GL.glUniform1i(self._uloc(prog, "uClipCount"),

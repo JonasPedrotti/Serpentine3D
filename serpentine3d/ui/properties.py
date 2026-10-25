@@ -598,12 +598,11 @@ class _DetailClips(QWidget):
         self._rows.setSpacing(2)
 
     def show_for(self, detail, planes):
+        """`planes` as (plane, the label it is listed by)."""
         _cleared(self._rows)
         self._boxes = []
-        for obj in planes:
+        for obj, label in planes:
             setting = obj.clip_plane
-            label = obj.name if setting.get("enabled") \
-                else f"{obj.name} (paused)"
             box = QCheckBox(label)
             box.setChecked(detail.id not in setting.get("off_in", ()))
             box.toggled.connect(lambda on, i=obj.id: self._switch(i, on))
@@ -1815,12 +1814,14 @@ class PropertiesPanel(QWidget):
                              hidden_layers=list(hidden))
 
     def _show_detail_clips(self, detail):
-        """The clipping planes there are, ticked where they cut this
-        detail; no row when there are none."""
-        planes = [o for o in self.scene.visible_objects() if o.clip_plane]
+        """The clipping planes there are, hidden ones too since they cut as
+        well, ticked where they cut this detail; no row when there are
+        none."""
+        planes = clipping.planes_of(self.scene)
         self.form.setRowVisible(self.detail_clips, bool(planes))
         if planes:
-            self.detail_clips.show_for(detail, planes)
+            self.detail_clips.show_for(
+                detail, [(o, clipping.label(self.scene, o)) for o in planes])
 
     def _set_detail_clip(self, plane_id: str, on: bool):
         detail = self._detail_pick()
