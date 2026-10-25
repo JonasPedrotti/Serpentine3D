@@ -335,6 +335,67 @@ def test_a_detail_draws_a_hatch_on_its_background_in_its_colour():
                                               (None, 0.0)}
 
 
+def _plot_hatch(tris, dots=(), ground=(0.2, 0.4, 0.9), px_per_mm=4.0):
+    """A detail whose only content is one hatch object, plotted the way
+    the PDF plots it into an image 100 mm square, antialiased as a viewer
+    draws the page: (the image, the colour its background and its dots
+    should come out)."""
+    from types import SimpleNamespace
+
+    from PySide6.QtGui import QColor, QImage, QPainter
+
+    from serpentine3d.fileio import pdf
+    detail = SimpleNamespace(x=0.0, y=0.0, w=100.0, h=100.0,
+                             scale_denom=1.0, display_mode="shaded")
+    data = {"visible": [], "hidden": [], "visible_groups": [],
+            "hatches": [("h", tris, [], list(dots))]}
+    view = SimpleNamespace(
+        _detail_hlr=lambda d: data,
+        hatch_looks=lambda d: [((0.8, 0.1, 0.1), ground, False, 0.0)])
+    size = int(100 * px_per_mm)
+    image = QImage(size, size, QImage.Format.Format_RGB32)
+    image.fill(QColor("white"))
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    try:
+        pdf._paint_detail_vector(painter, view, detail, SimpleNamespace(
+            paper_h=100.0, paper_w=100.0), px_per_mm)
+    finally:
+        painter.end()
+    return image
+
+
+def _unlike(image, points, colour) -> int:
+    """How many of `points`, pixels, are not `colour`."""
+    want = colour.rgb()
+    return sum(image.pixel(x, y) != want for x, y in points)
+
+
+def test_on_paper_a_hatch_s_background_has_no_seams():
+    """A background is the hatch's face, which the detail hands over as
+    triangles. Filled one by one, each two leave a hairline between them
+    where a viewer's antialiasing of the two edges meets."""
+    from PySide6.QtGui import QColor
+    square = [[(-30, -30), (30, -30), (30, 30)],
+              [(-30, -30), (30, 30), (-30, 30)]]
+    image = _plot_hatch(square)
+    # paper (20..80, 20..80) mm is pixels 80..320; the diagonal the two
+    # triangles share runs from (80, 320) to (320, 80)
+    inside = [(x, y) for x in range(84, 317) for y in range(84, 317)]
+    assert image.pixel(150, 150) == QColor.fromRgbF(0.2, 0.4, 0.9).rgb()
+    assert _unlike(image, inside, QColor.fromRgbF(0.2, 0.4, 0.9)) == 0
+
+
+def test_on_paper_a_dot_has_no_seams():
+    """A dot is filled as a fan of the small circle it is."""
+    from PySide6.QtGui import QColor
+    image = _plot_hatch([], dots=[((0.0, 0.0), 10.0)], ground=None)
+    # a dot of radius 10 mm at paper (50, 50): within 36 px of (200, 200)
+    inside = [(x, y) for x in range(160, 241) for y in range(160, 241)
+              if (x + 0.5 - 200) ** 2 + (y + 0.5 - 200) ** 2 < 36 ** 2]
+    assert _unlike(image, inside, QColor.fromRgbF(0.8, 0.1, 0.1)) == 0
+
+
 def test_the_hatch_page_offers_by_layer_first(_qapp):
     from PySide6.QtWidgets import QApplication
 
