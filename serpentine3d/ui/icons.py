@@ -309,6 +309,45 @@ def _explode(p):
         p.drawLine(x0, y0, x1, y1)
 
 
+def _point(p):
+    p.drawLine(6, 11, 16, 11)
+    p.drawLine(11, 6, 11, 16)
+    _dot(p, 11, 11, r=2.6)
+
+
+def _mesh(p):
+    path = QPainterPath(QPointF(4, 17))
+    path.lineTo(9, 5)
+    path.lineTo(18, 7)
+    path.lineTo(16, 18)
+    path.closeSubpath()
+    p.fillPath(path, _FILL)
+    p.drawPath(path)
+    p.drawLine(9, 5, 16, 18)
+    p.drawLine(4, 17, 13, 12)
+    p.drawLine(13, 12, 18, 7)
+
+
+def _vector(p):
+    p.drawLine(4, 18, 17, 5)
+    p.drawLine(18, 4, 11, 5)
+    p.drawLine(18, 4, 17, 11)
+    _dot(p, 4, 18)
+
+
+def _hydra(p):
+    # one output fanning out into three wires, as on Hydra's canvas: each
+    # leaves level and arrives level, an S from the output to its input
+    start = QPointF(4, 18)
+    for y in (4.5, 10, 15.5):
+        wire = QPainterPath(start)
+        wire.cubicTo(QPointF(11, 18), QPointF(11, y), QPointF(18, y))
+        p.drawPath(wire)
+    for y in (4.5, 10, 15.5):
+        _dot(p, 18, y, r=2.1)
+    _dot(p, 4, 18, r=2.1)
+
+
 def _points(p):
     path = QPainterPath(QPointF(3, 17))
     path.cubicTo(8, 8, 14, 8, 19, 15)
@@ -335,8 +374,13 @@ _DRAWERS = {
     "booleandifference": _difference, "booleanintersection": _intersection,
     "join": _join, "delete": _delete, "trim": _trim, "split": _split,
     "offset": _offset, "fillet": _fillet, "explode": _explode,
-    "pointson": _points,
+    "pointson": _points, "point": _point, "mesh": _mesh, "vector": _vector,
+    "hydra": _hydra,
 }
+
+
+def hydra_icon() -> QIcon:
+    return command_icon("hydra")
 
 
 def command_icon(name: str) -> QIcon | None:
