@@ -25,6 +25,10 @@ SCREEN_PX_PER_MM = 4.0
 # sheet is drawn in, the layer's own colour, or one of its own as #rrggbb.
 HATCH_INK = "ink"
 HATCH_LAYER_COLOR = "layer"
+# What a hatch shows under its lines (#91): none, which leaves a cut a
+# darker shade of its object on screen and the bare paper on a sheet, as
+# it always did, or a colour, the layer's or a #rrggbb, on both.
+HATCH_BACKGROUND_NONE = "none"
 MIN_HATCH_SPACING = 0.2         # mm on paper: closer is a grey smear
 
 # The line round a cut face, in millimetres on the paper: the 0.5 mm every
@@ -59,6 +63,17 @@ def hatch_color_token(value) -> str:
     return HATCH_INK
 
 
+def hatch_background_token(value) -> str:
+    """A hatch background as a layer keeps it: "none", "layer" or
+    "#rrggbb", an (r, g, b) in 0..1 becoming its #rrggbb. Anything else
+    is none, which is what every cut had before it could say."""
+    text = value.strip().lower() if isinstance(value, str) else None
+    if text in (HATCH_BACKGROUND_NONE, "object", HATCH_INK):
+        return HATCH_BACKGROUND_NONE
+    token = hatch_color_token(value)
+    return HATCH_BACKGROUND_NONE if token == HATCH_INK else token
+
+
 def hatch_token_rgb(token: str, layer_color):
     """The (r, g, b) a hatch colour token draws in, or None for ink:
     "layer" is the colour of the layer it is read against."""
@@ -70,9 +85,14 @@ def hatch_token_rgb(token: str, layer_color):
 
 
 def _tidy_pattern(name) -> str:
-    """A fill this app can draw; anything else is the lines it always was."""
-    name = (name or "").strip().lower()
-    return name if name in SECTION_FILLS else "lines"
+    """The app's own fills in lower case, a pattern from a .pat file by its
+    name (#92), and nothing at all the lines it always was. A name the
+    drawing has no pattern by is kept rather than lost: it draws as lines
+    until the pattern is loaded."""
+    name = (name or "").strip() if isinstance(name, str) else ""
+    if not name:
+        return "lines"
+    return name.lower() if name.lower() in SECTION_FILLS else name
 
 
 def _tidy_angle(degrees) -> float:
@@ -92,16 +112,19 @@ def _tidy_cut_width(mm) -> float:
 def section_fill_dict(pattern="lines", angle=45.0, spacing=2.5,
                       color=HATCH_INK,
                       cut_line_width=DEFAULT_CUT_LINE_WIDTH,
-                      cut_line_color=HATCH_INK) -> dict:
+                      cut_line_color=HATCH_INK,
+                      background=HATCH_BACKGROUND_NONE) -> dict:
     """A section style of an object's own, as the object keeps it: the
-    same six things a layer has, put right the way a layer's are. A style
+    same things a layer has, put right the way a layer's are. A style
     kept before cut lines had a width and colour gets the ones every cut
-    was outlined with then."""
+    was outlined with then, and one kept before a cut had a background
+    the object's shade."""
     return {"pattern": _tidy_pattern(pattern), "angle": _tidy_angle(angle),
             "spacing": _tidy_spacing(spacing),
             "color": hatch_color_token(color),
             "cut_line_width": _tidy_cut_width(cut_line_width),
-            "cut_line_color": hatch_color_token(cut_line_color)}
+            "cut_line_color": hatch_color_token(cut_line_color),
+            "background": hatch_background_token(background)}
 
 
 def screen_width_for(print_mm: float) -> float:
@@ -139,6 +162,7 @@ class Layer:
     hatch_angle: float = 45.0      # degrees on the paper, within half a turn
     hatch_spacing: float = 2.5     # mm on the paper between hatch lines
     hatch_color: str = HATCH_INK   # "ink", "layer" or "#rrggbb"
+    hatch_background: str = HATCH_BACKGROUND_NONE  # "none", "layer", "#.."
     cut_line_width: float = DEFAULT_CUT_LINE_WIDTH  # mm round a cut; 0 = none
     cut_line_color: str = HATCH_INK  # "ink", "layer" or "#rrggbb"
     parent: str | None = None      # the layer this one sits under, if any
@@ -318,10 +342,10 @@ class LayerManager:
         """Say what this layer's material is filled with where it is cut.
 
         "none" is a fill of its own: the cut is outlined and left empty.
-        Anything else the app cannot draw is lines, which is what such a
-        layer was always drawn with: a file written before layers had a
-        hatch, or by a build that wrote "" for one nobody had set, or one
-        naming a pattern this app has never heard of.
+        A pattern loaded from a .pat file is named as it is spelled
+        there. Nothing at all is lines, which is what such a layer was
+        always drawn with: a file written before layers had a hatch, or
+        by a build that wrote "" for one nobody had set.
         """
         self._layers[layer_id] = replace(self._layers[layer_id],
                                          hatch=_tidy_pattern(pattern))
@@ -337,6 +361,13 @@ class LayerManager:
     def set_hatch_color(self, layer_id: str, color):
         self._layers[layer_id] = replace(
             self._layers[layer_id], hatch_color=hatch_color_token(color))
+
+    def set_hatch_background(self, layer_id: str, color):
+        """What a cut through this layer's material shows under its hatch:
+        "none", or a colour."""
+        self._layers[layer_id] = replace(
+            self._layers[layer_id],
+            hatch_background=hatch_background_token(color))
 
     def set_cut_line_width(self, layer_id: str, mm: float):
         """How wide, in millimetres on the paper, the line round a cut

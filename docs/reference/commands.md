@@ -72,8 +72,10 @@ Commands that need a file open a filtered chooser by default. Append
 | `cplane` | Reposition the construction plane (drawing plane + grid). |
 | `curvature` | Curvature |
 | `curvatureanalysis` (`curvmap`) | Curvatureanalysis |
+| `disableclippinginview` (`dcv`) | Switch clipping planes off in the view you are in (the pane, or the detail you are inside) and leave them cutting every other view. |
 | `disableclippingplane` (`dcc`) | Pause clipping planes (they stay in the scene, the cut stops). |
 | `distance` (`dist`) | Distance |
+| `enableclippinginview` (`ecv`) | Switch clipping planes back on in the view you are in (the pane, or the detail you are inside). |
 | `enableclippingplane` (`ecc`) | Re-enable paused clipping planes. |
 | `floatviewport` (`floatvp`) | Open a floating viewport window (drag it to another monitor). |
 | `front` | Front |
@@ -141,7 +143,8 @@ Commands that need a file open a filtered chooser by default. Append
 | `exportdxf` | Export the active layout sheet (or the model) to DXF. |
 | `exportpdf` (`pdf`) | Exportpdf |
 | `exportsvg` | Exportsvg |
-| `hatch` | Fill a region with a pattern, on a sheet or in the model, starting from its layer's hatch. Curves that cross ask which of the regions they make to fill (All, or Alt+A, for every one). |
+| `hatch` | Fill a region with a pattern, on a sheet or in the model, starting from its layer's hatch. Curves that cross ask which of the regions they make to fill (All, or Alt+A, for every one). The popup shows the hatch it would make while it is open. |
+| `hatchpatterns` (`loadpat`) | Load installs the hatch patterns in a .pat file, offered in every drawing from then on; Delete takes one off again. A drawing saves the patterns it uses. |
 | `layout` | Layout |
 | `leader` | Leader |
 | `make2d` | Make2d |
@@ -161,7 +164,7 @@ Commands that need a file open a filtered chooser by default. Append
 | `delete` (`del`, `erase`) | Delete |
 | `dir` | Show which way curves run and which way surfaces face. |
 | `explode` (`x`) | Explode |
-| `fillet` | Round two curves in the plane they already lie on, or edges of a selected solid/surface. |
+| `fillet` | Round the corner between two curves, or edges of a selected solid/surface. Pick each curve near the corner you mean. Radius and Trim stay on the prompt and can be changed between the picks (a typed number is the radius, `t` flips Trim), and both are remembered until the program is started again. Radius 0 gives a sharp corner: the curves are cut back, or carried out, to the point they cross at. |
 | `filletcorners` | Round every corner of a polyline at once with one radius — straight and arc pieces both round. |
 | `flip` | Turn curves round and surfaces inside out, as Rhino's Flip does. |
 | `hide` | Hide |

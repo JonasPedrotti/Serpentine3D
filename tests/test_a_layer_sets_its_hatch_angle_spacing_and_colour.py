@@ -381,7 +381,8 @@ def test_a_script_can_style_a_layer_and_read_it_back():
     assert walls["screen_width"] == pytest.approx(2.0)
     assert not walls["screen_pinned"]
     assert walls["hatch"] == {"pattern": "cross", "angle": 30.0,
-                              "spacing": 2.0, "color": "layer"}
+                              "spacing": 2.0, "color": "layer",
+                              "background": "none"}
     api.layers(action="style", name="Walls", style={"screen_width": 3})
     walls = next(row for row in api.scene_info()["layers"]
                  if row["name"] == "Walls")

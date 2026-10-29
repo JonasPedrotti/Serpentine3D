@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from ..core import geometry
+from ..utils.units import TO_MM, paper_units
 
 Point = tuple[float, float, float]
 
@@ -101,7 +102,12 @@ class NumberReq(Req):
 
 @dataclass
 class LengthReq(NumberReq):
-    """A length in document units — accepts 3'6", 30cm, 1.5in, etc."""
+    """A length in document units — accepts 3'6", 30cm, 1.5in, etc.
+
+    `paper` makes it a size on paper, a text height or an arrow, wherever
+    it is asked: kept in millimetres, like its default, but shown and typed
+    in the units the sheet is read in."""
+    paper: bool = False
 
 
 @dataclass
@@ -183,15 +189,24 @@ class FormReq(Req):
     together, not that they are a new kind of answer. The command is sent
     back a dict of {name: value}, and a window may answer the whole of it
     at once with `CommandProcessor.provide_form`.
+
+    `preview_fn(answers)` is what the answers would make, for a popup to
+    ghost while it is open and as its answers change.
     """
     prompt: str = ""
     fields: tuple = ()
     title: str = ""
+    preview_fn: object = None
 
 
 @dataclass
 class SelectReq(Req):
     prompt: str
+    # The option a typed number sets, rather than answering the prompt:
+    # at "Select first curve (Radius=0)", 5 or 2mm means that radius and
+    # the question still stands. Rhino's prompts work this way, and a
+    # number is never the name of an object anyway.
+    number_option: str = ""
     min_count: int = 1
     max_count: int | None = None          # None = unlimited, finish with Enter
     kinds: tuple = ()                     # () = any; else e.g. ("curve",)
@@ -203,6 +218,11 @@ class SelectReq(Req):
     # trim takes the part that point is on (#31). A viewport click supplies
     # it; a typed, scripted or listed pick cannot, and leaves it out.
     want_point: bool = False
+
+
+def _is_length(text: str, units: str) -> bool:
+    from ..utils.units import parse_length
+    return parse_length(str(text), units) is not None
 
 
 def _kinds_phrase(kinds: tuple) -> str:
@@ -493,6 +513,34 @@ class CommandContext:
         lv = getattr(vp, "layout_view", None)
         return getattr(lv, "entered_detail", None) is None
 
+    def typed_units(self) -> tuple[str, float]:
+        """The units a length is typed in here, and how many of the units it
+        is kept in make one of them. In the model and in a detail both are
+        the document's units; bare paper is kept in millimetres but typed in
+        the units its sheet is read in, inches in an inch or a feet document."""
+        if self.on_bare_paper():
+            unit = paper_units(self.scene.units)
+            return unit, TO_MM[unit]
+        return self.scene.units, 1.0
+
+    def length_units(self, req: LengthReq) -> tuple[str, float]:
+        """The units `req` is typed in, and how many of the units it is kept
+        in make one of them: the sheet's for a size on paper, wherever it is
+        asked, and otherwise the document's, even asked from bare paper,
+        since what such a length measures is in the model."""
+        if req.paper:
+            unit = paper_units(self.scene.units)
+            return unit, TO_MM[unit]
+        return self.scene.units, 1.0
+
+    def from_typed(self, value: float) -> float:
+        """A number typed here as a length, in the units it is kept in."""
+        return value * self.typed_units()[1]
+
+    def as_typed(self, length: float) -> float:
+        """A length as kept, in the units it would be typed in here."""
+        return length / self.typed_units()[1]
+
     def sheet_view(self):
         """The layout view, when a command asking for objects means the sheet.
 
@@ -605,7 +653,16 @@ def parse_value(req: Req, text: str, ctx: CommandContext):
         # Prompts measuring a dimension or factor keep their numeric zero.
         if text == "0" and req.number_from is None and not req.allow_number:
             return True, (0.0, 0.0, 0.0)
-        pt = parse_point(text, ctx.last_point, ctx.scene.units, ctx.cplane)
+        # On bare paper a typed point is the sheet's, in the units it is
+        # read in; it has no construction plane to be measured on.
+        units, per = ctx.typed_units()
+        cplane = None if ctx.on_bare_paper() else ctx.cplane
+        last = ctx.last_point          # a raw number, after a prompt took one
+        if per != 1.0 and isinstance(last, (tuple, list)):
+            last = tuple(c / per for c in last)
+        pt = parse_point(text, last, units, cplane)
+        if pt is not None and per != 1.0:
+            pt = tuple(c * per for c in pt)
         # A command that runs along an axis of its own says so; failing
         # that, Tab lets you aim one by hand, and failing that the cursor is
         # aiming one anyway. A number means the same thing in all three: how
@@ -617,14 +674,17 @@ def parse_value(req: Req, text: str, ctx: CommandContext):
             along = ctx.locked_direction() or ctx.aim_direction()
         if pt is None and (along is not None or req.allow_number):
             from ..utils.units import parse_length
-            v = parse_length(text, ctx.scene.units)
+            v = parse_length(text, units)
             if v is not None:
                 if callable(along):
-                    pt = tuple(along(v))
+                    pt = tuple(along(v * per))
                 elif along is not None:
                     base, direction = along
-                    pt = tuple(b + v * d for b, d in zip(base, direction))
+                    pt = tuple(b + v * per * d
+                               for b, d in zip(base, direction))
                 else:
+                    # an angle or a factor as often as a length, so the
+                    # command that asked says which and converts a length
                     return True, float(v)     # allow_number: the raw value
         if pt is None:
             return False, ("Expected coordinates like 3,4,0 "
@@ -633,12 +693,16 @@ def parse_value(req: Req, text: str, ctx: CommandContext):
     if isinstance(req, LengthReq):
         if not text and req.default is not None:
             return True, req.default
-        from ..utils.units import parse_length
-        v = parse_length(text, ctx.scene.units)
+        from ..utils.units import format_paper_length, parse_length
+        units, per = ctx.length_units(req)
+        v = parse_length(text, units)
         if v is None:
             return False, "Expected a length (e.g. 250, 3'6\", 30cm)"
+        v *= per
         if req.minimum is not None and v < req.minimum:
-            return False, f"Value must be >= {req.minimum}"
+            least = (format_paper_length(req.minimum, ctx.scene.units)
+                     if req.paper else req.minimum)
+            return False, f"Value must be >= {least}"
         return True, v
     if isinstance(req, NumberReq):
         if not text and req.default is not None:
@@ -679,8 +743,14 @@ def parse_value(req: Req, text: str, ctx: CommandContext):
     return False, "Unsupported input"
 
 
-def format_prompt(req: Req) -> str:
+def format_prompt(req: Req, ctx: CommandContext | None = None) -> str:
     p = req.prompt
+    # A size on paper says the units it is typed in, which the sheet's
+    # units decide, so the prompt itself can't: "Text height (in)".
+    paper = isinstance(req, LengthReq) and req.paper and ctx is not None
+    if paper:
+        unit, per = ctx.length_units(req)
+        p += f" ({unit})"
     if isinstance(req, OptionReq) and req.options:
         p += f" ({'/'.join(req.options)})"
     extras = getattr(req, "extra_options", ())
@@ -688,11 +758,37 @@ def format_prompt(req: Req) -> str:
         p += f" ({'/'.join(extras)})"
     default = getattr(req, "default", None)
     if default is not None:
-        if isinstance(default, tuple):
+        if paper:
+            # in those units; Enter still keeps the default exactly
+            p += f" <{round(default / per, 4)}>"
+        elif isinstance(default, tuple):
             p += f" <{','.join(str(round(c, 4)) for c in default)}>"
         else:
             p += f" <{default}>"
     return p
+
+
+def unused_inputs_message(command: str, answered: list[tuple[str, str]],
+                          unused: list[str], messages: list[str]) -> str:
+    """The error for scripted inputs left over once their command finished.
+
+    The command's result stands by then (the export is written, the curve
+    made), so the message says which prompt each used input answered and
+    what the command did: enough to spot the mix-up and not retry blind.
+    """
+    name = (command.split() or [command])[0]
+    count = f"{len(unused)} input{'' if len(unused) == 1 else 's'}"
+    took = "; ".join(f"{prompt} = {text!r}" for prompt, text in answered)
+    did = " ".join(m for m in messages if not m.startswith("> ")).rstrip()
+    if did and did[-1] not in ".!?":
+        did += "."
+    return (f"{name} finished with {count} unused: "
+            f"{', '.join(repr(t) for t in unused)}. "
+            + (f"Its prompts took: {took}. " if took
+               else "It asked for no input. ")
+            + (f"It still ran: {did} " if did else "It still ran. ")
+            + "Send only the inputs its prompts ask for, and check what it "
+              "did before running it again.")
 
 
 # --------------------------------------------------------------- processor
@@ -1033,11 +1129,19 @@ class CommandProcessor:
             return False
         for opt_name, values in req.choices.items():
             if opt_name.lower() == name.lower():
+                if value is None and not values:
+                    return False         # nothing to cycle through
                 if value is None:            # cycle
                     cur = self.command_options.get(opt_name, values[0])
                     idx = (values.index(cur) + 1) % len(values) \
                         if cur in values else 0
                     value = values[idx]
+                elif (getattr(req, "number_option", "") == opt_name
+                        and _is_length(value, self.ctx.scene.units)):
+                    # The prompt's own number: a radius is whatever was
+                    # typed, not one of a few listed answers. What the
+                    # option lists is only what it opens on.
+                    value = value.strip()
                 else:
                     matches = [v for v in values
                                if v.lower().startswith(value.lower())]
@@ -1054,6 +1158,21 @@ class CommandProcessor:
                 self._notify()
                 return True
         return False
+
+    def _number_option(self, text: str) -> bool:
+        """A number typed at a prompt that has one is that option's value.
+
+        "5" at "Select first curve (Radius=0)" is a radius of five, and
+        the prompt stands until a curve is picked: the option is what the
+        number was for, and an object is never called 5.
+        """
+        req = self.request
+        name = getattr(req, "number_option", "")
+        if not name:
+            return False
+        if not _is_length(text, self.ctx.scene.units):
+            return False
+        return self.set_option(name, text.strip())
 
     def _try_option_text(self, text: str) -> bool:
         req = self.request
@@ -1112,6 +1231,8 @@ class CommandProcessor:
         # names, paths and other literal text answers keep the character.
         if text.lstrip().startswith("!") and not isinstance(self.request, TextReq):
             self.run(text)
+            return
+        if text.strip() and self._number_option(text):
             return
         if text.strip() and self._try_option_text(text):
             return
@@ -1266,13 +1387,13 @@ class CommandProcessor:
         req = self.request
         if req is None or not getattr(req, "choices", None):
             return []
-        return [(n, self.command_options.get(n, v[0]))
+        return [(n, self.command_options.get(n, v[0] if v else ""))
                 for n, v in req.choices.items()]
 
     def prompt_text(self) -> str:
         if self.request is None:
             return "Command"
-        base = format_prompt(self.request)
+        base = format_prompt(self.request, self.ctx)
         if isinstance(self.request, SelectReq):
             n = len(self._select_buffer)
             if n:

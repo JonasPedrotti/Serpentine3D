@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from ..core import clipping
 from ..core import layout as _layout
 from . import icons, theme
 
@@ -404,6 +405,9 @@ class LayersPanel(QWidget):
     # The user picked other rows, or let go of them all. Not sent for the
     # redraw putting the same rows back, which is the panel's own doing.
     pickedChanged = Signal()
+    # A line for the command history: that a clipping plane a layer just
+    # put out of sight still cuts (core/clipping.py).
+    said = Signal(str)
 
     def __init__(self, scene, history, parent=None, selection=None):
         super().__init__(parent)
@@ -704,11 +708,19 @@ class LayersPanel(QWidget):
             label, setter = ((
                 "layer visibility", layers.set_visible)
                 if column == _VISIBLE_COL else ("layer lock", layers.set_locked))
+            # a clipping plane the layer puts out of sight still cuts,
+            # those on a layer under it too (core/clipping.py)
+            hiding = column == _VISIBLE_COL and not on
+            in_sight = clipping.in_sight(self.scene) if hiding else set()
             self.history.checkpoint(label)
             with self.scene.batched():
                 for target in targets:
                     setter(target, on)
                 self.scene.notify()
+            note = clipping.still_cuts(
+                clipping.hidden_since(self.scene, in_sight))
+            if note:
+                self.said.emit(note)
         elif column == _NAME_COL:
             # rename via inline edit
             text = item.text(_NAME_COL).lstrip("● ").split("  (")[0].strip()
@@ -919,8 +931,8 @@ class LayersPanel(QWidget):
         # one Python owns is collected while the menu is still open.
         sub = QMenu("Hatch", menu)
         menu.addMenu(sub)
-        for pattern in _layout.SECTION_FILLS:
-            action = sub.addAction(pattern.capitalize())
+        for pattern in _layout.section_fills_of(self.scene):
+            action = sub.addAction(_layout.pattern_label(pattern))
             action.setCheckable(True)
             action.setChecked(have == {pattern})
             action.triggered.connect(

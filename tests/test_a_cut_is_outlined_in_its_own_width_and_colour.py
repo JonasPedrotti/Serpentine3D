@@ -17,6 +17,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from serpentine3d.core import geometry as g
+from serpentine3d.core.tessellate import DisplayMesh
 from serpentine3d.core.history import History
 from serpentine3d.core.layers import (DEFAULT_LAYER_ID, Layer, LayerManager,
                                       section_fill_dict)
@@ -224,7 +225,16 @@ def test_a_ring_is_worked_out_once_until_the_plane_or_solid_moves(monkeypatch):
     monkeypatch.setattr(caps, "plane_cut_segments",
                         lambda *a: calls.append(1) or real(*a))
     vertices, triangles = _cube()
-    mesh = SimpleNamespace(vertices=vertices, triangles=triangles)
+
+    def _mesh():
+        """A display mesh of that cube: coordinates are kept as offsets
+        from where it sits, and the cut is worked out there."""
+        dm = DisplayMesh()
+        dm.vertices = vertices
+        dm.triangles = triangles
+        return dm
+
+    mesh = _mesh()
     plane = caps.cap_planes([((0, 0, 0.5), (0, 0, 1), True)])[0]
     rings = caps.CutLines()
     for _frame in range(3):
@@ -234,8 +244,7 @@ def test_a_ring_is_worked_out_once_until_the_plane_or_solid_moves(monkeypatch):
     moved = caps.cap_planes([((0, 0, 0.7), (0, 0, 1), True)])[0]
     rings.segments("box", mesh, moved)
     assert len(calls) == 2
-    rings.segments("box", SimpleNamespace(vertices=vertices,
-                                          triangles=triangles), moved)
+    rings.segments("box", _mesh(), moved)
     assert len(calls) == 3, "a new mesh kept the old ring"
 
 

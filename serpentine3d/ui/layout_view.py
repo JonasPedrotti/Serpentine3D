@@ -17,6 +17,7 @@ from PySide6.QtGui import (QColor, QFont, QPainter, QPainterPath, QPen,
 from ..core import hlr, linetype
 from ..core.layers import screen_width_for
 from ..utils.math3d import look_at, ortho, perspective
+from . import section_caps as _caps
 from . import theme
 
 PAPER_COLOR = (0.94, 0.94, 0.92, 1.0)
@@ -54,7 +55,13 @@ def point_marks(points, size: float) -> np.ndarray:
         x, y, z = float(p[0]), float(p[1]), float(p[2])
         segs.append([[x - size, y, z], [x + size, y, z]])
         segs.append([[x, y - size, z], [x, y + size, z]])
-    return np.asarray(segs, np.float32).reshape(-1, 2, 3)
+    return np.asarray(segs, float).reshape(-1, 2, 3)
+
+
+def sheet_line_width(print_mm: float, default: float) -> float:
+    """The pixels a line on a sheet is drawn with: its print width the way
+    a layer's is on screen, or `default` for one left to the printer."""
+    return screen_width_for(print_mm) if print_mm > 0 else default
 
 
 def hlr_visible_segments(by_obj, to_paper, is_picked,
@@ -203,7 +210,7 @@ class DetailEye:
         the paper before the sheet's own transform can put it on screen.
         """
         from ..core.layout import detail_project
-        arr = np.asarray(points, np.float32).reshape(-1, 3)
+        arr = np.asarray(points, float).reshape(-1, 3)
         out = np.zeros_like(arr)
         for i, p in enumerate(arr):
             out[i, :2] = detail_project(self.detail, p)
@@ -218,6 +225,7 @@ class LayoutView:
         self.entered_detail: str | None = None
         self.ghost_detail = None                 # detail a command is sizing
         self._ghost_note = None
+        self._ghost_hatch = None                 # hatch a command is placing
         self._ghost_picture = None
         self.selected: list = []                 # [(kind, obj)] on this sheet
         self.corners: list = []                  # [(detail, index)] grips
@@ -601,19 +609,26 @@ class LayoutView:
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         proj, view = self.detail_matrices(detail, pw, ph)
         mvp64 = proj @ view
-        vp._draw_objects(mvp64, view, mode_override=mode,
-                         light_background=True,
-                         hidden_layers=detail.hidden_layers)
+        with vp._into_detail(pw / ratio, ph / ratio, ratio,
+                             None if detail.perspective
+                             else detail.scale_denom,
+                             self.px_per_mm, detail.id):
+            vp._draw_objects(mvp64, view, mode_override=mode,
+                             light_background=True,
+                             hidden_layers=detail.hidden_layers)
         GL.glDisable(GL.GL_SCISSOR_TEST)
         GL.glViewport(0, 0, int(vp.width() * ratio),
                       int(vp.height() * ratio))
 
     def _detail_hlr(self, detail) -> dict:
         vp = self.vp
+        # The clipping planes that cut this detail, which a layer's
+        # visibility can change without the scene's revision moving.
+        clips = tuple(f for f in vp._clip_frames(detail.id) if f[2])
         key = (vp.scene.revision, round(detail.azimuth, 6),
                round(detail.elevation, 6), tuple(detail.target),
                detail.perspective, detail.section_offset,
-               tuple(detail.hidden_layers))
+               tuple(detail.hidden_layers), clips)
         cached = self._hlr_cache.get(detail.id)
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -621,9 +636,18 @@ class LayoutView:
         from ..core.mesh import MeshShape
         from ..core.pointcloud import PointCloudShape
         left_out = vp.scene.layers.with_descendants(detail.hidden_layers)
+        # A clipping plane is not drawn on a sheet, only what it cut.
         objs = [o for o in vp.scene.visible_objects()
                 if not isinstance(o.shape, (MeshShape, PointCloudShape))
-                and o.layer_id not in left_out]
+                and o.layer_id not in left_out and not o.clip_plane]
+        # A hatch is drawn by the sheet itself, in its colour and on its
+        # background, under the linework (#91): a hidden-line pass has one
+        # ink and no fills.
+        from ..core.hatch import HatchShape
+        hatch_objs = [o for o in objs if isinstance(o.shape, HatchShape)]
+        objs = [o for o in objs if not isinstance(o.shape, HatchShape)]
+        hatches = [_flat_hatch(o, detail.target, right, up)
+                   for o in hatch_objs]
         shapes = [o.shape for o in objs]
         layer_types = vp._layer_linetypes()                 # once, not per object
         lts = [vp._effective_linetype(o, layer_types)
@@ -632,20 +656,40 @@ class LayoutView:
 
         cut_regions = []
         cut_by_obj = []
-        if shapes and detail.section_offset is not None \
-                and not detail.perspective:
-            shapes, cut_regions, owners = _section_cut(
-                shapes, np.asarray(detail.target, float), d, right, up,
-                detail.section_offset)   # shapes 1:1 with input, keeps order
+        target = np.asarray(detail.target, float)
+        sectioned = (bool(shapes) and detail.section_offset is not None
+                     and not detail.perspective)
+
+        def owned(owners, regions):
             # What each cut face is made of, carried out beside it: a cut
             # is filled with the material of the thing it went through,
             # and this is the only place that still knows which that was.
-            cut_by_obj = [(objs[i].id, vp.scene.hatch_of(objs[i]), region)
-                          for i, region in zip(owners, cut_regions)]
+            cut_regions.extend(regions)
+            cut_by_obj.extend((objs[i].id, vp.scene.hatch_of(objs[i]), region)
+                              for i, region in zip(owners, regions))
+
+        planes = _caps.cap_planes(clips) if shapes else []
+        if planes:
+            # The planes first, the way the GPU cuts every other view
+            # (#94); a section of the detail's own then cuts what they
+            # left, and their cut faces stop where it starts.
+            also = []
+            if sectioned:
+                at = target + d * float(detail.section_offset)
+                also.append(_half_space(at, d, right, up, _reach(shapes, at)))
+            shapes, regions, owners = _clip_cut(
+                shapes, [not o.clip_plane for o in objs], planes, target,
+                right, up, also)
+            owned(owners, regions)
+        if sectioned:
+            shapes, regions, owners = _section_cut(
+                shapes, target, d, right, up,
+                detail.section_offset)   # shapes 1:1 with input, keeps order
+            owned(owners, regions)
 
         if not shapes:
             data = {"visible": [], "hidden": [], "cut": cut_regions,
-                    "cut_by_obj": cut_by_obj,
+                    "cut_by_obj": cut_by_obj, "hatches": hatches,
                     "visible_lt": [], "visible_by_obj": [], "visible_groups": []}
             self._hlr_cache[detail.id] = (key, data)
             return data
@@ -682,6 +726,7 @@ class LayoutView:
                 "hidden": hlr.edges_to_polylines(res["hidden"]),
                 "cut": cut_regions,
                 "cut_by_obj": cut_by_obj,
+                "hatches": hatches,
                 "visible_lt": [(n, p) for n, p in lt_groups.items()],
                 "visible_by_obj": by_obj,
                 "visible_groups": merge_line_groups(entries)}
@@ -714,6 +759,8 @@ class LayoutView:
             out[:, 1] = cy + poly2d[:, 1] * s
             return out
 
+        # hatches first, fill and all, so every other line lies over them
+        self._paint_detail_hatches(paper_mvp, data, cx, cy, s)
         # hidden lines first so coincident visible edges draw over them
         if detail.display_mode == "hidden":
             segs_h = []
@@ -729,9 +776,19 @@ class LayoutView:
         picked = self.vp.selection.is_selected
         held = (*theme.HELD_SELECTION_COLOR, 1.0) \
             if self.vp.selection.held else None
-        for ink, segs in hlr_visible_segments(data.get("visible_by_obj", []),
-                                              to_paper, picked, held):
-            self._draw_segs(paper_mvp, segs, ink, 1.6)
+        # each at its print width, as the plot draws it: thick walls and
+        # thin furniture read apart on the sheet before it is printed
+        scene = self.vp.scene
+        by_width: dict = {}
+        for entry in data.get("visible_by_obj", []):
+            obj = scene.get(entry[0]) if entry[0] is not None else None
+            mm = scene.print_width_of(obj) if obj is not None else 0.0
+            by_width.setdefault(mm, []).append(entry)
+        for mm, entries in by_width.items():
+            for ink, segs in hlr_visible_segments(entries, to_paper, picked,
+                                                  held):
+                self._draw_segs(paper_mvp, segs, ink,
+                                sheet_line_width(mm, 1.6))
         # section-cut faces: each hatched and outlined the way whatever it
         # was cut from says
         regions = data.get("cut") or []
@@ -756,6 +813,17 @@ class LayoutView:
                     outline.append(np.stack([ring[:-1], ring[1:]], axis=1))
                 self._draw_segs(paper_mvp, np.concatenate(outline),
                                 _cut_ink(color), screen_width_for(width_mm))
+            picked = self._picked_cuts(data, cx, cy, s)
+            if picked:
+                gold = (*theme.SELECTION_COLOR, 1.0)
+                outline = []
+                for loop in picked:
+                    ring = np.asarray([(x, y, 0.0) for x, y in loop] +
+                                      [(loop[0][0], loop[0][1], 0.0)],
+                                      np.float32)
+                    outline.append(np.stack([ring[:-1], ring[1:]], axis=1))
+                self._draw_segs(paper_mvp, np.concatenate(outline), gold,
+                                2.2)
         GL.glDisable(GL.GL_SCISSOR_TEST)
 
     # ------------------------------------------------------- QPainter texts
@@ -774,7 +842,7 @@ class LayoutView:
             sx, sy = self.paper_to_screen(detail.x + 1.5, detail.y + 1.5)
             painter.setPen(QPen(QColor(90, 95, 105)))
             painter.setFont(QFont("sans", max(int(2.6 * self.px_per_mm), 7)))
-            label = detail.scale_text()
+            label = detail.scale_text(self.vp.scene.units)
             if detail.locked:
                 label += "  [locked]"
             painter.drawText(int(sx), int(sy) - 2, label)
@@ -796,6 +864,12 @@ class LayoutView:
             annot_paint.draw_note(painter, self.paper_to_screen,
                                   self.px_per_mm, self._ghost_note, scene)
             painter.restore()
+        if self._ghost_hatch is not None:
+            painter.save()
+            painter.setOpacity(.7)
+            annot_paint.draw_hatch(painter, self.paper_to_screen,
+                                   self.px_per_mm, self._ghost_hatch, scene)
+            painter.restore()
         # Last of all, over the ink and under nothing: a handle is a thing to
         # take hold of, so a detail's own linework must not cover it.
         self.gumball.paint(painter)
@@ -809,7 +883,9 @@ class LayoutView:
         so it comes back over here to the painter. Under the labels and
         the annotations, the way a detail's own ink is. A flood is opaque,
         so the cut lines GL drew are stroked again over it, every one of
-        them in its own pen: the order the plot draws them in.
+        them in its own pen: the order the plot draws them in. A face with
+        a background of its own (#91) is flooded here too, and its hatch
+        drawn again over the flood.
         """
         from ..core.layout import section_drawing
         from . import annot_paint
@@ -819,17 +895,23 @@ class LayoutView:
             details.append(self.ghost_detail)
         for detail in details:
             # Same test the GL pass makes, so asking a shaded detail what
-            # it cut does not set a hidden-line pass going for nothing.
-            if detail.display_mode in MODES_3D or detail.perspective \
-                    or detail.section_offset is None:
+            # it cut does not set a hidden-line pass going for nothing. A
+            # detail with no section of its own can still be cut, by a
+            # clipping plane (#94), so it is what it cut that decides.
+            if detail.display_mode in MODES_3D or detail.perspective:
                 continue
             data = self._detail_hlr(detail)
-            fills = self._region_fills(data)
-            if not any(f.pattern == "solid" for f in fills):
+            if not data.get("cut"):
                 continue
-            _lines, outlines, floods = section_drawing(
+            fills = self._region_fills(data)
+            if not any(f.pattern == "solid" or f.background is not None
+                       or getattr(f.definition, "solid", False)
+                       or _has_dots(f.definition) for f in fills):
+                continue
+            lines, outlines, floods = section_drawing(
                 data.get("cut") or [], detail.x + detail.w / 2,
-                detail.y + detail.h / 2, 1.0 / detail.scale_denom, fills)
+                detail.y + detail.h / 2, 1.0 / detail.scale_denom, fills,
+                min_dot=self._min_dot(), snap=self._snap_dot)
             x0, y0 = self.paper_to_screen(detail.x, detail.y + detail.h)
             x1, y1 = self.paper_to_screen(detail.x + detail.w, detail.y)
             painter.save()
@@ -839,6 +921,12 @@ class LayoutView:
                 annot_paint.fill_cut_solid(painter, self.paper_to_screen,
                                            [rings], color)
             painter.setBrush(Qt.BrushStyle.NoBrush)
+            for color, segs in lines:
+                painter.setPen(QPen(QColor.fromRgbF(
+                    *(HATCH_INK[:3] if color is None else color[:3])), 1.0))
+                for a, b in segs:
+                    painter.drawLine(QPointF(*self.paper_to_screen(*a)),
+                                     QPointF(*self.paper_to_screen(*b)))
             for color, width_mm, rings in outlines:
                 path = QPainterPath()
                 for ring in rings:
@@ -849,7 +937,108 @@ class LayoutView:
                 painter.setPen(QPen(QColor.fromRgbF(*_cut_ink(color)[:3]),
                                     screen_width_for(width_mm)))
                 painter.drawPath(path)
+            picked = self._picked_cuts(
+                data, detail.x + detail.w / 2, detail.y + detail.h / 2,
+                1.0 / detail.scale_denom)
+            if picked:
+                path = QPainterPath()
+                for ring in picked:
+                    path.addPolygon(QPolygonF(
+                        [QPointF(*self.paper_to_screen(x, y))
+                         for x, y in ring]))
+                    path.closeSubpath()
+                painter.setPen(QPen(QColor.fromRgbF(
+                    *theme.SELECTION_COLOR[:3]), 2.2))
+                painter.drawPath(path)
             painter.restore()
+
+    def _picked_cuts(self, data, cx, cy, s) -> list:
+        """The rings, on the paper, of every cut face of a picked object:
+        a solid a plane has cut can show nothing else of itself on a
+        sheet, so its cut is what goes gold when it is picked."""
+        picked = self.vp.selection.is_selected
+        out = []
+        for oid, _pattern, region in data.get("cut_by_obj") or []:
+            if oid is None or not picked(oid):
+                continue
+            out.extend([(cx + x * s, cy + y * s) for x, y in ring]
+                       for ring in region if len(ring) >= 3)
+        return out
+
+    def hatch_looks(self, data) -> list:
+        """(colour, background, solid) for each of a detail's hatches,
+        aligned with its `hatches`, as the scene says now; a hatch that
+        has gone draws in ink on nothing."""
+        scene = self.vp.scene
+        out = []
+        for oid, *_drawn in data.get("hatches") or []:
+            obj = scene.get(oid)
+            if obj is None:
+                out.append((None, None, False, 0.0))
+                continue
+            color, ground = scene.hatch_look_of(obj)
+            out.append((color, ground,
+                        bool(getattr(obj.shape, "solid", False)),
+                        scene.print_width_of(obj)))
+        return out
+
+    def _paint_detail_hatches(self, paper_mvp, data, cx, cy, s):
+        from ..core.layout import detail_hatches
+        hatches = data.get("hatches") or []
+        if not hatches:
+            return
+        floods, lines = detail_hatches(hatches, self.hatch_looks(data),
+                                       cx, cy, s, min_dot=self._min_dot(),
+                                       snap=self._snap_dot)
+        picked = self.vp.selection.is_selected
+        gold = any(picked(oid) for oid, *_drawn in hatches)
+        for color, tris in floods:
+            flat = np.zeros((len(tris) * 3, 3), np.float32)
+            flat[:, :2] = np.asarray(tris, float).reshape(-1, 2)
+            self._fill_triangles(paper_mvp, flat, (
+                *(HATCH_INK[:3] if color is None else color), 1.0))
+        for color, width, segs in lines:
+            flat = np.zeros((len(segs), 2, 3), np.float32)
+            flat[:, :, :2] = segs
+            self._draw_segs(paper_mvp, flat, (
+                *(HATCH_INK[:3] if color is None else color), 1.0),
+                sheet_line_width(width, 1.0))
+        if gold:
+            for oid, _tris, segs, _dots in hatches:
+                if picked(oid) and len(segs):
+                    flat = np.zeros((len(segs), 2, 3), np.float32)
+                    flat[:, :, :2] = np.asarray(segs) * s + (cx, cy)
+                    self._draw_segs(paper_mvp, flat,
+                                    (*theme.SELECTION_COLOR, 1.0), 1.6)
+
+    def _min_dot(self) -> float:
+        """The smallest dot the screen draws, in paper mm: a pixel and a
+        half across its radius, so a dot reads as one at any zoom."""
+        return 1.5 / max(self.px_per_mm, 1e-6)
+
+    def _snap_dot(self, x: float, y: float) -> tuple:
+        """A dot's centre on the sheet moved to the middle of the device
+        pixel it falls in: drawn there, every small dot is the same shape
+        rather than whichever the pixel grid cut it into."""
+        ratio = self.vp.devicePixelRatioF() or 1.0
+        sx, sy = self.paper_to_screen(x, y)
+        sx = (math.floor(sx * ratio) + 0.5) / ratio
+        sy = (math.floor(sy * ratio) + 0.5) / ratio
+        return self.screen_to_paper(sx, sy)
+
+    def _fill_triangles(self, mvp, verts, color):
+        vp = self.vp
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        vp._preview.update(np.ascontiguousarray(verts, np.float32))
+        GL.glUseProgram(vp._line_prog)
+        GL.glUniformMatrix4fv(
+            GL.glGetUniformLocation(vp._line_prog, "uMVP"), 1, GL.GL_TRUE,
+            mvp.astype(np.float32))
+        GL.glUniform4f(GL.glGetUniformLocation(vp._line_prog, "uColor"),
+                       *color)
+        GL.glBindVertexArray(vp._preview.vao)
+        GL.glDrawArrays(GL.GL_TRIANGLES, 0, len(verts))
+        GL.glEnable(GL.GL_DEPTH_TEST)
 
     def _region_fills(self, data) -> list:
         """How each of a detail's cut faces is filled, aligned with its
@@ -1055,8 +1244,33 @@ class LayoutView:
             self.vp.layoutSelectionChanged.emit()
             return hit[1]
         detail = lay.detail_at(px, py)
-        self.entered_detail = detail.id if detail else None
+        if detail is not None:
+            self._go_into(detail)
+        else:
+            self._come_out()
         return None
+
+    def _go_into(self, detail):
+        """Step inside a detail, letting go of what was picked on the sheet.
+
+        Inside a detail what you pick is the model seen through it. A pick
+        left on the sheet went on competing with that one: the click before
+        a double-click picks the detail, and so does the `detail` command
+        that placed it, so Properties stayed on the detail and Delete took
+        the detail away rather than the object picked inside (#93).
+        """
+        self.entered_detail = detail.id
+        self.selected = []
+        self.corners = []
+        self.vp.layoutSelectionChanged.emit()
+
+    def _come_out(self):
+        """Leave the detail you are inside, if you are inside one, and say
+        so: what is picked means the sheet again."""
+        if self.entered_detail is None:
+            return
+        self.entered_detail = None
+        self.vp.layoutSelectionChanged.emit()
 
     def step_into_detail(self, sx: float, sy: float):
         """Enter the detail under the cursor, and say which one, or None.
@@ -1073,7 +1287,7 @@ class LayoutView:
         detail = lay.detail_at(px, py)
         if detail is None or detail.id == self.entered_detail:
             return None
-        self.entered_detail = detail.id
+        self._go_into(detail)
         return detail
 
     def click_outside_exits(self, sx: float, sy: float) -> bool:
@@ -1083,7 +1297,7 @@ class LayoutView:
             return False
         px, py = self.screen_to_paper(sx, sy)
         if not detail.contains(px, py):
-            self.entered_detail = None
+            self._come_out()
             return True
         return False
 
@@ -1381,6 +1595,124 @@ class LayoutView:
         return True
 
 
+def _reach(shapes, point) -> float:
+    """A length that, laid out from `point`, swallows every shape."""
+    from ..core import geometry as g
+    diag = 0.0
+    for s in shapes:
+        mn, mx = g.bbox(s)
+        diag = max(diag, float(np.linalg.norm(np.subtract(mx, mn))),
+                   float(np.linalg.norm(np.subtract(mx, point))),
+                   float(np.linalg.norm(np.subtract(mn, point))))
+    return diag * 2 + 10
+
+
+def _half_space(origin, normal, u, v, reach):
+    """A solid filling the side of a plane `normal` points into, as far
+    as `reach` in every direction: subtract it, and what is on that side
+    is gone. `u` and `v` lie in the plane."""
+    from ..core import geometry as g
+    origin, u, v = (np.asarray(a, float) for a in (origin, u, v))
+    corners = [origin + u * su * reach + v * sv * reach
+               for su, sv in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+    quad = g.make_polyline([tuple(c) for c in corners], closed=True)
+    return g.extrude(g.planar_face(quad), tuple(float(c) for c in normal),
+                     reach, cap=False)
+
+
+# What a clipping plane can cut in a hidden-line detail: what the GPU
+# would take away in any other view. A hatch is left whole, since cutting
+# it would hand back bare faces that no longer know their pattern.
+_CLIPPED_KINDS = ("solid", "surface", "curve", "compound", "point")
+
+
+def _has_dots(definition) -> bool:
+    """Whether a pattern has dots, which the painter fills."""
+    return any(0.0 in ln.dashes for ln in getattr(definition, "lines", ()))
+
+
+def _flat_hatch(obj, target, right, up) -> tuple:
+    """(object id, fill triangles, pattern lines, dots) of a hatch object
+    in a detail's projector frame, model units: what the sheet draws of
+    it, its dots as (centre, radius) to be filled."""
+    from ..core.tessellate import tessellate
+    hatch = obj.shape
+    target = np.asarray(target, float)
+    axes = np.stack([np.asarray(right, float), np.asarray(up, float)], 1)
+    mesh = tessellate(hatch.region)
+    tris = np.zeros((0, 3, 2))
+    if mesh.has_faces and len(mesh.triangles):
+        tris = ((np.asarray(mesh.vertices, float) - target) @ axes)[
+            np.asarray(mesh.triangles)]
+    segs = np.asarray(hatch.line_segments(), float).reshape(-1, 2, 3)
+    dots = [(tuple(((np.asarray(c, float) - target) @ axes).tolist()), r)
+            for c, r in hatch.dots()]
+    return obj.id, tris, (segs - target) @ axes, dots
+
+
+def _clip_cut(shapes, cuttable, planes, target, right, up, also=()):
+    """Cut shapes with the half-spaces live clipping planes take away, the
+    way the GPU does in every other view (#94).
+
+    `planes` are section_caps.CapPlane, `cuttable` is aligned with
+    `shapes` and says which may be cut (not the planes themselves), and
+    `also` holds other cutters, a detail's own section, that a plane's cut
+    face is trimmed by but that this does not apply. Returns (cut_shapes,
+    regions, owners) as `_section_cut` does: the faces a plane leaves on a
+    solid, flattened into the detail's frame, so they hatch as a section's
+    do. One seen edge on covers nothing and is left out.
+    """
+    from ..core import geometry as g
+    target = np.asarray(target, float)
+    cutters = [_half_space(p.origin, p.normal, p.u, p.v,
+                           _reach(shapes, p.origin)) for p in planes]
+
+    def flat(pts):
+        return [(float(np.dot(np.subtract(p, target), right)),
+                 float(np.dot(np.subtract(p, target), up))) for p in pts]
+
+    def minus(shape, knives):
+        for knife in knives:
+            shape = g.boolean_difference(shape, knife)
+        return shape
+
+    out_shapes, regions, owners = [], [], []
+    for i, s in enumerate(shapes):
+        kind = g.shape_kind(s) if cuttable[i] else None
+        if kind not in _CLIPPED_KINDS:
+            out_shapes.append(s)
+            continue
+        try:
+            out_shapes.append(minus(s, cutters))
+        except Exception:                                  # noqa: BLE001
+            out_shapes.append(s)          # drawn whole rather than not at all
+            continue
+        if kind != "solid":
+            continue                      # no inside, so nothing to hatch
+        for k, plane in enumerate(planes):
+            try:
+                base = minus(s, [c for j, c in enumerate(cutters) if j != k]
+                             + list(also))
+                faces = g.section_regions(base, tuple(plane.origin),
+                                          tuple(plane.normal))
+            except Exception:                              # noqa: BLE001
+                continue
+            for face in faces:
+                loops = [poly for poly in map(flat, g.face_loops(face, 96))
+                         if len(poly) >= 3]
+                if loops and _area(loops[0]) > 1e-9 * _reach([s], target) ** 2:
+                    regions.append(loops)
+                    owners.append(i)
+    return out_shapes, regions, owners
+
+
+def _area(loop) -> float:
+    """The area a closed loop of (x, y) points encloses."""
+    pts = np.asarray(loop, float)
+    x, y = pts[:, 0], pts[:, 1]
+    return abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))) / 2
+
+
 def _section_cut(shapes, target, d, right, up, offset):
     """Cut shapes with a half-space in front of the section plane.
 
@@ -1394,19 +1726,7 @@ def _section_cut(shapes, target, d, right, up, offset):
     from ..core import geometry as g
 
     plane_pt = target + d * float(offset)
-    # extent large enough to swallow the whole scene
-    import numpy as np
-    diag = 0.0
-    for s in shapes:
-        mn, mx = g.bbox(s)
-        diag = max(diag, float(np.linalg.norm(np.subtract(mx, mn))),
-                   float(np.linalg.norm(np.subtract(mx, plane_pt))),
-                   float(np.linalg.norm(np.subtract(mn, plane_pt))))
-    L = diag * 2 + 10
-    corners = [plane_pt + right * sx * L + up * sy * L
-               for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
-    quad = g.make_polyline([tuple(c) for c in corners], closed=True)
-    cutter = g.extrude(g.planar_face(quad), tuple(d), L, cap=False)
+    cutter = _half_space(plane_pt, d, right, up, _reach(shapes, plane_pt))
 
     def flat(pts):
         """Model points onto the plane the detail is drawn on."""

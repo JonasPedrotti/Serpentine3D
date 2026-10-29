@@ -39,15 +39,19 @@ KEYBOARD_ONLY = {
         "the size of the sheet, which is not in the model at all",
     ("layout", "Paper height (mm)"):
         "the size of the sheet, which is not in the model at all",
-    ("text", "Text height (mm)"):
+    ("layout", "Paper width (in)"):
+        "the size of the sheet, which is not in the model at all",
+    ("layout", "Paper height (in)"):
+        "the size of the sheet, which is not in the model at all",
+    ("text", "Text height"):
         "annotation height on the printed sheet, not model space",
     ("hatch", "Line spacing"):
         "how dense the filling is over an area that is already drawn, "
         "with nothing on screen for a drag to measure it against; on a "
         "sheet it is paper millimetres besides",
-    ("dimstyle", "Text height (mm)"):
+    ("dimstyle", "Text height"):
         "a style setting with no geometry on screen to drag against",
-    ("dimstyle", "Arrow size (mm)"):
+    ("dimstyle", "Arrow size"):
         "a style setting with no geometry on screen to drag against",
     ("layer", "Edge width on screen (pixels)"):
         "a width in screen pixels, which has no length in the model",
@@ -71,9 +75,6 @@ _FIRST_OF_ITS_FLOW = (
 )
 
 NOTHING_TO_SHOW = {
-    ("point", "Next point (Enter to finish)"):
-        "each point object stands alone — nothing joins it to the last one, "
-        "so a rubber band back to it would draw a line that is not there",
     ("line", "Middle of line"): _FIRST_OF_ITS_FLOW,
     ("circle", "Start of diameter"): _FIRST_OF_ITS_FLOW,
     ("circle", "First point on circle"): _FIRST_OF_ITS_FLOW,
@@ -280,7 +281,7 @@ def test_every_silent_point_gives_a_reason(entry, reason):
 # the band is not standing in for anything and needs nothing behind it.
 CHAIN_IS_THE_SHAPE = {
     "polyline": "a polyline is exactly the segments between its points",
-    "point": "each pick is its own object, and the chain is drawn for the "
+    "points": "each pick is its own object, and the chain is drawn for the "
              "order alone",
     "leader": "a leader is the straight run of segments you picked",
     "hatch": "the boundary is the polygon through the points",

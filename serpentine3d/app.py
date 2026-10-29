@@ -163,7 +163,11 @@ class MainWindow(QMainWindow):
         self.properties = PropertiesPanel(
             self.scene, self.selection, self.history,
             # a sheet's selection belongs to whichever pane is showing it
-            viewport_source=lambda: self.active_viewport)
+            viewport_source=lambda: self.active_viewport,
+            # the model panes a clipping plane lists among its views
+            panes_source=lambda: [
+                (vp.view_key, self._viewport_title(vp))
+                for vp in self.all_viewports() if vp.space == "model"])
         self.properties.modelTextChanged.connect(
             self._model_text_changed_from_properties)
         self.properties.textTypographyChanged.connect(
@@ -171,6 +175,8 @@ class MainWindow(QMainWindow):
         self.properties.textPlacementChanged.connect(
             self._text_placement_changed)
         self.properties.lookAtTextRequested.connect(self._look_at_text)
+        self.properties.hatchPatternsRequested.connect(
+            self._run_hatch_patterns)
         self._text_placement_choice = "CPlane"
         self._look_at_text_restore = None
         self._prop_dock = QDockWidget("Properties", self)
@@ -243,6 +249,7 @@ class MainWindow(QMainWindow):
         self.ctx.add_echo_listener(self.command_line.echo)
         self.processor.add_listener(self._sync_command_state)
         self.processor.add_listener(self._resume_dropped_imports)
+        self.processor.add_listener(self._after_hatch_patterns)
 
         # wiring
         self.command_line.submitted.connect(self._on_submit)
@@ -251,11 +258,16 @@ class MainWindow(QMainWindow):
         self.command_line.keywordClicked.connect(self._on_keyword_chip)
         self.command_line.tabPressed.connect(self._toggle_direction_lock)
         self.command_line.input.textEdited.connect(self._live_preview)
+        self.layers_panel.said.connect(self.command_line.echo)
         self._wire_viewport(self.viewport)
         self.scene.add_listener(self._update_status)
         self.selection.add_listener(self._update_status)
         self.scene.add_listener(self._refresh_space_tabs)
         self._refresh_space_tabs()
+        # A plane added, paused or switched off in a view starts or stops
+        # it cutting a pane, which the pane's title says.
+        self.scene.add_listener(self._refresh_viewport_titles,
+                                kinds=("objects",))
 
         self._user_shortcuts: list = []
         self.apply_user_aliases()
@@ -518,6 +530,7 @@ class MainWindow(QMainWindow):
         self._wire_viewport(vp)
         self.dock_viewports.append(vp)
         dock = self._dock_viewport(vp, "Viewport", closable=True)
+        vp.view_key = dock.objectName()       # its own, to a clipping plane
         areas = {"Right": Qt.DockWidgetArea.RightDockWidgetArea,
                  "Left": Qt.DockWidgetArea.LeftDockWidgetArea,
                  "Top": Qt.DockWidgetArea.TopDockWidgetArea,
@@ -540,15 +553,27 @@ class MainWindow(QMainWindow):
 
     def _viewport_title(self, vp) -> str:
         """What a pane is showing, in the order you would say it: the view,
-        then how it is drawn. A layout says which sheet instead of the view,
-        since a sheet has no camera to name."""
+        then how it is drawn, then whether a clipping plane cuts it. A
+        layout says which sheet instead of the view, since a sheet has no
+        camera to name.
+
+        A hidden plane still cuts, as in Rhino, with nothing on screen to
+        show it, so a model missing a part says why where you look first,
+        and the title's menu lists the planes."""
         if vp.space == "model":
             place = vp._view_name.capitalize()
         else:
             lay = next((l for l in self.scene.layouts if l.id == vp.space),
                        None)
             place = lay.name if lay else "Layout"
-        return f"{place} · {vp.display_mode.capitalize()}"
+        title = f"{place} · {vp.display_mode.capitalize()}"
+        return f"{title} · Cut" if vp.is_cut() else title
+
+    def _refresh_viewport_titles(self):
+        """Every pane's title again: a change to the drawing can start or
+        stop a clipping plane cutting one."""
+        for vp in self.all_viewports():
+            self._update_viewport_dock_title(vp)
 
     def _update_viewport_dock_title(self, vp):
         dock = vp.parentWidget()
@@ -598,6 +623,7 @@ class MainWindow(QMainWindow):
                    lambda m=mode: vp.set_display_mode(m))
         self._action(menu, "Display settings…", None,
                      lambda: self._show_display_settings(vp))
+        self._clip_planes_menu(vp, menu)
         if self.scene.layouts:
             # A space tab swaps the whole arrangement, but a space is still
             # a property of one pane underneath, and this is where you say
@@ -620,6 +646,69 @@ class MainWindow(QMainWindow):
         self._action(menu, "Single Viewport", None,
                      lambda: self.run_command("1view"))
         return menu
+
+    def _clip_planes_menu(self, vp, menu):
+        """Which clipping planes cut this pane, each one a tick to switch
+        it off or on here and nowhere else (core/clipping.py). Inside a
+        detail it is the detail that is cut; on bare paper, or with no
+        planes to list, there is nothing to offer.
+
+        A hidden plane cuts too, so it is listed, said to be hidden, and
+        Show Hidden Planes brings every one of them back in sight."""
+        from .core import clipping
+        view = vp.clip_view()
+        planes = clipping.planes_of(self.scene)
+        if view is None or not planes:
+            return
+        # Made with its parent rather than by addMenu(title), whose menu
+        # PySide6 deletes with the Python name for it, here at the return.
+        sub = QMenu("Clipping Planes", menu)
+        menu.addMenu(sub)
+        for obj in planes:
+            act = sub.addAction(clipping.label(self.scene, obj))
+            act.setCheckable(True)
+            act.setChecked(view not in obj.clip_plane.get("off_in", ()))
+            act.triggered.connect(
+                lambda on, i=obj.id: self.set_clip_view(i, view, on))
+        hidden = [o.id for o in planes if clipping.hidden(self.scene, o)]
+        if hidden:
+            sub.addSeparator()
+            act = sub.addAction("Show Hidden Planes")
+            act.triggered.connect(
+                lambda _on=False, ids=tuple(hidden):
+                self.show_clipping_planes(ids))
+
+    def show_clipping_planes(self, plane_ids) -> int:
+        """Bring hidden clipping planes back in sight, as one undo step:
+        each plane, and its layer and the layers above that. Returns how
+        many came back."""
+        from .core import clipping
+        scene = self.scene
+        planes = [scene.get(i) for i in plane_ids]
+        planes = [o for o in planes
+                  if o is not None and clipping.hidden(scene, o)]
+        if not planes:
+            return 0
+        self.history.checkpoint("show clipping planes")
+        layers = scene.layers
+        with scene.batched():
+            for obj in planes:
+                if not obj.visible:
+                    scene.update(obj.id, visible=True)
+                for layer in [layers.get(obj.layer_id),
+                              *layers.ancestors(obj.layer_id)]:
+                    if not layer.visible:
+                        layers.set_visible(layer.id, True)
+            scene.notify()
+        return len(planes)
+
+    def set_clip_view(self, plane_id: str, view: str, on: bool) -> bool:
+        """Switch one clipping plane on or off in one view, as one undo
+        step. Returns whether anything changed."""
+        from .core import clipping
+        return clipping.switch(
+            self.scene, plane_id, view, on,
+            before=lambda: self.history.checkpoint("clipping plane views"))
 
     def _show_display_settings(self, vp):
         """Open one set of controls for the pane whose menu was used."""
@@ -728,6 +817,9 @@ class MainWindow(QMainWindow):
                 # primary's world XY back is what left Front and Right
                 # looking straight down the plane they had to pick on
                 aux.set_view(view)                 # named orthographic view
+                # and the pane a clipping plane knows it by, whatever it
+                # is turned to later (core/clipping.py)
+                aux.view_key = view
                 aux.camera.target = self.viewport.camera.target.copy()
                 aux.camera.distance = self.viewport.camera.distance
                 self._wire_viewport(aux)
@@ -866,6 +958,8 @@ class MainWindow(QMainWindow):
         bar.setOrientation(Qt.Orientation.Vertical)
         bar.setMovable(False)
         groups = [
+            [("Point", "point",
+              ("Multiple points, finish with Enter or right-click", "points"))],
             [("Line", "line"), ("Polyline", "polyline"), ("Curve", "curve"),
              ("Circle", "circle"), ("Arc", "arc"), ("Rectangle", "rectangle")],
             [("Extrude", "extrude"), ("Revolve", "revolve"),
@@ -1200,6 +1294,14 @@ class MainWindow(QMainWindow):
         if (self._cursor_preview is not None
                 and self._cursor_preview[0] is not req):
             self._cursor_preview = None
+        if req is not getattr(self, "_lock_request", None):
+            # A held direction is for the point it was taken for. A command
+            # that never moves its base (points) would keep it otherwise,
+            # and every point after an elevator would be stuck on its axis.
+            self._lock_request = req
+            for vp in self.all_viewports():
+                vp.dir_lock = None
+                vp._lock_owner = None
         active = self.processor.active
         self.properties.set_model_text_command_active(
             active is not None and active.name == "textobject")
@@ -1545,17 +1647,53 @@ class MainWindow(QMainWindow):
         from .ui.form_dialog import FormDialog
         self._form_dialog_open = True
         try:
-            dialog = FormDialog(form, parent=self)
+            dialog = FormDialog(form, parent=self,
+                                changed=lambda values: self._ghost_form(
+                                    form, values))
             accepted = dialog.exec() == QDialog.DialogCode.Accepted
             values = dialog.values() if accepted else None
         finally:
             self._form_dialog_open = False
+            if form.preview_fn is not None:
+                for vp in self.all_viewports():
+                    vp.set_ghost(None)
         if self.processor.form is not form:
             return                      # answered another way meanwhile
         if values is None:
             self.processor.cancel()
         else:
             self.processor.provide_form(values)
+
+    def _run_hatch_patterns(self, action: str):
+        """Load or Delete patterns… from a pattern list in Properties. A
+        load that brings patterns switches that list to the first of them
+        once the command is over, so the pick that asked for the file gets
+        what was in it."""
+        before = self.scene.loaded_patterns
+        self._patterns_awaited = before if action == "Load" else None
+        self.run_command(f"hatchpatterns {action}")
+
+    def _after_hatch_patterns(self):
+        before = getattr(self, "_patterns_awaited", None)
+        if before is None or self.processor.busy:
+            return
+        self._patterns_awaited = None
+        loaded = self.scene.loaded_patterns
+        if loaded is not before:
+            self.properties.use_loaded_pattern(loaded)
+
+    def _ghost_form(self, form, values):
+        """What a popup's answers would make, ghosted in every pane while
+        it is open: a hatch's pattern, spacing and angle are seen on the
+        region before OK, not after."""
+        if form.preview_fn is None:
+            return
+        try:
+            shape = form.preview_fn(values)
+        except Exception:                                  # noqa: BLE001
+            shape = None
+        for vp in self.all_viewports():
+            vp.set_ghost(shape)
 
     def _offer_file_picker(self, req):
         """Let a live command's pending FileReq use the window chooser."""
@@ -1628,7 +1766,8 @@ class MainWindow(QMainWindow):
 
     def _on_detail_entered(self, detail):
         """A click stepped into a detail instead of placing a point."""
-        self.ctx.echo(f"Now drawing inside the detail ({detail.scale_text()})"
+        self.ctx.echo("Now drawing inside the detail "
+                      f"({detail.scale_text(self.scene.units)})"
                       " — pick again to place the point.")
         self._update_status()
 
@@ -1640,17 +1779,40 @@ class MainWindow(QMainWindow):
         req = self.processor.request
         if isinstance(req, PointReq) and getattr(req, "preview_fn", None):
             self._cursor_preview = (req, point)
-            # ghost of the pending result under the cursor, ~30Hz cap
-            from PySide6.QtCore import QElapsedTimer
+            # A cheap ghost follows every move. An expensive one is capped
+            # at ~30Hz, and the move it skipped is drawn once the gap is up,
+            # or it is left behind where the cursor stopped.
+            from PySide6.QtCore import QElapsedTimer, QTimer
             timer = getattr(self, "_ghost_timer", None)
-            due = timer is None or timer.elapsed() >= 33
+            gap = 33 if getattr(self, "_ghost_cost_ms", 0.0) > 4.0 else 0
+            due = timer is None or timer.elapsed() >= gap
             if timer is None:
                 timer = self._ghost_timer = QElapsedTimer()
+            trail = getattr(self, "_ghost_trail", None)
+            if trail is None:
+                trail = self._ghost_trail = QTimer(self)
+                trail.setSingleShot(True)
+                trail.timeout.connect(self._trailing_ghost)
             if due:
+                trail.stop()
                 timer.restart()
-                ghost = self.processor.preview_for(point)
-                for vp in self.all_viewports():
-                    vp.set_ghost(ghost)
+                self._show_cursor_ghost(point)
+            else:
+                trail.start(max(1, gap - timer.elapsed()))
+
+    def _show_cursor_ghost(self, point):
+        from time import perf_counter
+        start = perf_counter()
+        ghost = self.processor.preview_for(point)
+        for vp in self.all_viewports():
+            vp.set_ghost(ghost)
+        self._ghost_cost_ms = (perf_counter() - start) * 1000.0
+
+    def _trailing_ghost(self):
+        pending = self._cursor_preview
+        if pending is not None and pending[0] is self.processor.request:
+            self._ghost_timer = None
+            self._show_cursor_ghost(pending[1])
 
     def _refresh_rubber(self, cursor, source=None):
         """`source` is the pane the cursor is in, and gets the number."""
@@ -1672,7 +1834,7 @@ class MainWindow(QMainWindow):
             # of the shape it was meant to help place. The number it carried is
             # still wanted, so it is asked for as sides instead of a length.
             if len(chain) >= 2 and sides is None and req.rubber_band:
-                arr = np.asarray(chain, np.float32)
+                arr = np.asarray(chain, float)
                 segs = np.stack([arr[:-1], arr[1:]], axis=1)
         # in every pane, for the same reason the picked points already are:
         # world points with a line between them, and each pane knows how to
@@ -1691,10 +1853,13 @@ class MainWindow(QMainWindow):
         return obj is not None and obj.kind == "curve"
 
     def _delete_selected(self):
-        if self.viewport.space != "model":
-            # On a sheet the pick is the layout's own, not the scene's.
-            if self.viewport.layout_view.delete_selected():
-                self.viewport.update()
+        lv = self.ctx.sheet_view()
+        if lv is not None:
+            # On bare paper the pick is the layout's own, not the scene's.
+            # Inside a detail it is the model's, seen through the detail,
+            # by the same rule Copy and the commands go by (#93).
+            if lv.delete_selected():
+                lv.vp.update()
                 self._update_status()
             return
         # A held control point, face or curve segment is as much a pick as
@@ -1897,7 +2062,8 @@ class MainWindow(QMainWindow):
             self._open_path(path)
 
     def _import_showing_progress(self, path: str, scene=None,
-                                 replace: bool = False) -> int:
+                                 replace: bool = False,
+                                 notes: list | None = None) -> int:
         """Import `path`, showing what it is doing and offering a way out.
 
         A set-design .3dm is minutes of work; with no dialog the window simply
@@ -1925,7 +2091,7 @@ class MainWindow(QMainWindow):
         try:
             return fileio.import_file(scene or self.scene, path,
                                       progress=fileio.throttled(report),
-                                      replace=replace)
+                                      replace=replace, notes=notes)
         finally:
             dlg.close()
 
@@ -1934,13 +2100,15 @@ class MainWindow(QMainWindow):
         welcome screen)."""
         try:
             self.history.checkpoint("open")
-            self._import_showing_progress(path, replace=True)
+            notes = []
+            self._import_showing_progress(path, replace=True, notes=notes)
             if self.journal is not None:
                 self.journal.note_load(path)
             if path.endswith(".serp"):
                 self.ctx.current_path = path
             self.command_line.echo(
-                f"Opened {path}: {len(self.scene.all())} object(s).")
+                f"Opened {path}: {len(self.scene.all())} object(s)"
+                + "".join(f", {note}" for note in notes) + ".")
             self.viewport.zoom_extents()
             self.mark_saved()
             self.add_recent(path)
@@ -2178,8 +2346,11 @@ class MainWindow(QMainWindow):
                 self.scene.notify("layouts")
                 self.command_line.echo(f"Imported {n} object(s).")
                 return
-            n = self._import_showing_progress(path)
-            self.command_line.echo(f"Imported {n} object(s).")
+            notes = []
+            n = self._import_showing_progress(path, notes=notes)
+            self.command_line.echo(
+                f"Imported {n} object(s)"
+                + "".join(f", {note}" for note in notes) + ".")
             self.viewport.zoom_extents()
         except fileio.Cancelled:
             self.history.discard_checkpoint()
@@ -2454,6 +2625,7 @@ class MainWindow(QMainWindow):
         """Create a new paper-space drafting sheet and switch to it — the '+'
         button's action, i.e. 'layout' > New in one click."""
         from .core.layout import PAPER_SIZES, Layout
+        from .utils.units import format_paper_size
         w, h = PAPER_SIZES.get(paper, PAPER_SIZES["A3"])
         if not landscape:
             w, h = h, w
@@ -2463,7 +2635,8 @@ class MainWindow(QMainWindow):
         self.scene.notify()
         self.switch_space(lay.id)
         self.command_line.echo(
-            f"Created sheet '{lay.name}' ({w:g}x{h:g}mm). "
+            f"Created sheet '{lay.name}' "
+            f"({format_paper_size(w, h, self.scene.units)}). "
             "Use 'detail' to place model views.")
         return lay
 
@@ -2584,10 +2757,12 @@ class MainWindow(QMainWindow):
         which leaves you where you were: a copy you made by hand is a copy
         you are about to change.
         """
+        from .core import clipping
         from .core.layout import unique_layout_name
         self.history.checkpoint("duplicate layout")
         dup = lay.duplicate(
             unique_layout_name(self.scene.layouts, f"{lay.name} copy"))
+        clipping.carry_views(self.scene, lay.copied_details(dup))
         self.scene.layouts.append(dup)
         self.scene.notify("layouts")
         self.switch_space(dup.id)

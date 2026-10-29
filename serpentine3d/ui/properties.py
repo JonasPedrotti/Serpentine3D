@@ -25,15 +25,21 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from ..core import clipping
 from ..core import geometry as g
 from ..core import user_text as ut
-from ..core.layers import (HATCH_INK, HATCH_LAYER_COLOR, MAX_CUT_LINE_WIDTH,
+from ..core.layers import (HATCH_BACKGROUND_NONE, HATCH_INK,
+                           HATCH_LAYER_COLOR, MAX_CUT_LINE_WIDTH,
                            MIN_HATCH_SPACING, PATH_SEPARATOR,
                            hatch_token_rgb, section_fill_dict)
 from ..core.layout import (PAPER_SIZES, SECTION_FILLS, DetailView,
-                           PaperObject, TextNote, parse_scale, sheet_label)
+                           PaperObject, TextNote, hatch_patterns_of,
+                           parse_scale, pattern_label, scale_presets,
+                           section_fills_of, sheet_label)
 from ..core.text import TextShape
 from ..core.linetype import LINETYPES
+from ..utils.units import (TO_MM, format_paper_length, format_paper_size,
+                           paper_units)
 from . import icons, theme
 from .dock_title import DockTitleBar
 from .layout_view import LINE_VISIBLE
@@ -52,15 +58,38 @@ HATCH_ANGLES = ("0", "30", "45", "60", "90", "135")
 HATCH_SPACINGS = ("1", "1.5", "2", "2.5", "3", "4", "5")
 CUT_LINE_NONE = "None"                 # a cut with no line round it
 _INK_SWATCH = (0.06, 0.06, 0.07)       # how Ink shows in the colour list
-_LINED = ("lines", "cross")            # the fills that are drawn as lines
+_UNLINED = ("none", "solid")           # the fills with no lines to space
+# the pattern lists' last entries: {item data: hatchpatterns action}
+_PATTERN_ACTIONS = {"load-patterns": "Load", "delete-patterns": "Delete"}
+
+
+def _fill_patterns(combo, names, keep: int = 0):
+    """Put a drawing's patterns in a pattern drop-down, after its first
+    `keep` entries, then Load patterns… and Delete patterns…, which run
+    `hatchpatterns` (#92).
+    A pattern list is filled each time it is shown, so a pattern loaded
+    since is offered at once."""
+    with QSignalBlocker(combo):
+        while combo.count() > keep:
+            combo.removeItem(keep)
+        for name in names:
+            combo.addItem(pattern_label(name), name)
+        combo.insertSeparator(combo.count())
+        combo.addItem("Load patterns…", "load-patterns")
+        combo.addItem("Delete patterns…", "delete-patterns")
+
+
+def _with(names, extra) -> tuple:
+    """`names`, then whichever of `extra` they leave out: a pattern a
+    layer or a hatch names that the drawing has not loaded is still
+    shown as what it is."""
+    known = {n.lower() for n in names}
+    return (*names, *(e for e in extra if e and e.lower() not in known))
 _BY_LAYER = "By layer"                 # an object taking its layer's value
+_BY_LAYER_TOKEN = "bylayer"
 
 # the tab mark for more than one layer, which have no one colour between them
 _MIXED_MARK = (0.6, 0.6, 0.62)
-
-# the scales an architect draws at, smallest denominator first; anything else
-# is typed in and read by the same rules as the `detailscale` command
-SCALE_PRESETS = ["1:1", "1:2", "1:5", "1:10", "1:20", "1:50", "1:100", "1:200"]
 
 # what the Convert button says for each geometry output of model text
 CONVERT_LABELS = {"curves": "Convert to curves",
@@ -116,10 +145,13 @@ class _Look(NamedTuple):
     cut_line_width: float
     cut_line_color: str
     cut_rgb: tuple | None
+    background: str = HATCH_BACKGROUND_NONE
+    background_rgb: tuple | None = None
 
 
 # how each part of a section's look is named in an undo step
 _LOOK_WORDS = {"angle": "angle", "spacing": "spacing", "color": "colour",
+               "background": "background",
                "cut_line_width": "cut line width",
                "cut_line_color": "cut line colour"}
 
@@ -140,20 +172,26 @@ def _number_combo(values, setter, tip: str) -> QComboBox:
 class _TokenColour:
     """A colour kept as a token, "ink", "layer" or "#rrggbb", as a
     drop-down: Ink, Layer colour, the colour of its own when it has one,
-    and Choose…, which asks for one.
+    and Choose…, which asks for one. Other lists start from other entries
+    (`first`): a background from None, a hatch's own from By layer.
 
     `chosen(token)` is told of every pick; `revert()` puts the page back
     when the colour dialog is closed without a choice.
     """
 
-    def __init__(self, chosen, revert, title: str, tip: str):
+    def __init__(self, chosen, revert, title: str, tip: str,
+                 first=(("Ink", HATCH_INK, _INK_SWATCH),)):
         self._chosen = chosen
         self._revert = revert
         self._title = title
         self._start = None
         self._showing = False
         self.combo = QComboBox()
-        self.combo.addItem(icons.swatch(_INK_SWATCH), "Ink", HATCH_INK)
+        for label, token, swatch in first:
+            if swatch is None:
+                self.combo.addItem(label, token)
+            else:
+                self.combo.addItem(icons.swatch(swatch), label, token)
         self.combo.addItem("Layer colour", HATCH_LAYER_COLOR)
         self.combo.addItem("Choose…", "choose")
         self.combo.setToolTip(tip)
@@ -207,9 +245,10 @@ class _HatchLook:
     "color", "cut_line_width" or "cut_line_color", and only of one that
     changes something; `revert()` puts the page back when what was typed
     is not a number, or a colour dialog closed without a choice. A hatch
-    row shows only where the patterns shown have a use for it: angle and
-    spacing are a line pattern's, and None has no colour to be drawn in.
-    Every pattern has a cut line, None too: an empty cut is all outline.
+    row shows only where the patterns shown have a use for it: angle,
+    spacing and background are a line pattern's, and None has no colour
+    to be drawn in. Every pattern has a cut line, None too: an empty cut
+    is all outline.
     """
 
     def __init__(self, changed, revert):
@@ -232,6 +271,14 @@ class _HatchLook:
             "The colour a cut's hatch or fill is drawn in: Ink is the near "
             "black the rest of the sheet is drawn in")
         self.color = self._hatch_ink.combo
+        self._ground = _TokenColour(
+            lambda token: self._offer("background", token), revert,
+            "Hatch background",
+            "What a hatch shows under its lines: None leaves it bare, a "
+            "cut a darker shade of its object on screen; a colour fills it, "
+            "on screen and on paper",
+            first=(("None", HATCH_BACKGROUND_NONE, None),))
+        self.background = self._ground.combo
         self.cut_width = _number_combo(
             (CUT_LINE_NONE, *PRINT_WIDTHS), self._cut_width_edited,
             "How wide the line round a cut face is on the printed sheet, in "
@@ -248,6 +295,7 @@ class _HatchLook:
         form.addRow("Hatch angle (°)", self.angle)
         form.addRow("Hatch spacing (mm)", self.spacing)
         form.addRow("Hatch colour", self.color)
+        form.addRow("Hatch background", self.background)
         form.addRow("Cut line (mm)", self.cut_width)
         form.addRow("Cut line colour", self.cut_color)
 
@@ -263,15 +311,18 @@ class _HatchLook:
                               {_width_text(k.spacing) for k in looks})
             self._hatch_ink.show({k.color for k in looks}, looks[0].rgb,
                                  layer_rgb)
+            self._ground.show({k.background for k in looks},
+                              looks[0].background_rgb, layer_rgb)
             _show_common_text(self.cut_width,
                               {_cut_width_text(k.cut_line_width)
                                for k in looks})
             self._cut_ink.show({k.cut_line_color for k in looks},
                                looks[0].cut_rgb, layer_rgb)
             patterns = {k.pattern for k in looks}
-            lined = any(p in _LINED for p in patterns)
+            lined = any(p.lower() not in _UNLINED for p in patterns)
             self._form.setRowVisible(self.angle, lined)
             self._form.setRowVisible(self.spacing, lined)
+            self._form.setRowVisible(self.background, lined)
             self._form.setRowVisible(self.color, bool(patterns - {"none"}))
             self._form.setRowVisible(self.cut_width, True)
             self._form.setRowVisible(self.cut_color, True)
@@ -279,14 +330,15 @@ class _HatchLook:
             self._showing = False
 
     def hide(self):
-        for row in (self.angle, self.spacing, self.color, self.cut_width,
-                    self.cut_color):
+        for row in (self.angle, self.spacing, self.color, self.background,
+                    self.cut_width, self.cut_color):
             self._form.setRowVisible(row, False)
 
     def _offer(self, key: str, value):
         """Pass an edit on, unless every look shown has it already."""
         if all(getattr(k, key) == value for k in self._looks):
-            if key in ("color", "cut_line_color", "cut_line_width"):
+            if key in ("color", "background", "cut_line_color",
+                       "cut_line_width"):
                 self._revert()          # the row has moved off it
             return
         self._changed(key, value)
@@ -334,13 +386,14 @@ def _paper_and_turn(layout) -> tuple:
     return None, turn
 
 
-def _paper_name(w: float, h: float) -> str:
-    """A3 landscape, or the size in millimetres when it is not a standard."""
+def _paper_name(w: float, h: float, units: str) -> str:
+    """A3 landscape, or the size when it is not a standard, in the units
+    the sheet is read in."""
     class _Sheet:
         paper_w, paper_h = w, h
     name, turn = _paper_and_turn(_Sheet)
     return (f"{name} {turn.lower()}" if name
-            else f"{w:g} × {h:g} mm {turn.lower()}")
+            else f"{format_paper_size(w, h, units)} {turn.lower()}")
 
 
 class _DetailLayers(QWidget):
@@ -423,6 +476,146 @@ class _DetailLayers(QWidget):
         layer_id = self.add.itemData(index)
         if layer_id is not None:
             self.hide_layer(layer_id)
+
+
+def _cleared(layout):
+    """Empty a layout of the rows a list widget built last time."""
+    while layout.count():
+        row = layout.takeAt(0)
+        if row.widget() is not None:
+            row.widget().deleteLater()
+
+
+def _detail_label(detail, view_name: str, units: str) -> str:
+    """A detail as a list of views names it: the view it looks along and
+    its scale, which is what tells two details on one sheet apart."""
+    if detail.perspective:
+        return view_name
+    return f"{view_name} {detail.scale_text(units)}"
+
+
+class _ClipViews(QWidget):
+    """The views a clipping plane cuts, a tick each: the model panes, then
+    each sheet's details under the sheet's name (core/clipping.py), and
+    Paused above them, which stops it cutting any of them and keeps the
+    ticks for when it resumes. `switch(key, on)` and `pause(paused)` are
+    told what was clicked."""
+
+    def __init__(self, switch, pause):
+        super().__init__()
+        self._switch = switch
+        self._pause = pause
+        self._boxes: list = []          # (key, QCheckBox), in the order shown
+        self._sheets: list = []
+        self.paused = QCheckBox("Paused")
+        self.paused.setToolTip("Cut no view until it is unticked; the "
+                               "views ticked below come back then")
+        self.paused.toggled.connect(lambda on: self._pause(on))
+        self._rows = QVBoxLayout()
+        self._rows.setContentsMargins(0, 0, 0, 0)
+        self._rows.setSpacing(2)
+        column = QVBoxLayout(self)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(4)
+        column.addWidget(self.paused)
+        column.addLayout(self._rows)
+
+    def show_for(self, plane, panes, layouts, view_name, units):
+        """`panes` is (key, label) for each model pane; `view_name` names
+        the view a detail looks along, and `units` are the document's,
+        which its scale is written in."""
+        setting = plane.clip_plane or {}
+        off = set(setting.get("off_in", ()))
+        with QSignalBlocker(self.paused):
+            self.paused.setChecked(not setting.get("enabled"))
+        _cleared(self._rows)
+        self._boxes = []
+        self._sheets = []
+
+        def tick(key, label):
+            box = QCheckBox(label)
+            box.setChecked(key not in off)
+            box.setEnabled(bool(setting.get("enabled")))
+            box.toggled.connect(lambda on, k=key: self._switch(k, on))
+            self._rows.addWidget(box)
+            self._boxes.append((key, box))
+
+        def heading(text):
+            label = QLabel(text)
+            label.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+            self._rows.addWidget(label)
+
+        if panes:
+            heading("Model")
+            for key, label in panes:
+                tick(key, label)
+        for lay in layouts:
+            if not lay.details:
+                continue
+            heading(lay.name)
+            self._sheets.append(lay.name)
+            seen = Counter()
+            for detail in lay.details:
+                label = _detail_label(detail, view_name(detail), units)
+                seen[label] += 1
+                tick(detail.id, label if seen[label] == 1
+                     else f"{label} ({seen[label]})")
+
+    # read by the tests, and a summary of what the rows say
+    def views(self) -> list:
+        return [(key, box.text(), box.isChecked())
+                for key, box in self._boxes]
+
+    def sheets(self) -> list:
+        return list(self._sheets)
+
+    def cutting(self) -> bool:
+        return not self.paused.isChecked()
+
+    def views_enabled(self) -> bool:
+        return all(box.isEnabled() for _key, box in self._boxes)
+
+    def set_view(self, key: str, on: bool):
+        for k, box in self._boxes:
+            if k == key:
+                box.setChecked(on)
+
+    def set_cutting(self, on: bool):
+        self.paused.setChecked(not on)
+
+
+class _DetailClips(QWidget):
+    """The clipping planes that cut a detail, a tick each, so a plan can
+    be cut at sill height and the elevation beside it not at all
+    (core/clipping.py). `switch(plane id, on)` is told what was clicked."""
+
+    def __init__(self, switch):
+        super().__init__()
+        self._switch = switch
+        self._boxes: list = []          # (plane id, QCheckBox)
+        self._rows = QVBoxLayout(self)
+        self._rows.setContentsMargins(0, 0, 0, 0)
+        self._rows.setSpacing(2)
+
+    def show_for(self, detail, planes):
+        """`planes` as (plane, the label it is listed by)."""
+        _cleared(self._rows)
+        self._boxes = []
+        for obj, label in planes:
+            setting = obj.clip_plane
+            box = QCheckBox(label)
+            box.setChecked(detail.id not in setting.get("off_in", ()))
+            box.toggled.connect(lambda on, i=obj.id: self._switch(i, on))
+            self._rows.addWidget(box)
+            self._boxes.append((obj.id, box))
+
+    def planes(self) -> list:
+        return [(box.text(), box.isChecked()) for _i, box in self._boxes]
+
+    def set_plane(self, plane_id: str, on: bool):
+        for i, box in self._boxes:
+            if i == plane_id:
+                box.setChecked(on)
 
 
 class _PairTable(QTableWidget):
@@ -753,9 +946,12 @@ class PropertiesPanel(QWidget):
     # What is live, or which of it is shown, may have changed: the title bar
     # redraws its tabs from subjects() and shown().
     subjectsChanged = Signal()
+    # Load or Delete patterns… was picked in a pattern list: the
+    # hatchpatterns action to run (#92)
+    hatchPatternsRequested = Signal(str)
 
     def __init__(self, scene, selection, history, parent=None,
-                 viewport_source=None):
+                 viewport_source=None, panes_source=None):
         super().__init__(parent)
         self.scene = scene
         self.selection = selection
@@ -763,6 +959,9 @@ class PropertiesPanel(QWidget):
         # What is picked on a sheet is held by the layout view of whichever
         # pane is showing it, so the panel has to be able to go and ask.
         self._viewport_source = viewport_source
+        # The window's model panes, (view key, title), which a clipping
+        # plane lists among the views it cuts
+        self._panes_source = panes_source
         self._updating = False
         # {object id: (scene revision, what it measured)}. Exact mass
         # properties cost between 86 and 486 ms on one solid of an ordinary
@@ -820,8 +1019,7 @@ class PropertiesPanel(QWidget):
             self._change_print_width)
         self.section_hatch = QComboBox()
         self.section_hatch.addItem(_BY_LAYER, "bylayer")
-        for name in SECTION_FILLS:
-            self.section_hatch.addItem(name.capitalize(), name)
+        _fill_patterns(self.section_hatch, SECTION_FILLS, keep=1)
         self.section_hatch.setToolTip(
             "What a section cut through this object is filled with: By "
             "layer takes its layer's, anything else is its own, starting "
@@ -839,13 +1037,15 @@ class PropertiesPanel(QWidget):
         self.lineweight_edit.setToolTip("Printed width in millimetres")
         self.lineweight_edit.editingFinished.connect(self._change_lineweight)
 
-        # a detail only: its scale, picked from the presets or typed. Picking
+        # a detail only: its scale, picked from the presets or typed, and
+        # read by the same rules as the `detailscale` command. Picking
         # applies at once; typing applies on Enter, so the half-typed "1:1"
-        # on the way to "1:100" is never taken for a choice.
+        # on the way to "1:100" is never taken for a choice. The presets
+        # are the document's units' (`_show_scale`).
         self.scale_combo = QComboBox()
         self.scale_combo.setEditable(True)
         self.scale_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.scale_combo.addItems(SCALE_PRESETS)
+        self.scale_combo.addItems(scale_presets(self.scene.units))
         self.scale_combo.setToolTip("Detail scale, e.g. 1:50")
         self.scale_combo.currentTextChanged.connect(self._scale_chosen)
         self.scale_combo.lineEdit().editingFinished.connect(self._scale_typed)
@@ -877,6 +1077,11 @@ class PropertiesPanel(QWidget):
         # a detail only: the layers it leaves out (#38)
         self.detail_layers = _DetailLayers(self._set_detail_layers)
         form.addRow("Hidden here", self.detail_layers)
+        # a detail's clipping planes, and a clipping plane's views
+        self.detail_clips = _DetailClips(self._set_detail_clip)
+        form.addRow("Clipped by", self.detail_clips)
+        self.clip_views = _ClipViews(self._set_clip_view, self._pause_clip)
+        form.addRow("Cuts", self.clip_views)
         form.addRow("Info", self.measure_label)
         self.text_content = QPlainTextEdit()
         self.text_content.setObjectName("text_content")
@@ -966,8 +1171,7 @@ class PropertiesPanel(QWidget):
         self.hatch_pattern = QComboBox()
         self.hatch_pattern.setObjectName("hatch_pattern")
         from ..core.layout import HATCH_PATTERNS
-        for name in HATCH_PATTERNS:
-            self.hatch_pattern.addItem(name.capitalize(), name)
+        _fill_patterns(self.hatch_pattern, HATCH_PATTERNS)
         self.hatch_pattern.currentIndexChanged.connect(self._change_hatch)
         form.addRow("Pattern", self.hatch_pattern)
         self.hatch_spacing = QDoubleSpinBox()
@@ -986,6 +1190,28 @@ class PropertiesPanel(QWidget):
             "Angle of the lines, from the x axis of the plane it was drawn on")
         self.hatch_angle.valueChanged.connect(self._change_hatch)
         form.addRow("Angle", self.hatch_angle)
+        # Its colour and background: its layer's hatch colour and
+        # background unless it says otherwise (#91).
+        self._hatch_ink = _TokenColour(
+            lambda token: self._set_hatch_style("color", token),
+            self._show_hatch, "Hatch colour",
+            "The colour the hatch's lines are drawn in: By layer is its "
+            "layer's hatch colour",
+            first=((_BY_LAYER, _BY_LAYER_TOKEN, None),
+                   ("Ink", HATCH_INK, _INK_SWATCH)))
+        self.hatch_color = self._hatch_ink.combo
+        self.hatch_color.setObjectName("hatch_color")
+        form.addRow("Hatch colour", self.hatch_color)
+        self._hatch_ground = _TokenColour(
+            lambda token: self._set_hatch_style("background", token),
+            self._show_hatch, "Hatch background",
+            "What the hatch shows under its lines: By layer is its layer's "
+            "hatch background, None leaves it bare",
+            first=((_BY_LAYER, _BY_LAYER_TOKEN, None),
+                   ("None", HATCH_BACKGROUND_NONE, None)))
+        self.hatch_background = self._hatch_ground.combo
+        self.hatch_background.setObjectName("hatch_background")
+        form.addRow("Hatch background", self.hatch_background)
         self._hatch_checkpoint_id = None
 
         # The keys and values a model object carries, Rhino's Attribute User
@@ -1058,10 +1284,25 @@ class PropertiesPanel(QWidget):
         return self._sheet_picks("object")
 
     def _detail_pick(self) -> DetailView | None:
-        """The one detail picked on the sheet, or None: the scale row, like
-        every other row here, edits a single thing."""
+        """The one detail picked on the sheet, or the one you are inside
+        with nothing picked, or None: the scale row, like every other row
+        here, edits a single thing."""
         picks = self._sheet_picks("detail")
-        return picks[0] if len(picks) == 1 else None
+        if picks:
+            return picks[0] if len(picks) == 1 else None
+        return self._detail_here()
+
+    def _detail_here(self) -> DetailView | None:
+        """The detail the pane is inside, while nothing in the model is
+        picked: what you are looking through is what there is to show, as
+        Rhino's Properties show an active detail (#93). Once something is
+        picked inside it, that is what the panel is about."""
+        src = self._viewport_source
+        vp = src() if src is not None else None
+        if (vp is None or getattr(vp, "space", "model") == "model"
+                or self.selection.ids or self.selection.subobjects):
+            return None
+        return vp.layout_view._entered()
 
     def _current(self) -> tuple:
         """What the editors here act on: (object, on_paper).
@@ -1098,6 +1339,7 @@ class PropertiesPanel(QWidget):
             self._show_scale(detail)
             self._show_detail_view(detail)
             self._show_detail_layers(detail)
+            self._show_detail_clips(detail)
         self._show_hatch()
         editable = self._editable_text()
         editable_id = editable.id if editable is not None else None
@@ -1151,10 +1393,13 @@ class PropertiesPanel(QWidget):
 
     def subjects(self) -> list[str]:
         """What could be shown, in tab order: "objects" while anything is
-        selected (in the model or on a sheet), then "layers" or "sheets",
-        whichever is picked in its list: one look at a time."""
+        selected (in the model or on a sheet) or a detail is being looked
+        through, then "layers" or "sheets", whichever is picked in its
+        list: one look at a time."""
         out = []
-        if any(self._objects_signature()):
+        # the detail you are inside counts, but is not a pick: going in
+        # is no reason to let go of a layer you were looking at
+        if any(self._objects_signature()) or self._detail_here() is not None:
             out.append("objects")
         if self._picked_layers():
             out.append("layers")
@@ -1222,13 +1467,17 @@ class PropertiesPanel(QWidget):
             return said("Objects", f"{n} objects selected",
                         f"{_kinds_text(kinds)} on paper", f"{n} objects")
         details = self._sheet_picks("detail")
+        here = None if details else self._detail_here()
+        if here is not None:
+            details = [here]
         if details:
             n = len(details)
             if n == 1:
                 detail = details[0]
-                frame = f"frame {detail.w:g} × {detail.h:g} mm"
-                line = (frame if detail.perspective
-                        else f"{detail.scale_text()} · {frame}")
+                frame = ("frame "
+                         + format_paper_size(detail.w, detail.h, self.scene.units))
+                line = (frame if detail.perspective else
+                        f"{detail.scale_text(self.scene.units)} · {frame}")
                 return said("Detail", f"{self._detail_view_name(detail)} view",
                             _capital(line), "Detail")
             return said("Details", f"{n} details selected", "On paper",
@@ -1278,7 +1527,7 @@ class PropertiesPanel(QWidget):
         if len(sheets) == 1:
             lay = sheets[0]
             n = len(lay.details)
-            parts = [_paper_name(lay.paper_w, lay.paper_h),
+            parts = [_paper_name(lay.paper_w, lay.paper_h, self.scene.units),
                      "no details" if n == 0 else
                      f"{n} detail{'s' if n != 1 else ''}"]
             path = self._group_path(lay.group)
@@ -1564,6 +1813,51 @@ class PropertiesPanel(QWidget):
             self._paper_edit("detail layers", detail,
                              hidden_layers=list(hidden))
 
+    def _show_detail_clips(self, detail):
+        """The clipping planes there are, hidden ones too since they cut as
+        well, ticked where they cut this detail; no row when there are
+        none."""
+        planes = clipping.planes_of(self.scene)
+        self.form.setRowVisible(self.detail_clips, bool(planes))
+        if planes:
+            self.detail_clips.show_for(
+                detail, [(o, clipping.label(self.scene, o)) for o in planes])
+
+    def _set_detail_clip(self, plane_id: str, on: bool):
+        detail = self._detail_pick()
+        if detail is not None:
+            clipping.switch(self.scene, plane_id, detail.id, on,
+                            before=self._clip_checkpoint)
+
+    def _clip_checkpoint(self):
+        self.history.checkpoint("clipping plane views")
+
+    def _show_clip_views(self, obj):
+        """A clipping plane's views, ticked where it cuts them."""
+        shown = bool(obj.clip_plane)
+        self.form.setRowVisible(self.clip_views, shown)
+        if shown:
+            panes = self._panes_source() if self._panes_source else []
+            self.clip_views.show_for(obj, panes, self.scene.layouts,
+                                     self._detail_view_name,
+                                     self.scene.units)
+
+    def _set_clip_view(self, view: str, on: bool):
+        obj = self._selected()
+        if obj is not None and obj.clip_plane:
+            clipping.switch(self.scene, obj.id, view, on,
+                            before=self._clip_checkpoint)
+
+    def _pause_clip(self, paused: bool):
+        obj = self._selected()
+        if obj is None or not obj.clip_plane \
+                or bool(obj.clip_plane.get("enabled")) != paused:
+            return
+        self.history.checkpoint("pause clipping plane" if paused
+                                else "resume clipping plane")
+        self.scene.update(obj.id, clip_plane={**obj.clip_plane,
+                                              "enabled": not paused})
+
     # ------------------------------------------------------------ layer page
 
     def _build_layer_page(self):
@@ -1619,8 +1913,7 @@ class PropertiesPanel(QWidget):
         self.layer_print.lineEdit().editingFinished.connect(
             self._set_layer_print)
         self.layer_hatch = QComboBox()
-        for name in SECTION_FILLS:
-            self.layer_hatch.addItem(name.capitalize(), name)
+        _fill_patterns(self.layer_hatch, SECTION_FILLS)
         self.layer_hatch.setToolTip(
             "What a section cut through this layer's objects is filled with, "
             "and what a hatch drawn on it starts out as")
@@ -1631,6 +1924,7 @@ class PropertiesPanel(QWidget):
         self.layer_hatch_angle = self.layer_look.angle
         self.layer_hatch_spacing = self.layer_look.spacing
         self.layer_hatch_color = self.layer_look.color
+        self.layer_hatch_background = self.layer_look.background
         self.layer_cut_width = self.layer_look.cut_width
         self.layer_cut_color = self.layer_look.cut_color
         self.layer_visible = QCheckBox("Visible")
@@ -1707,6 +2001,8 @@ class PropertiesPanel(QWidget):
                                     else _width_text(la.print_width)
                                     for la in layers})
             hatches = {la.hatch for la in layers}
+            _fill_patterns(self.layer_hatch,
+                           _with(section_fills_of(self.scene), hatches))
             self.layer_hatch.setCurrentIndex(
                 self.layer_hatch.findData(next(iter(hatches)))
                 if len(hatches) == 1 else -1)
@@ -1714,7 +2010,9 @@ class PropertiesPanel(QWidget):
                 [_Look(la.hatch, la.hatch_angle, la.hatch_spacing,
                        la.hatch_color, self.scene.layers.hatch_rgb(la.id),
                        la.cut_line_width, la.cut_line_color,
-                       hatch_token_rgb(la.cut_line_color, la.color))
+                       hatch_token_rgb(la.cut_line_color, la.color),
+                       la.hatch_background,
+                       hatch_token_rgb(la.hatch_background, la.color))
                  for la in layers],
                 layers[0].color if len({la.color for la in layers}) == 1
                 else _MIXED_MARK)
@@ -1828,6 +2126,10 @@ class PropertiesPanel(QWidget):
         if index < 0:
             return
         pattern = self.layer_hatch.itemData(index)
+        if pattern in _PATTERN_ACTIONS:
+            self._refresh_layer_page()
+            self._ask_patterns(pattern, self.layer_hatch)
+            return
         self._edit_layers("layer hatch",
                           lambda i: self.scene.layers.set_hatch(i, pattern))
 
@@ -1838,6 +2140,7 @@ class PropertiesPanel(QWidget):
         setter = {"angle": layers.set_hatch_angle,
                   "spacing": layers.set_hatch_spacing,
                   "color": layers.set_hatch_color,
+                  "background": layers.set_hatch_background,
                   "cut_line_width": layers.set_cut_line_width,
                   "cut_line_color": layers.set_cut_line_color}[key]
         what = _LOOK_WORDS[key]
@@ -1883,16 +2186,42 @@ class PropertiesPanel(QWidget):
             family = default_typography()["font_family"]
         self.text_font_family.setCurrentFont(QFont(family))
         self._populate_text_styles(family, source.font_style)
-        height = source.height
-        if isinstance(editable, TextNote) and editable.style:
-            from .annot_paint import style_of
-            height = style_of(self.scene, editable.style)["text_height"]
-        self.text_height.setSuffix(
-            " mm" if isinstance(editable, TextNote)
-            else " " + self.scene.units)
-        self.text_height.setValue(float(height))
+        unit, per = self._text_height_units(editable)
+        self.text_height.setSuffix(" " + unit)
+        # a step of one inch would take 1/8" text to 1 1/8"
+        self.text_height.setSingleStep(0.01 if unit == "in" else 1.0)
+        self.text_height.setValue(self._text_height_of(editable) / per)
         index = self.text_alignment.findData(source.alignment)
         self.text_alignment.setCurrentIndex(max(0, index))
+
+    def _text_height_units(self, editable) -> tuple[str, float]:
+        """The units the cap height box reads, and the millimetres in one
+        of them for a note, which is kept in millimetres but read in the
+        sheet's units; model lettering is in the document's."""
+        if isinstance(editable, TextNote):
+            unit = paper_units(self.scene.units)
+            return unit, TO_MM[unit]
+        return self.scene.units, 1.0
+
+    def _text_height_of(self, editable) -> float:
+        """The cap height `editable` is drawn at, a named style's if any."""
+        if isinstance(editable, TextNote):
+            from ..core.layout import note_text_height
+            return note_text_height(editable, self.scene)
+        return float(editable.shape.height)
+
+    def _typed_text_height(self, editable) -> float:
+        """The box's cap height, kept in the units the text is kept in.
+
+        The box rounds what it shows, a 3.2 mm note reading 0.126" on an
+        inch sheet, so while it still shows the height the text has, that
+        height is kept exactly rather than 0.126" of it."""
+        _unit, per = self._text_height_units(editable)
+        current = self._text_height_of(editable)
+        shown = round(current / per, self.text_height.decimals())
+        if abs(self.text_height.value() - shown) < 1e-9:
+            return current
+        return self.text_height.value() * per
 
     def _populate_text_styles(self, family, preferred=""):
         blocker = QSignalBlocker(self.text_font_style)
@@ -1990,6 +2319,8 @@ class PropertiesPanel(QWidget):
         self.form.setRowVisible(self.detail_view_combo, detail)
         # one detail's own; refresh shows it again for a single detail
         self.form.setRowVisible(self.detail_layers, False)
+        self.form.setRowVisible(self.detail_clips, False)
+        self.form.setRowVisible(self.clip_views, False)
         # a model object's own, which _refresh_model shows when there is one
         self.form.setRowVisible(self.print_width_combo, False)
         self.form.setRowVisible(self.section_hatch, False)
@@ -2023,6 +2354,7 @@ class PropertiesPanel(QWidget):
             self._show_swatch(self._ink_of(obj))
             self.color_reset.setEnabled(obj.color is not None)
             self._show_own_looks(obj)
+            self._show_clip_views(obj)
             self.form.setRowVisible(self.user_text, True)
             self.user_text.show_for(obj)
 
@@ -2045,8 +2377,11 @@ class PropertiesPanel(QWidget):
         if not cut:
             self.section_look.hide()
             return
+        _fill_patterns(self.section_hatch,
+                       _with(section_fills_of(self.scene),
+                             {own["pattern"]} if own else ()), keep=1)
         self.section_hatch.setItemText(
-            0, f"{_BY_LAYER} ({layer.hatch.capitalize()})")
+            0, f"{_BY_LAYER} ({pattern_label(layer.hatch)})")
         self.section_hatch.setCurrentIndex(
             0 if not own else self.section_hatch.findData(own["pattern"]))
         if own:
@@ -2055,7 +2390,9 @@ class PropertiesPanel(QWidget):
                 [_Look(own["pattern"], own["angle"], own["spacing"],
                        own["color"], fill.color, fill.cut_line_width,
                        own.get("cut_line_color", HATCH_INK),
-                       fill.cut_line_color)],
+                       fill.cut_line_color,
+                       own.get("background", HATCH_BACKGROUND_NONE),
+                       fill.background)],
                 layer.color)
         else:
             self.section_look.hide()
@@ -2097,6 +2434,10 @@ class PropertiesPanel(QWidget):
         if obj is None or paper:
             return
         choice = self.section_hatch.itemData(index)
+        if choice in _PATTERN_ACTIONS:
+            self.refresh()
+            self._ask_patterns(choice, self.section_hatch)
+            return
         own = obj.section_fill
         if choice == "bylayer":
             if own is None:
@@ -2111,9 +2452,32 @@ class PropertiesPanel(QWidget):
             fill = section_fill_dict(choice, layer.hatch_angle,
                                      layer.hatch_spacing, layer.hatch_color,
                                      layer.cut_line_width,
-                                     layer.cut_line_color)
+                                     layer.cut_line_color,
+                                     layer.hatch_background)
         self.history.checkpoint("object section hatch")
         self.scene.update(obj.id, section_fill=fill)
+
+    def _ask_patterns(self, item: str, combo):
+        """Load or Delete patterns… picked in a pattern list. A load
+        remembers the list it was picked in, so the first pattern the file
+        brings is what the layer, object or hatch is set to next."""
+        action = _PATTERN_ACTIONS[item]
+        self._pattern_combo = combo if action == "Load" else None
+        self.hatchPatternsRequested.emit(action)
+
+    def use_loaded_pattern(self, names):
+        """Set the list Load patterns… was picked in to the first of the
+        patterns that load brought, as if it had been picked there."""
+        combo, self._pattern_combo = \
+            getattr(self, "_pattern_combo", None), None
+        if combo is None or not names:
+            return
+        if combo is self.layer_hatch:
+            self._refresh_layer_page()
+        else:
+            self.refresh()
+        if combo.isEnabled() and combo.findData(names[0]) >= 0:
+            combo.setCurrentIndex(combo.findData(names[0]))
 
     def _set_object_look(self, key: str, value):
         """An edit to the hatch angle, spacing or colour of an object's own
@@ -2154,12 +2518,23 @@ class PropertiesPanel(QWidget):
         frame on the sheet, in paper millimetres like `_paper_measures`, and
         the scale row below."""
         self._blank_editors()
-        self.measure_label.setText(f"Frame: {detail.w:g} × {detail.h:g} mm")
+        self.measure_label.setText(
+            "Frame: " + format_paper_size(detail.w, detail.h, self.scene.units))
 
     def _show_scale(self, detail: DetailView):
         """Say what the detail's scale is: the list highlights it when it is a
-        preset, the text says it either way."""
-        text = detail.scale_text()
+        preset, the text says it either way. The list is the one the
+        document's units are offered, which a change of units changes."""
+        units = self.scene.units
+        presets = list(scale_presets(units))
+        if [self.scale_combo.itemText(i)
+                for i in range(self.scale_combo.count())] != presets:
+            # filling the list makes its first scale current, which is
+            # not a choice anyone made
+            with QSignalBlocker(self.scale_combo):
+                self.scale_combo.clear()
+                self.scale_combo.addItems(presets)
+        text = detail.scale_text(units)
         self.scale_combo.setCurrentIndex(self.scale_combo.findText(text))
         self.scale_combo.setEditText(text)
 
@@ -2274,7 +2649,7 @@ class PropertiesPanel(QWidget):
         values = dict(
             font_family=self.text_font_family.currentFont().family(),
             font_style=self.text_font_style.currentText(),
-            height=self.text_height.value(),
+            height=self._typed_text_height(obj),
             alignment=self.text_alignment.currentData(),
         )
         source = obj if isinstance(obj, TextNote) else obj.shape
@@ -2309,21 +2684,47 @@ class PropertiesPanel(QWidget):
         obj = self._editable_hatch()
         if obj is None or obj.id != self._hatch_checkpoint_id:
             self._hatch_checkpoint_id = None
-        lines = obj is not None and obj.shape.pattern != "solid"
+        lines = obj is not None and not obj.shape.solid
         self.form.setRowVisible(self.hatch_pattern, obj is not None)
         self.form.setRowVisible(self.hatch_spacing, lines)
         self.form.setRowVisible(self.hatch_angle, lines)
+        self.form.setRowVisible(self.hatch_color, obj is not None)
+        self.form.setRowVisible(self.hatch_background, lines)
         if obj is None:
             return
         hatch = obj.shape
+        own = obj.hatch_style or {}
+        layer = self.scene.layers.get(obj.layer_id)
+        color, ground = self.scene.hatch_look_of(obj)
+        self._hatch_ink.show({own.get("color") or _BY_LAYER_TOKEN}, color,
+                             layer.color)
+        self._hatch_ground.show({own.get("background") or _BY_LAYER_TOKEN},
+                                ground, layer.color)
         for widget, value in ((self.hatch_spacing, hatch.spacing),
                               (self.hatch_angle, hatch.angle)):
             with QSignalBlocker(widget):
                 widget.setValue(value)
+        _fill_patterns(self.hatch_pattern,
+                       _with(hatch_patterns_of(self.scene), {hatch.pattern}))
         with QSignalBlocker(self.hatch_pattern):
             self.hatch_pattern.setCurrentIndex(
                 self.hatch_pattern.findData(hatch.pattern))
         self.hatch_spacing.setSuffix(f" {self.scene.units}")
+
+    def _set_hatch_style(self, key: str, token):
+        """A hatch's own colour or background, or By layer again."""
+        obj = self._editable_hatch()
+        if obj is None:
+            return
+        style = dict(obj.hatch_style or {})
+        if token == _BY_LAYER_TOKEN:
+            style.pop(key, None)
+        else:
+            style[key] = token
+        if style == (obj.hatch_style or {}):
+            return
+        self.history.checkpoint(f"hatch {_LOOK_WORDS[key]}")
+        self.scene.update(obj.id, hatch_style=style or None)
 
     def _change_hatch(self, *_):
         if self._updating:
@@ -2335,6 +2736,16 @@ class PropertiesPanel(QWidget):
                       spacing=self.hatch_spacing.value(),
                       angle=self.hatch_angle.value())
         hatch = obj.shape
+        if values["pattern"] in _PATTERN_ACTIONS:
+            self._show_hatch()
+            self._ask_patterns(values["pattern"], self.hatch_pattern)
+            return
+        # A pattern from a .pat file is drawn from its definition: the
+        # drawing's, or the one the hatch carries from where it was made.
+        values["definition"] = (hatch.definition
+                                if values["pattern"] == hatch.pattern
+                                else self.scene.hatch_pattern(
+                                    values["pattern"]))
         if (values["pattern"], values["spacing"], values["angle"]) == \
                 (hatch.pattern, hatch.spacing, hatch.angle):
             return
@@ -2461,14 +2872,21 @@ class PropertiesPanel(QWidget):
         return "—"
 
     def _paper_measures(self, obj) -> str:
-        """Millimetres of paper, not the document's units: a border is 320mm
-        around on the sheet whether the model is drawn in metres or inches."""
+        """In the sheet's units, not the model's: a border is 320 mm around on
+        a sheet whether the model is drawn in metres or in millimetres, and
+        12.6" in an inch or a feet document, as its sheet is read."""
         try:
             kind = g.shape_kind(obj.shape)
+            units = self.scene.units
             if kind == "curve":
-                return f"Length: {g.curve_length(obj.shape):.2f} mm"
+                length = g.curve_length(obj.shape)
+                if paper_units(units) == "mm":
+                    return f"Length: {length:.2f} mm"
+                return f"Length: {format_paper_length(length, units)}"
             if kind in ("surface", "solid"):
-                return f"Area: {g.surface_area(obj.shape):.2f} mm²"
+                area = g.surface_area(obj.shape)
+                unit = paper_units(units)
+                return f"Area: {area / TO_MM[unit] ** 2:.2f} {unit}²"
         except Exception:
             pass
         return "—"
@@ -2546,7 +2964,7 @@ class PropertiesPanel(QWidget):
         detail = self._detail_pick()
         if detail is None:
             return
-        denom = parse_scale(text)
+        denom = parse_scale(text, self.scene.units)
         if denom is None or denom == detail.scale_denom:
             # not a scale, or the one it already has: put back what it still
             # is rather than leaving the box lying
