@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import (
-    QBrush, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap,
+    QBrush, QColor, QIcon, QIconEngine, QPainter, QPainterPath, QPen,
+    QPixmap,
 )
 
 _STROKE = QColor("#c8c9cc")
@@ -17,12 +18,57 @@ _SCALE = 2  # draw at 2x for crisp hidpi
 
 def _painter(pix: QPixmap) -> QPainter:
     p = QPainter(pix)
+    _ready(p, 1.7)
+    return p
+
+
+def _ready(p: QPainter, width: float):
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(_STROKE, 1.7)
+    pen = QPen(_STROKE, width)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
-    return p
+
+
+class _Drawn(QIconEngine):
+    """An icon drawn afresh at whatever size it is shown, from the drawer
+    that makes it: as sharp in a 4K toolbar, or on a canvas zoomed in
+    three times, as at the size it was drawn for."""
+
+    def __init__(self, drawer, box: float, width: float):
+        super().__init__()
+        self.drawer, self.box, self.width = drawer, box, width
+
+    def paint(self, painter, rect, mode, state):
+        painter.save()
+        side = min(rect.width(), rect.height())
+        painter.translate(rect.x() + (rect.width() - side) / 2,
+                          rect.y() + (rect.height() - side) / 2)
+        painter.scale(side / self.box, side / self.box)
+        if mode == QIcon.Mode.Disabled:
+            painter.setOpacity(painter.opacity() * 0.4)
+        _ready(painter, self.width)
+        self.drawer(painter)
+        painter.restore()
+
+    def scaledPixmap(self, size, mode, state, scale):
+        pix = QPixmap(size * scale)
+        pix.setDevicePixelRatio(scale)
+        pix.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pix)
+        self.paint(painter, QRect(0, 0, size.width(), size.height()),
+                   mode, state)
+        painter.end()
+        return pix
+
+    def pixmap(self, size, mode, state):
+        return self.scaledPixmap(size, mode, state, 1.0)
+
+    def actualSize(self, size, mode, state):
+        return size
+
+    def clone(self):
+        return _Drawn(self.drawer, self.box, self.width)
 
 
 def _dot(p: QPainter, x, y, r=1.6, color=_ACCENT):
@@ -335,6 +381,66 @@ def _vector(p):
     _dot(p, 4, 18)
 
 
+def _list_item(p):
+    # three rows of a list, the middle one the item taken
+    for y in (6, 11, 16):
+        p.drawLine(8, y, 18, y)
+        _dot(p, 4.5, y, r=1.2, color=_STROKE)
+    _dot(p, 4.5, 11, r=2.2)
+
+
+def _list_remove(p):
+    # three rows of a list, the middle one crossed out
+    for y in (6, 11, 16):
+        p.drawLine(8, y, 18, y)
+        _dot(p, 4.5, y, r=1.2, color=_STROKE)
+    p.save()
+    p.setPen(QPen(_ACCENT, 1.7, Qt.PenStyle.SolidLine,
+                  Qt.PenCapStyle.RoundCap))
+    p.drawLine(2.5, 9, 6.5, 13)
+    p.drawLine(6.5, 9, 2.5, 13)
+    p.restore()
+
+
+def _toggle(p):
+    # a switch, its knob over to one side
+    p.drawRoundedRect(QRectF(3, 7, 16, 8), 4, 4)
+    _dot(p, 15, 11, r=2.6)
+
+
+def _pipeline(p):
+    # a funnel the model's objects pour through
+    path = QPainterPath(QPointF(3, 5))
+    path.lineTo(19, 5)
+    path.lineTo(13, 12)
+    path.lineTo(13, 18)
+    path.lineTo(9, 18)
+    path.lineTo(9, 12)
+    path.closeSubpath()
+    p.fillPath(path, _FILL)
+    p.drawPath(path)
+    for x in (7, 11, 15):
+        _dot(p, x, 2.5, r=1.2)
+
+
+def _panel(p):
+    # a note with lines of text on it
+    p.drawRoundedRect(QRectF(3, 3, 16, 16), 2, 2)
+    for y in (8, 11.5, 15):
+        p.drawLine(QPointF(6.5, y), QPointF(15.5, y))
+    _dot(p, 6.5, 8, r=1.3)
+
+
+def _delaunay(p):
+    # a few points joined into triangles
+    pts = [(4, 17), (11, 4), (18, 15), (11, 12), (16, 6)]
+    for a, b in ((0, 1), (1, 4), (4, 2), (2, 0), (0, 3), (1, 3), (3, 2),
+                 (3, 4)):
+        p.drawLine(QPointF(*pts[a]), QPointF(*pts[b]))
+    for x, y in pts:
+        _dot(p, x, y, r=1.5)
+
+
 def _hydra(p):
     # one output fanning out into three wires, as on Hydra's canvas: each
     # leaves level and arrives level, an S from the output to its input
@@ -375,7 +481,9 @@ _DRAWERS = {
     "join": _join, "delete": _delete, "trim": _trim, "split": _split,
     "offset": _offset, "fillet": _fillet, "explode": _explode,
     "pointson": _points, "point": _point, "mesh": _mesh, "vector": _vector,
-    "hydra": _hydra,
+    "hydra": _hydra, "listitem": _list_item,
+    "listremove": _list_remove, "toggle": _toggle, "pipeline": _pipeline,
+    "panel": _panel, "delaunay": _delaunay,
 }
 
 
@@ -387,13 +495,12 @@ def command_icon(name: str) -> QIcon | None:
     drawer = _DRAWERS.get(name)
     if drawer is None:
         return None
-    pix = QPixmap(SIZE * _SCALE, SIZE * _SCALE)
-    pix.setDevicePixelRatio(_SCALE)
-    pix.fill(Qt.GlobalColor.transparent)
-    p = _painter(pix)
-    drawer(p)
-    p.end()
-    return QIcon(pix)
+    return QIcon(_Drawn(drawer, SIZE, 1.7))
+
+
+def sliders_icon() -> QIcon:
+    """The Properties panel's mark, values on rails, drawn to any size."""
+    return QIcon(_Drawn(_sliders, _MARK, 1.25))
 
 
 # -- panel marks ------------------------------------------------------------

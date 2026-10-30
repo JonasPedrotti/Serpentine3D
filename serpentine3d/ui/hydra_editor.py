@@ -17,19 +17,22 @@ import uuid
 
 import numpy as np
 from PySide6.QtCore import (
-    QEvent, QMimeData, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal,
+    QEvent, QMimeData, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer,
+    Signal,
 )
 from PySide6.QtGui import (
-    QActionGroup, QColor, QCursor, QFont, QFontMetrics, QIcon, QKeySequence,
-    QPainter, QPainterPath, QPainterPathStroker, QPen, QPixmap,
+    QActionGroup, QColor, QCursor, QDrag, QFont, QFontMetrics, QIcon,
+    QKeySequence, QPainter, QPainterPath, QPainterPathStroker, QPen,
+    QPixmap,
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QDockWidget, QFileDialog, QFormLayout, QFrame, QGraphicsItem,
     QGraphicsPathItem, QGraphicsScene, QGraphicsView, QGridLayout,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu,
-    QPushButton, QScrollArea, QStackedWidget, QToolButton, QVBoxLayout,
-    QWidget,
+    QMenuBar, QPlainTextEdit, QScrollArea, QSizePolicy, QStackedWidget,
+    QTabBar,
+    QTabWidget, QToolButton, QVBoxLayout, QWidget, QWidgetAction,
 )
 
 from ..core import hydra
@@ -37,17 +40,25 @@ from ..core.hydra import (
     CATEGORIES, COMPONENTS, GEOMETRY_KINDS, Graph, HydraError,
 )
 from .dialogs import untether
-from .icons import command_icon, panel_icon
+from .icons import command_icon, sliders_icon
 
 NODE_WIDTH = 110
 NODE_HEIGHT = 28
 PAN_SLOP = 4                # pixels a right drag moves before it pans
 PORT_RADIUS = 5
+MARK_STEP = 13              # from one Graft, Flatten or Reverse mark on
+MARK_FROM = 13              # the first mark's middle, in from the edge
 PORT_REACH = 11             # how near a click or a wire's end has to be
 SNAP_REACH = 26             # screen pixels a dropped wire finds a port within
 PASTE_STEP = 30             # how far a paste lands from what it copied
 SEARCH_ROWS = 12            # the most the search lists before it scrolls
+UNDO_STEPS = 100            # how far back Ctrl+Z reaches
+PANEL_WIDTH = 220           # a panel's size: room for a few lines of text
+PANEL_HEIGHT = 130
+PANEL_HEAD = 22             # its title strip, over the text
+MESH_WIRES_UP_TO = 50000    # triangles a mesh may have to show all its edges
 CLIPBOARD = "application/x-serpentine-hydra"
+COMPONENT_MIME = "application/x-serpentine-hydra-component"
 SLIDER_WIDTH = 240
 VALUE_WIDTH = 66
 VALUE_GAP = 14              # between the value and the output
@@ -62,7 +73,8 @@ _ACCENT = QColor("#d9a441")
 _PORT = {"point": QColor("#8fd18a"), "curve": QColor("#7fb3e6"),
          "brep": QColor("#e6c27f"), "mesh": QColor("#c9a6f0"),
          "number": QColor("#e4e5e7"), "geometry": QColor("#6fd0c0"),
-         "vector": QColor("#f08a8a")}
+         "vector": QColor("#f08a8a"), "any": QColor("#b9bcc4"),
+         "boolean": QColor("#e6e07f"), "text": QColor("#e4e5e7")}
 
 
 _ICONS: dict = {}
@@ -72,27 +84,94 @@ def component_icon(comp):
     """The toolbar's icon for what a component holds, made once."""
     if comp.icon not in _ICONS:
         # the slider wears the Properties panel's mark: values on rails
-        _ICONS[comp.icon] = (QIcon(panel_icon("properties"))
+        _ICONS[comp.icon] = (sliders_icon()
                              if comp.icon == "sliders"
                              else command_icon(comp.icon) if comp.icon
                              else None)
     return _ICONS[comp.icon]
 
 
-def node_size(comp):
+def marks(comp, flags, output):
+    """How many Graft, Flatten or Reverse marks the most marked input, or
+    output, carries."""
+    ports = comp.outputs if output else comp.inputs
+    return max((len(hydra.flags_of((flags or {}).get(
+        hydra.flag_key(p.name, output)))) for p in ports), default=0)
+
+
+def mark_room(count):
+    return count * MARK_STEP + 4 if count else 0
+
+
+def node_size(comp, flags=None, title=None):
     """A component's input names column, width and height: as wide as the
-    names in it need, and no wider."""
+    names in it need, its title, given or its own, and the marks of its
+    flagged ports, and no wider."""
     small, bold = QFont(), QFont()
     small.setPointSizeF(8)
     bold.setPointSizeF(9)
     bold.setBold(True)
-    labels = (max(QFontMetrics(small).horizontalAdvance(p.name)
-                  for p in comp.inputs) + 20 if comp.inputs else 0)
-    title = QFontMetrics(bold).horizontalAdvance(comp.title)
+    names = 10 + mark_room(marks(comp, flags, False))
+    labels = (names + max(QFontMetrics(small).horizontalAdvance(p.name)
+                          for p in comp.inputs) + 10 if comp.inputs else 0)
+    if comp.key == "panel":
+        # wider by the room its marks take, so the text keeps its room
+        return 0, (PANEL_WIDTH + mark_room(marks(comp, flags, False))
+                   + mark_room(marks(comp, flags, True))), PANEL_HEIGHT
+    named = QFontMetrics(bold).horizontalAdvance(title or comp.title)
+    if comp.key in ("slider", "toggle") and title and title != comp.title:
+        # a slider or a toggle shows no title, but one it was given
+        extra = named + 12
+        return labels, (SLIDER_WIDTH if comp.key == "slider"
+                        else NODE_WIDTH) + extra, NODE_HEIGHT
+    title = named
     width = (SLIDER_WIDTH if comp.key == "slider" else max(
-        NODE_WIDTH, labels + NODE_HEIGHT + title + 18))
+        NODE_WIDTH, labels + NODE_HEIGHT + title + 18
+        + mark_room(marks(comp, flags, True))))
     height = max(NODE_HEIGHT, INPUT_ROW * len(comp.inputs) + 8)
     return labels, width, height
+
+
+_FLAG = QColor("#e4e5e7")
+_HINT = {None: _ACCENT, "add": QColor("#6fcf7a"),
+         "remove": QColor("#e0605a")}
+
+
+def _undo_key(event):
+    """"undo" for Ctrl+Z, "redo" for Ctrl+Y or Ctrl+Shift+Z."""
+    ctrl = Qt.KeyboardModifier.ControlModifier
+    shift = Qt.KeyboardModifier.ShiftModifier
+    mods = event.modifiers()
+    if event.key() == Qt.Key.Key_Z:
+        return {ctrl: "undo", ctrl | shift: "redo"}.get(mods)
+    if event.key() == Qt.Key.Key_Y and mods == ctrl:
+        return "redo"
+    return None
+
+
+def _save_key(event):
+    """"save" for Ctrl+S, "as" for Ctrl+Shift+S, None for anything else."""
+    if event.key() != Qt.Key.Key_S:
+        return None
+    ctrl = Qt.KeyboardModifier.ControlModifier
+    shift = Qt.KeyboardModifier.ShiftModifier
+    return {ctrl: "save", ctrl | shift: "as"}.get(event.modifiers())
+
+
+_MODIFIER_OF = {Qt.Key.Key_Shift: Qt.KeyboardModifier.ShiftModifier,
+                Qt.Key.Key_Control: Qt.KeyboardModifier.ControlModifier}
+
+
+def wiring_mode(modifiers):
+    """"add" with Shift, a wire beside the ones already in; "remove" with
+    Ctrl, taking a wire away; None otherwise, a wire in place of the old."""
+    shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+    ctrl = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+    if shift and not ctrl:
+        return "add"
+    if ctrl and not shift:
+        return "remove"
+    return None
 
 
 class PortItem(QGraphicsItem):
@@ -105,24 +184,54 @@ class PortItem(QGraphicsItem):
         self.setPos(x, node_item.height * (row + 1) / (count + 1))
         self.setAcceptHoverEvents(True)
         self._hover = False
+        self._mode = None          # set while a dragged wire would dock here
         self.setToolTip(port.name)
 
     def show_values(self, values, wired):
-        """An input's tooltip: its name and what reaches it right now."""
-        said = hydra.describe(values)
-        picked = self.node_item.node.params.get("set", {})
-        if not wired and self.port.name in picked:
-            said += " (set in the model)"
-        elif not wired and self.port.default is not None:
-            said += " (default)"
-        self.setToolTip(f"{self.port.name}: {said}")
+        """A port's tooltip, kept simple: what it takes, how much it holds
+        and where that came from, then the items themselves, so it shows
+        how the data comes in."""
+        lines = [self.port.what, self._connected(values, wired)]
+        if len(values):
+            lines.append("")
+            lines.extend(hydra.list_tree(values))
+        self.setToolTip("\n".join(lines))
+
+    def _connected(self, values, wired):
+        """What is connected right now: how much comes by wire, or, with
+        no wire, where the value comes from."""
+        count = hydra.count_said(values)
+        if self.is_output or wired:
+            return count
+        node = self.node_item.node
+        if self.port.name in node.params.get("internal", {}):
+            return f"Internalized · {count}"
+        if self.port.name in node.params.get("set", {}):
+            return f"Set in the model · {count}"
+        if len(values):
+            return f"Default · {count}"
+        if self.port.optional:
+            return "Optional · nothing connected"
+        return "Nothing connected"
+
+    def flags(self):
+        """This port's Graft, Flatten and Reverse, in the order applied."""
+        flags = self.node_item.node.params.get("flags", {})
+        return hydra.flags_of(
+            flags.get(hydra.flag_key(self.port.name, self.is_output)))
+
+    def flag(self):
+        """This port's Graft or Flatten, or None."""
+        return next((f for f in self.flags() if f != "reverse"), None)
 
     @property
     def node_id(self):
         return self.node_item.node.id
 
     def boundingRect(self):
-        return QRectF(-PORT_REACH, -PORT_REACH, 2 * PORT_REACH, 2 * PORT_REACH)
+        # room for the + or - badge beside the dot
+        r = PORT_REACH + 6
+        return QRectF(-r, -r, 2 * r, 2 * r)
 
     def shape(self):
         # what a click finds: a good deal more than the dot that is drawn
@@ -130,25 +239,56 @@ class PortItem(QGraphicsItem):
         path.addEllipse(QPointF(0, 0), PORT_REACH, PORT_REACH)
         return path
 
-    def set_highlight(self, on):
-        """Lit as when hovered: where a dragged wire would dock."""
-        if self._hover != on:
-            self._hover = on
+    def set_highlight(self, on, mode=None):
+        """Lit as when hovered: where a dragged wire would dock, green when
+        it would be added, red when it would be taken away."""
+        if (self._hover, self._mode) != (on, mode):
+            self._hover, self._mode = on, mode
             self.update()
+
+    def hint(self, modifiers=None):
+        """What lighting it up says: None, "add" or "remove"."""
+        if self._mode is not None:
+            return self._mode
+        if modifiers is None:
+            scene = self.scene()
+            modifiers = (scene.modifiers if scene is not None
+                         else QApplication.keyboardModifiers())
+        return wiring_mode(modifiers)
 
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        hint = self.hint() if self._hover else None
+        colour = _HINT[hint]
         if self._hover:
+            glow = QColor(colour)
+            glow.setAlpha(70)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(217, 164, 65, 70))
+            painter.setBrush(glow)
             painter.drawEllipse(QPointF(0, 0), PORT_RADIUS + 4,
                                 PORT_RADIUS + 4)
-        painter.setPen(QPen(_ACCENT if self._hover else QColor("#1b1c1f"), 1.5))
+        painter.setPen(QPen(colour if self._hover else QColor("#1b1c1f"),
+                            1.5))
         painter.setBrush(_PORT.get(self.port.kind, _WIRE))
         painter.drawEllipse(QPointF(0, 0), PORT_RADIUS, PORT_RADIUS)
+        if hint is not None:
+            self._paint_badge(painter, colour, hint)
+
+    def _paint_badge(self, painter, colour, hint):
+        """A small + or - above the port, on the side away from its node."""
+        side = 1 if self.is_output else -1
+        at = QPointF(side * (PORT_RADIUS + 5), -(PORT_RADIUS + 5))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(colour)
+        painter.drawEllipse(at, 5.5, 5.5)
+        painter.setPen(QPen(QColor("#1b1c1f"), 1.6))
+        painter.drawLine(at - QPointF(3, 0), at + QPointF(3, 0))
+        if hint == "add":
+            painter.drawLine(at - QPointF(0, 3), at + QPointF(0, 3))
 
     def hoverEnterEvent(self, event):
         self._hover = True
+        self.scene().modifiers = event.modifiers()
         self.update()
 
     def hoverLeaveEvent(self, event):
@@ -160,6 +300,8 @@ class WireItem(QGraphicsPathItem):
     def __init__(self, wire=None):
         super().__init__()
         self.wire = wire
+        self.mode = None           # a dragged wire's "add" or "remove"
+        self.carries = "item"      # item | list | tree, from the last solve
         self.setZValue(-1)
         if wire is not None:
             self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
@@ -171,17 +313,64 @@ class WireItem(QGraphicsPathItem):
         self.setPath(path)
 
     def paint(self, painter, option, widget=None):
-        pen = QPen(_ACCENT if self.isSelected() else _WIRE, 2)
-        if self.wire is None:
-            pen.setStyle(Qt.PenStyle.DashLine)
+        colour = _ACCENT if self.isSelected() else _WIRE
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self.wire is None:
+            pen = QPen(_HINT[self.mode] if self.mode is not None else colour,
+                       2, Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.drawPath(self.path())
+            return
+        if self.carries == "item":
+            # one item: a single line
+            painter.setPen(QPen(colour, 2))
+            painter.drawPath(self.path())
+            return
+        # a list: two lines side by side; a tree: the two lines dashed
+        stroker = QPainterPathStroker()
+        stroker.setWidth(5)
+        stroker.setCapStyle(Qt.PenCapStyle.FlatCap)
+        outline = stroker.createStroke(self.path())
+        pen = QPen(colour, 1.3)
+        if self.carries == "tree":
+            pen.setStyle(Qt.PenStyle.DashLine)
         painter.setPen(pen)
-        painter.drawPath(self.path())
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(outline)
 
     def shape(self):
         stroker = QPainterPathStroker()
         stroker.setWidth(10)
         return stroker.createStroke(self.path())
+
+
+def _shown_order(flags):
+    """The marks left to right: Graft or Flatten, then Reverse."""
+    return [f for f in flags if f != "reverse"] + [
+        f for f in flags if f == "reverse"]
+
+
+def _paint_flag(painter, flag, at):
+    """A fork for Graft, one line splitting into three; for Flatten, three
+    lines meeting in one, read left to right the way data runs; for Reverse
+    two arrows the opposite ways."""
+    painter.save()
+    painter.setPen(QPen(_FLAG, 1.3, Qt.PenStyle.SolidLine,
+                        Qt.PenCapStyle.RoundCap))
+    x, y = at.x(), at.y()
+    if flag == "reverse":
+        for dy, way in ((-2.5, 1), (2.5, -1)):
+            tip = QPointF(x + 3.5 * way, y + dy)
+            painter.drawLine(QPointF(x - 3.5 * way, y + dy), tip)
+            painter.drawLine(tip, tip + QPointF(-2 * way, -1.8))
+            painter.drawLine(tip, tip + QPointF(-2 * way, 1.8))
+    else:
+        one, many = x - 3.5, x + 3.5
+        if flag == "flatten":
+            one, many = many, one
+        for dy in (-3, 0, 3):
+            painter.drawLine(QPointF(one, y), QPointF(many, y + dy))
+    painter.restore()
 
 
 class NodeItem(QGraphicsItem):
@@ -199,13 +388,47 @@ class NodeItem(QGraphicsItem):
                       | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
         self.setPos(node.x, node.y)
         self.setToolTip(comp.description)
+        self.setAcceptHoverEvents(True)
         self.is_slider = node.key == "slider"
-        self.labels, self.width, self.height = node_size(comp)
+        self.labels, self.width, self.height = node_size(
+            comp, node.params.get("flags"), node.title)
         self._sliding = False
         self.inputs = [PortItem(self, p, False, i, len(comp.inputs))
                        for i, p in enumerate(comp.inputs)]
         self.outputs = [PortItem(self, p, True, i, len(comp.outputs))
                         for i, p in enumerate(comp.outputs)]
+
+    def relayout(self):
+        """Sized again, after a port's marks changed what it needs."""
+        self.prepareGeometryChange()
+        self.labels, self.width, self.height = node_size(
+            self.node.component, self.node.params.get("flags"),
+            self.node.title)
+        for port in self.outputs:
+            port.setX(self.width)
+        self.update()
+        self.editor.canvas.update_wires(self)
+
+    def names_at(self):
+        """Where the input names start: past the marks, the same for all,
+        so the names stand in a column."""
+        return 10 + mark_room(marks(self.node.component,
+                                    self.node.params.get("flags"), False))
+
+    def port_at(self, pos):
+        """The port a click at `pos`, in the component, means: an input by
+        its name as well as its dot, an output by its marks beside it."""
+        for port in self.inputs:
+            if (pos.x() < self.labels
+                    and abs(pos.y() - port.y()) <= INPUT_ROW / 2):
+                return port
+        room = mark_room(marks(self.node.component,
+                               self.node.params.get("flags"), True))
+        for port in self.outputs:
+            if (pos.x() > self.width - room - 8
+                    and abs(pos.y() - port.y()) <= NODE_HEIGHT / 2):
+                return port
+        return None
 
     def boundingRect(self):
         return QRectF(-PORT_RADIUS - 3, 0, self.width + 2 * PORT_RADIUS + 6,
@@ -229,6 +452,9 @@ class NodeItem(QGraphicsItem):
         painter.drawRoundedRect(QRectF(0, 0, self.width, self.height), 5, 5)
         if hidden:
             painter.setOpacity(0.45)
+        if self.node.key == "panel":
+            self._paint_panel(painter)
+            return
         if self.inputs:
             self._paint_labels(painter)
         top = int((self.height - NODE_HEIGHT) / 2)
@@ -241,21 +467,103 @@ class NodeItem(QGraphicsItem):
         font.setBold(True)
         painter.setFont(font)
         painter.setPen(_TEXT)
+        self._paint_flags(painter)
         if self.is_slider:
+            self._paint_given_name(painter)
             self._paint_slider(painter)
             return
+        if self.node.key == "toggle":
+            # its value is what it shows, True lit up
+            room = self._paint_given_name(painter)
+            on = bool(self.node.params.get("value"))
+            painter.setPen(_ACCENT if on else _MUTED)
+            left = NODE_HEIGHT + 2 + room
+            painter.drawText(QRectF(left, 0, self.width - left - 12,
+                                    self.height),
+                             Qt.AlignmentFlag.AlignVCenter,
+                             "True" if on else "False")
+            return
         left = self.labels + NODE_HEIGHT + 2
-        painter.drawText(QRectF(left, 0, self.width - left - 8, self.height),
+        room = mark_room(marks(self.node.component,
+                               self.node.params.get("flags"), True))
+        painter.drawText(QRectF(left, 0, self.width - left - 8 - room,
+                                self.height),
                          Qt.AlignmentFlag.AlignVCenter,
-                         self.node.component.title)
+                         self.node.title)
 
     def can_hide(self):
         """Whether it shows anything in the viewports to hide."""
-        return any(p.kind in GEOMETRY_KINDS or p.kind == "vector"
+        return any(p.kind in GEOMETRY_KINDS or p.kind in ("vector", "any")
                    for p in self.node.component.outputs)
 
     def is_hidden(self):
         return self.can_hide() and not self.node.preview
+
+    def _paint_flags(self, painter):
+        """Graft, Flatten and Reverse marked inside the component beside
+        their port, as Grasshopper does: before an input's name, beside an
+        output. Reverse always stands right of Graft or Flatten."""
+        for port in self.inputs:
+            for k, flag in enumerate(_shown_order(port.flags())):
+                _paint_flag(painter, flag,
+                            QPointF(MARK_FROM + k * MARK_STEP, port.y()))
+        for port in self.outputs:
+            shown = _shown_order(port.flags())
+            for k, flag in enumerate(shown):
+                _paint_flag(painter, flag, QPointF(
+                    self.width - MARK_FROM
+                    - (len(shown) - 1 - k) * MARK_STEP, port.y()))
+
+    def panel_area(self):
+        """Where a panel's text goes, under its title strip, clear of the
+        marks of its ports' flags."""
+        flags = self.node.params.get("flags")
+        comp = self.node.component
+        left = 6 + mark_room(marks(comp, flags, False))
+        right = 6 + mark_room(marks(comp, flags, True))
+        return QRectF(left, PANEL_HEAD, self.width - left - right,
+                      self.height - PANEL_HEAD - 6)
+
+    def panel_lines(self):
+        """What a panel shows: what comes in, listed as tooltips list it,
+        or the text typed into it; a word on what to do when empty."""
+        port = self.inputs[0].port
+        tree, wired = self.editor.graph.input_values(
+            self.node.id, port, self.editor.results)
+        if wired:
+            return hydra.list_tree(tree, most=40) or ["empty"], True
+        text = self.node.params.get("text", "")
+        if not text.strip():
+            return ["Double-click to type"], False
+        return text.splitlines(), True
+
+    def _paint_panel(self, painter):
+        icon = component_icon(self.node.component)
+        if icon is not None:
+            icon.paint(painter, QRect(6, 3, PANEL_HEAD - 6, PANEL_HEAD - 6))
+        font = QFont(painter.font())
+        font.setPointSizeF(9)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(_TEXT)
+        painter.drawText(QRectF(PANEL_HEAD + 2, 0, self.width, PANEL_HEAD),
+                         Qt.AlignmentFlag.AlignVCenter, self.node.title)
+        area = self.panel_area()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#25272b"))
+        painter.drawRoundedRect(area, 3, 3)
+        lines, filled = self.panel_lines()
+        font.setBold(False)
+        font.setPointSizeF(8.5)
+        painter.setFont(font)
+        painter.setPen(_TEXT if filled else _MUTED)
+        painter.save()
+        painter.setClipRect(area)
+        painter.drawText(area.adjusted(6, 4, -6, -4),
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                         "\n".join(lines))
+        painter.restore()
+        self._paint_flags(painter)
 
     def _paint_labels(self, painter):
         painter.save()
@@ -265,17 +573,36 @@ class NodeItem(QGraphicsItem):
         status = self.result.status if self.result else "ok"
         painter.setPen(_MUTED if status == "ok" else _TEXT)
         for port in self.inputs:
-            painter.drawText(QRectF(10, port.y() - INPUT_ROW / 2,
-                                    self.labels - 12, INPUT_ROW),
+            left = self.names_at()
+            painter.drawText(QRectF(left, port.y() - INPUT_ROW / 2,
+                                    self.labels - left, INPUT_ROW),
                              Qt.AlignmentFlag.AlignVCenter, port.port.name)
         painter.setPen(QPen(QColor("#1b1c1f"), 1))
         painter.drawLine(QPointF(self.labels, 5),
                          QPointF(self.labels, self.height - 5))
         painter.restore()
 
+    def _given_name_room(self):
+        """What a name given to a slider or a toggle takes before it."""
+        if "name" not in self.node.params:
+            return 0
+        bold = QFont()
+        bold.setPointSizeF(9)
+        bold.setBold(True)
+        return QFontMetrics(bold).horizontalAdvance(self.node.title) + 12
+
+    def _paint_given_name(self, painter):
+        room = self._given_name_room()
+        if room:
+            painter.setPen(_TEXT)
+            painter.drawText(QRectF(NODE_HEIGHT + 2, 0, room, self.height),
+                             Qt.AlignmentFlag.AlignVCenter, self.node.title)
+        return room
+
     def _rail(self):
         """Where the rail runs, left to right, along the middle."""
-        return NODE_HEIGHT + 6, self.width - VALUE_WIDTH - VALUE_GAP - 12
+        return (NODE_HEIGHT + 6 + self._given_name_room(),
+                self.width - VALUE_WIDTH - VALUE_GAP - 12)
 
     def _paint_slider(self, painter):
         p = self.node.params
@@ -309,6 +636,12 @@ class NodeItem(QGraphicsItem):
     def mouseDoubleClickEvent(self, event):
         if self.is_slider:
             self.editor.type_value(self)
+            return
+        if self.node.key == "toggle":
+            self.editor.flip(self.node.id)
+            return
+        if self.node.key == "panel":
+            self.editor.type_panel(self)
             return
         super().mouseDoubleClickEvent(event)
 
@@ -346,6 +679,7 @@ class NodeItem(QGraphicsItem):
     def mouseReleaseEvent(self, event):
         if self._sliding:
             self._sliding = False
+            self.editor.record()
             return
         super().mouseReleaseEvent(event)
 
@@ -354,12 +688,20 @@ class NodeItem(QGraphicsItem):
         comp = self.node.component
         count = (sum(len(v) for v in self.result.outputs.values())
                  if self.result else 0)
+        if self.node.key == "toggle":
+            return "True" if self.node.params.get("value") else "False"
+        if self.node.key == "pipeline":
+            return f"{count} object" + ("" if count == 1 else "s") + (
+                " · " + _pipe_said(self.node.params))
         if not comp.picks:
             noun = {"point": "point", "vector": "vector"}.get(
                 comp.outputs[0].kind, "object")
             return f"{count} {noun}" + ("" if count == 1 else "s")
-        return f"{count} " + (comp.title.lower() if count == 1
+        said = f"{count} " + (comp.title.lower() if count == 1
                               else comp.plural)
+        if "out" in self.node.params.get("internal", {}):
+            said += " (internalized)"
+        return said
 
     def set_result(self, result):
         self.result = result
@@ -367,11 +709,23 @@ class NodeItem(QGraphicsItem):
         tip = f"{self.node.component.description}\n\n{said}"
         if result is not None and result.message:
             tip += "\n" + result.message
+        self._tip = tip
         self.setToolTip(tip)
         for port in self.inputs:
             port.show_values(*self.editor.graph.input_values(
                 self.node.id, port.port, self.editor.results))
+        for port in self.outputs:
+            if result is not None:
+                port.show_values(result.outputs.get(port.port.name,
+                                                    hydra.Tree()), True)
         self.update()
+
+    def hoverMoveEvent(self, event):
+        # over an input's name, or an output's marks, the port's own tooltip
+        port = self.port_at(event.pos())
+        self.setToolTip(port.toolTip() if port is not None
+                        else getattr(self, "_tip", ""))
+        super().hoverMoveEvent(event)
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
@@ -392,6 +746,11 @@ class HydraScene(QGraphicsScene):
         self.canvas = canvas
         self._drag = None          # (fixed PortItem, WireItem)
         self._target = None        # the port a dragged wire would dock on
+        self._mode = None          # what letting the dragged wire go would do
+        self._last = None          # where the cursor last was, dragging
+        # Shift and Ctrl as they stand, kept here rather than asked of Qt,
+        # whose answer lags a key let go
+        self.modifiers = Qt.KeyboardModifier.NoModifier
         self._copying = None       # (press point, {NodeItem: start}) Alt-drag
         self.setBackgroundBrush(QColor("#232427"))
 
@@ -434,7 +793,15 @@ class HydraScene(QGraphicsScene):
             d = other.scenePos() - pos
             return (d.x() ** 2 + d.y() ** 2) ** 0.5
 
+        def wired(other):
+            out, inp = (port, other) if port.is_output else (other, port)
+            return self.canvas.editor.graph.wire_between(
+                out.node_id, out.port.name, inp.node_id, inp.port.name)
+
         def fits(other):
+            # to take a wire away, the end it runs to is the one that fits
+            if self._mode == "remove":
+                return wired(other) is not None
             out, inp = (port, other) if port.is_output else (other, port)
             return hydra.takes(inp.port.kind, out.port.kind)
 
@@ -443,6 +810,10 @@ class HydraScene(QGraphicsScene):
                 for other in (item.inputs if port.is_output else item.outputs)]
         near = [o for o in ends if far(o) <= reach]
         if near:
+            # aimed at, a port is the one meant; only a wire being taken
+            # away looks past it for the end the wire runs to
+            if self._mode == "remove":
+                near = [o for o in near if fits(o)] or near
             return min(near, key=far)
         node = self._node_at(pos)
         if node is None or node is mine:
@@ -452,12 +823,23 @@ class HydraScene(QGraphicsScene):
         return min(fitting, key=far) if fitting else None
 
     def _show_target(self, target):
-        if self._target is not target:
-            if self._target is not None:
-                self._target.set_highlight(False)
-            self._target = target
-            if target is not None:
-                target.set_highlight(True)
+        if self._target is not None and self._target is not target:
+            self._target.set_highlight(False)
+        self._target = target
+        if target is not None:
+            target.set_highlight(True, self._mode)
+
+    def modifiers_changed(self, modifiers):
+        """Shift or Ctrl pressed or let go: hovered ports and a dragged wire
+        show at once what they would do now."""
+        self.modifiers = modifiers
+        if self._drag is not None:
+            self._mode = wiring_mode(modifiers)
+            self._drag[1].mode = self._mode
+            self._drag[1].update()
+            if self._last is not None:
+                self._follow(self._last)
+        self.update()
 
     def mousePressEvent(self, event):
         left = event.button() == Qt.MouseButton.LeftButton
@@ -469,7 +851,9 @@ class HydraScene(QGraphicsScene):
             return
         port = self._port_at(event.scenePos())
         if port is not None and left:
-            wire = (None if port.is_output
+            self._mode = wiring_mode(event.modifiers())
+            # with Shift or Ctrl a wire is drawn, not one picked up
+            wire = (None if port.is_output or self._mode is not None
                     else self.canvas.editor.wire_into(port))
             if wire is not None:
                 # picking up a wire by its end: it hangs from its source
@@ -477,9 +861,11 @@ class HydraScene(QGraphicsScene):
                 port = self.canvas.node_items[wire.source].port(wire.output,
                                                                True)
             temp = WireItem()
+            temp.mode = self._mode
             self.addItem(temp)
             temp.set_ends(port.scenePos(), event.scenePos())
             self._drag = (port, temp)
+            self._last = event.scenePos()
             # taken, or the view starts a selection box under the wire
             event.accept()
             return
@@ -505,16 +891,24 @@ class HydraScene(QGraphicsScene):
                 item.setPos(start + event.scenePos() - at)
             return
         if self._drag is not None:
-            port, temp = self._drag
-            target = self._dock_at(event.scenePos(), port)
-            self._show_target(target)
-            end = event.scenePos() if target is None else target.scenePos()
-            if port.is_output:
-                temp.set_ends(port.scenePos(), end)
-            else:
-                temp.set_ends(end, port.scenePos())
+            mode = wiring_mode(event.modifiers())
+            if mode != self._mode:
+                self._mode = self._drag[1].mode = mode
+                self._drag[1].update()
+            self._follow(event.scenePos())
             return
         super().mouseMoveEvent(event)
+
+    def _follow(self, pos):
+        port, temp = self._drag
+        self._last = pos
+        target = self._dock_at(pos, port)
+        self._show_target(target)
+        end = pos if target is None else target.scenePos()
+        if port.is_output:
+            temp.set_ends(port.scenePos(), end)
+        else:
+            temp.set_ends(end, port.scenePos())
 
     def mouseReleaseEvent(self, event):
         if self._copying is not None:
@@ -523,16 +917,24 @@ class HydraScene(QGraphicsScene):
             return
         if self._drag is not None:
             port, temp = self._drag
-            self._drag = None
-            self.removeItem(temp)
+            self._mode = wiring_mode(event.modifiers())
             other = self._dock_at(event.scenePos(), port)
+            self._drag = self._last = None
+            self.removeItem(temp)
             self._show_target(None)
             if other is not None and other.is_output != port.is_output:
                 out, inp = (port, other) if port.is_output else (other, port)
-                self.canvas.editor.connect(out.node_id, out.port.name,
-                                           inp.node_id, inp.port.name)
+                ends = (out.node_id, out.port.name, inp.node_id, inp.port.name)
+                if self._mode == "remove":
+                    self.canvas.editor.remove_wire(*ends)
+                else:
+                    self.canvas.editor.connect(*ends,
+                                               add=self._mode == "add")
+            self._mode = None
             return
         super().mouseReleaseEvent(event)
+        # components dragged to a new place
+        self.canvas.editor.record()
 
     def mouseDoubleClickEvent(self, event):
         if self._node_at(event.scenePos()) is None:
@@ -572,6 +974,35 @@ class HydraCanvas(QGraphicsView):
                        self.setVerticalScrollBarPolicy):
             policy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._pan = None
+        self.setAcceptDrops(True)
+
+    def _dropped(self, event):
+        return event.mimeData().hasFormat(COMPONENT_MIME)
+
+    def dragEnterEvent(self, event):
+        if self._dropped(event):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if self._dropped(event):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        if self._dropped(event):
+            key = bytes(event.mimeData().data(COMPONENT_MIME)).decode()
+            if key in COMPONENTS:
+                at = self.mapToScene(event.position().toPoint())
+                # the component's middle where it was let go
+                _labels, width, height = node_size(COMPONENTS[key])
+                self.editor.add_component(
+                    key, at - QPointF(width / 2, height / 2))
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
 
     def add_item(self, node):
         item = NodeItem(self.editor, node)
@@ -584,6 +1015,18 @@ class HydraCanvas(QGraphicsView):
         if item is not None:
             self.scene().removeItem(item)
 
+    def style_wires(self, results):
+        """Each wire drawn by what it carries: a line for one item, two for
+        a list, two dashed for a tree."""
+        for item in self.wire_items:
+            result = results.get(item.wire.source)
+            tree = (result.outputs.get(item.wire.output)
+                    if result is not None else None)
+            carries = tree.shape() if tree is not None else "item"
+            if carries != item.carries:
+                item.carries = carries
+                item.update()
+
     def sync_wires(self):
         for item in self.wire_items:
             self.scene().removeItem(item)
@@ -593,12 +1036,16 @@ class HydraCanvas(QGraphicsView):
             self.scene().addItem(item)
             self.wire_items.append(item)
         self.update_wires()
+        self.style_wires(self.editor.results)
 
     def update_wires(self, moved=None):
         for item in self.wire_items:
             w = item.wire
             if moved is not None and moved.node.id not in (w.source, w.target):
                 continue
+            if not (w.source in self.node_items
+                    and w.target in self.node_items):
+                continue             # an end gone, while the graph is rebuilt
             src = self.node_items[w.source].port(w.output, True)
             dst = self.node_items[w.target].port(w.input, False)
             item.set_ends(src.scenePos(), dst.scenePos())
@@ -645,6 +1092,12 @@ class HydraCanvas(QGraphicsView):
             super().contextMenuEvent(event)
 
     def mousePressEvent(self, event):
+        if self.editor.placing is not None:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.editor.place(self.mapToScene(event.position().toPoint()))
+            else:
+                self.editor.stop_placing()
+            return
         if event.button() == Qt.MouseButton.RightButton:
             self._pan = (event.position(), False)
             return
@@ -691,28 +1144,18 @@ class HydraEditor(QWidget):
         self.active = True
         self.picking = None        # the node a Set action picks for
         self.value_field = None    # typing into a slider, while it lasts
+        self.panel_field = None    # typing into a panel, while it lasts
+        self.placing = None        # a component waiting on the cursor
         self.meshes = PreviewMeshes()
+        self.selected_meshes = PreviewMeshes()
         self.search = None         # the find-a-component field, while open
         self.canvas = HydraCanvas(self)
+        self.canvas.scene().selectionChanged.connect(self._selection_changed)
 
         bar = QHBoxLayout()
-        bar.setContentsMargins(6, 4, 6, 4)
-        add = QToolButton()
-        add.setText("Add Component")
-        add.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        add.setMenu(self.component_menu(None))
-        bar.addWidget(add)
-        for label, slot, tip in (
-                ("New", self.new_graph, "Start an empty graph"),
-                ("Open…", self.open_graph, "Open a .hydra file"),
-                ("Save", self.save_graph,
-                 "Save to the graph's file, asking where only the first time"),
-                ("Save As…", self.save_graph_as,
-                 "Save to a file you choose")):
-            button = QPushButton(label)
-            button.setToolTip(tip)
-            button.clicked.connect(slot)
-            bar.addWidget(button)
+        bar.setContentsMargins(0, 0, 6, 0)
+        self.menus = self._menu_bar()
+        bar.addWidget(self.menus)
         bar.addStretch(1)
         self.status = QLabel()
         self.status.setStyleSheet("color: #9a9b9e;")
@@ -722,6 +1165,8 @@ class HydraEditor(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addLayout(bar)
+        self.nodes_bar = NodeBar(self)
+        root.addWidget(self.nodes_bar)
         self.start = HydraStart(self)
         self.pages = QStackedWidget()
         self.pages.addWidget(self.canvas)
@@ -734,6 +1179,10 @@ class HydraEditor(QWidget):
         self._timer.timeout.connect(self.solve)
         # picked objects that move or go away show so straight away
         window.scene.add_listener(self.changed, kinds=("objects",))
+        # Shift and Ctrl are heard wherever the keyboard is, not only on the
+        # canvas: hovering a port gives it no focus, and the hint has to
+        # come and go with the key all the same
+        QApplication.instance().installEventFilter(self)
 
         # The graph last worked on, kept from the session before. One that
         # belonged to a file since deleted is let go with its file, rather
@@ -745,8 +1194,38 @@ class HydraEditor(QWidget):
             saved, path = None, None
         self.load(saved if isinstance(saved, dict) else {})
         self.path = path
+        self._restoring = False
+        self.forget_steps()
 
     # ------------------------------------------------------------- editing
+
+    def _menu_bar(self):
+        """File and Edit, then a menu for each category of component."""
+        menus = QMenuBar()
+        menus.setNativeMenuBar(False)       # in Hydra, not the system's
+        file = menus.addMenu("File")
+        _command(file, "New", self.new_graph, "Start an empty graph")
+        _command(file, "Open…", self.open_graph, "Open a .hydra file")
+        file.addSeparator()
+        _command(file, "Save", self.save_graph,
+                 "Save to the graph's file, asking where only the first time",
+                 "Ctrl+S")
+        _command(file, "Save As…", self.save_graph_as,
+                 "Save to a file you choose", "Ctrl+Shift+S")
+        edit = menus.addMenu("Edit")
+        _command(edit, "Undo", self.undo, "", "Ctrl+Z")
+        _command(edit, "Redo", self.redo, "", "Ctrl+Y")
+        edit.addSeparator()
+        _command(edit, "Copy", self.copy_selected, "", "Ctrl+C")
+        _command(edit, "Paste", self.paste, "", "Ctrl+V")
+        _command(edit, "Delete", self.remove_selected, "", "Del")
+        edit.addSeparator()
+        _command(edit, "Hide", self.hide,
+                 "Hide the selected components in the viewports", "Ctrl+H")
+        _command(edit, "Show", self.show_hidden,
+                 "Show them again; all hidden ones with none selected",
+                 "Ctrl+Shift+H")
+        return menus
 
     def component_menu(self, at):
         menu = QMenu(self)
@@ -765,8 +1244,16 @@ class HydraEditor(QWidget):
         return menu
 
     def show_menu(self, scene_pos, screen_pos):
-        """A component's menu over a component, the add menu elsewhere."""
+        """A port's menu over a port, a component's over a component, the
+        add menu elsewhere."""
+        port = self.canvas.scene()._port_at(scene_pos)
         item = self.canvas.scene()._node_at(scene_pos)
+        if port is None and item is not None:
+            # an input's name counts as the input
+            port = item.port_at(item.mapFromScene(scene_pos))
+        if port is not None:
+            self.port_menu(port).exec(screen_pos)
+            return
         if item is None:
             self.find_component(scene_pos, screen_pos)
             return
@@ -776,21 +1263,103 @@ class HydraEditor(QWidget):
         """A field to type a component's name into, opened where the
         canvas was clicked; what is chosen is put there."""
         search = ComponentSearch(self)
-        search.chosen.connect(lambda key: self.add_component(key, scene_pos))
+        search.chosen.connect(
+            lambda key, params: self.add_component(key, scene_pos, params))
         search.move(screen_pos)
         search.show()
         search.field.setFocus()
         self.search = search
         return search
 
+    def port_menu(self, port):
+        """Graft, Flatten or Reverse what passes the port."""
+        menu = QMenu(self)
+        flag = port.flag()
+        for name, tip in (("Graft", "Every item on a branch of its own"),
+                          ("Flatten", "Every item on one branch")):
+            action = menu.addAction(name)
+            action.setCheckable(True)
+            action.setChecked(flag == name.lower())
+            action.setToolTip(tip)
+            action.triggered.connect(
+                lambda on, f=name.lower(): self.set_flag(port, f if on
+                                                         else None))
+        menu.addSeparator()
+        reverse = menu.addAction("Reverse")
+        reverse.setCheckable(True)
+        reverse.setChecked("reverse" in port.flags())
+        reverse.setToolTip("Each branch the other way round")
+        reverse.triggered.connect(lambda on: self.set_reverse(port, on))
+        if not port.is_output:
+            menu.addSeparator()
+            keep = menu.addAction("Internalize",
+                                  lambda: self.internalize_input(port))
+            keep.setToolTip("Keep what comes in as the input's own, "
+                            "and let the wires go")
+            keep.setEnabled(bool(len(self.graph.wired_tree(
+                port.node_id, port.port.name, self.results))))
+        return menu
+
+    def set_flag(self, port, flag):
+        """Graft, Flatten, or neither, on a port; a Reverse stays."""
+        keep = [f for f in port.flags() if f == "reverse"]
+        self._store_flags(port, keep + ([flag] if flag else []))
+
+    def set_reverse(self, port, on):
+        """Reverse on a port, or off, beside its Graft or Flatten."""
+        keep = [f for f in port.flags() if f != "reverse"]
+        self._store_flags(port, keep + (["reverse"] if on else []))
+
+    def _store_flags(self, port, names):
+        node = port.node_item.node
+        flags = node.params.setdefault("flags", {})
+        key = hydra.flag_key(port.port.name, port.is_output)
+        names = hydra.flags_of(names)
+        if not names:
+            flags.pop(key, None)
+        else:
+            # one flag as its name, as files have kept it, more as a list
+            flags[key] = names[0] if len(names) == 1 else names
+        if not flags:
+            node.params.pop("flags")
+        port.node_item.relayout()
+        self.solve()
+
     def node_menu(self, item):
         menu = QMenu(self)
         node = item.node
+        field = NameField(node.title)
+        field.setToolTip("Its name: type another, Enter to keep it; left "
+                         "empty, the component's own comes back")
+        named = QWidgetAction(menu)
+        named.setDefaultWidget(field)
+        menu.addAction(named)
+
+        def keep():
+            self.rename(node.id, field.text())
+        field.editingFinished.connect(keep)
+        field.returnPressed.connect(menu.close)
+        menu.addSeparator()
+        menu.name_field = field
         if node.component.sets:
             # Set Crv... for a curve, Set Vector... for a vector
             command = "hydraset" if node.component.picks else "hydravector"
             menu.addAction(f"{node.component.sets}...",
                            lambda: self.pick(node.id, command))
+            if node.component.picks:
+                keep = menu.addAction("Internalize",
+                                      lambda: self.internalize(node.id))
+                keep.setToolTip("Keep the picked objects as the graph's own "
+                                "copy, whatever happens to them in the model")
+                keep.setEnabled(any(
+                    self.window.scene.get(oid) is not None
+                    for oid in node.params.get("refs", [])))
+            menu.addSeparator()
+        if node.key == "toggle":
+            menu.addAction("Switch", lambda: self.flip(node.id))
+            menu.addSeparator()
+        if node.key == "pipeline":
+            self._pipe_menus(menu, node)
             menu.addSeparator()
         if item.is_slider:
             menu.addAction("Change Range...", lambda: self.change_range(item))
@@ -804,7 +1373,8 @@ class HydraEditor(QWidget):
                 action.triggered.connect(
                     lambda checked=False, n=n: self.set_decimals(item, n))
             menu.addSeparator()
-        if any(p.kind in GEOMETRY_KINDS for p in node.component.outputs):
+        if any(p.kind in GEOMETRY_KINDS or p.kind == "any"
+               for p in node.component.outputs):
             cast = menu.addAction("Cast...", lambda: self.cast(node.id))
             cast.setToolTip("Add what this component makes to the model")
             cast.setEnabled(bool(self.cast_shapes(self._casting(node.id))))
@@ -841,6 +1411,10 @@ class HydraEditor(QWidget):
             for port in self.graph.nodes[nid].component.outputs:
                 if port.kind in GEOMETRY_KINDS:
                     shapes.extend(result.outputs.get(port.name, []))
+                elif port.kind == "any":
+                    # only what it carries that is geometry can be cast
+                    shapes.extend(v for v in result.outputs.get(port.name, [])
+                                  if hydra.fits("geometry", v))
         return shapes
 
     def cast(self, node_id):
@@ -885,6 +1459,93 @@ class HydraEditor(QWidget):
         self.status.setText(f"Cast {said}")
         return objects
 
+    def type_panel(self, item):
+        """A field over a panel to type its text into; a panel that shows
+        what is wired into it has nothing of its own to type."""
+        if self.graph.input_values(item.node.id, item.inputs[0].port,
+                                   self.results)[1]:
+            self.status.setText("It shows what comes in: take the wire "
+                                "away to type into it")
+            return None
+        view = self.canvas
+        field = PanelField(item.node.params.get("text", ""), view.viewport())
+        field.setGeometry(view.mapFromScene(
+            item.mapToScene(item.panel_area())).boundingRect())
+        field.show()
+        field.setFocus()
+        self.panel_field = field
+
+        def done(keep):
+            if self.panel_field is not field:
+                return
+            self.panel_field = None
+            if keep and field.toPlainText() != item.node.params.get("text"):
+                item.node.params["text"] = field.toPlainText()
+                item.update()
+                self.changed()
+            field.deleteLater()
+            view.setFocus()
+
+        field.finished.connect(done)
+        return field
+
+    def rename(self, node_id, name):
+        """A component's own name, shown beside its icon; empty, it has its
+        component's again."""
+        node = self.graph.nodes.get(node_id)
+        if node is None:
+            return
+        before = node.title
+        node.rename(name)
+        if node.title == before:
+            return
+        item = self.canvas.node_items[node_id]
+        item.relayout()
+        item.set_result(item.result)
+        self.changed()
+
+    def flip(self, node_id):
+        """A Boolean Toggle switched to the other value."""
+        node = self.graph.nodes[node_id]
+        node.params["value"] = not node.params.get("value")
+        self.canvas.node_items[node_id].update()
+        self.changed()
+
+    def _pipe_menus(self, menu, node):
+        """A Geometry Pipeline's layer and its types to take."""
+        scene = self.window.scene
+        layers = menu.addMenu("Layer")
+        group = QActionGroup(layers)
+        chosen = node.params.get("layer")
+        for path in [None] + [scene.layers.full_path(layer.id)
+                              for layer in scene.layers.all()]:
+            action = layers.addAction("All layers" if path is None else path)
+            action.setCheckable(True)
+            action.setChecked(path == chosen)
+            group.addAction(action)
+            action.triggered.connect(
+                lambda checked=False, p=path: self.set_pipe(node.id, layer=p))
+        types = menu.addMenu("Types")
+        for key, title in (("point", "Points"), ("curve", "Curves"),
+                           ("brep", "Breps"), ("mesh", "Meshes")):
+            action = types.addAction(title)
+            action.setCheckable(True)
+            action.setChecked(key in node.params.get("types", ()))
+            action.triggered.connect(
+                lambda on, k=key: self.set_pipe(node.id, kind=k, on=on))
+
+    def set_pipe(self, node_id, layer=..., kind=None, on=True):
+        """A Geometry Pipeline's layer (None: all of them), or one of its
+        types taken or left."""
+        params = self.graph.nodes[node_id].params
+        if layer is not ...:
+            params["layer"] = layer
+        if kind is not None:
+            kept = [t for t in params.get("types", []) if t != kind]
+            params["types"] = [t for t in hydra.PIPE_TYPES
+                               if t in kept or (on and t == kind)]
+        self.changed()
+
     def change_range(self, item):
         dialog = RangeDialog(item.node.params, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -916,6 +1577,13 @@ class HydraEditor(QWidget):
 
         def commit(leaving):
             try:
+                self.status.objectName()
+            except RuntimeError:
+                return               # Hydra closed while the field was open
+            if self.canvas.node_items.get(item.node.id) is not item:
+                close()              # its component gone, by undo or delete
+                return
+            try:
                 hydra.type_into_slider(item.node.params, field.text())
             except (ValueError, HydraError):
                 if leaving:
@@ -939,14 +1607,40 @@ class HydraEditor(QWidget):
         item.set_result(item.result)
         self.changed()
 
-    def add_component(self, key, at=None):
+    def start_placing(self, key):
+        """A component clicked in the node bar waits on the cursor, its icon
+        with a plus, until the canvas is clicked where it is to go; Escape
+        or the right button puts it back."""
+        self.placing = key
+        self.canvas.viewport().setCursor(placing_cursor(COMPONENTS[key]))
+        self.status.setText(f"Click on the canvas to place "
+                            f"{COMPONENTS[key].title} · Esc to cancel")
+
+    def stop_placing(self):
+        if self.placing is None:
+            return
+        self.placing = None
+        self.canvas.viewport().unsetCursor()
+        self.status.setText("")
+
+    def place(self, at):
+        """The component waiting on the cursor, put down with its middle at
+        `at`."""
+        key = self.placing
+        self.stop_placing()
+        _labels, width, height = node_size(COMPONENTS[key])
+        return self.add_component(key, at - QPointF(width / 2, height / 2))
+
+    def add_component(self, key, at=None, params=None):
+        """A component on the canvas, at `at` or in the middle, set up
+        with `params` when given, as one step."""
         if at is None:
             at = self.canvas.mapToScene(self.canvas.viewport().rect().center())
             at -= QPointF(
                 (SLIDER_WIDTH if key == "slider" else NODE_WIDTH) / 2,
                 NODE_HEIGHT / 2)
         x, y = (at.x(), at.y()) if isinstance(at, QPointF) else at
-        node = self.graph.add_node(key, x, y)
+        node = self.graph.add_node(key, x, y, params)
         self.show_canvas()
         self.canvas.add_item(node)
         self.changed()
@@ -965,6 +1659,9 @@ class HydraEditor(QWidget):
         if node is None:
             return
         node.params["set"] = {name: list(v) for name, v in values.items()}
+        for name in values:
+            # picked anew, it no longer holds what was internalized
+            node.set_internal(name, None)
         self.solve()
 
     def set_references(self, node_id, ids):
@@ -972,17 +1669,58 @@ class HydraEditor(QWidget):
         if node is None:
             return
         node.params["refs"] = list(ids)
+        node.set_internal("out", None)       # the model's objects again
         self.solve()
 
-    def connect(self, source, output, target, input):
+    def internalize(self, node_id):
+        """A geometry component's objects kept as the graph's own copy."""
         try:
-            wire = self.graph.connect(source, output, target, input)
+            count = self.graph.internalize(node_id, self.window.scene)
+        except HydraError as exc:
+            self.status.setText(str(exc))
+            return 0
+        self.status.setText(f"Internalized {count} object"
+                            + ("" if count == 1 else "s"))
+        self.solve()
+        return count
+
+    def internalize_input(self, port):
+        """What comes into an input kept as its own, the wires let go."""
+        try:
+            count = self.graph.internalize_input(port.node_id,
+                                                 port.port.name, self.results)
+        except HydraError as exc:
+            self.status.setText(str(exc))
+            return 0
+        self.canvas.sync_wires()
+        self.status.setText(f"Internalized {count} item"
+                            + ("" if count == 1 else "s")
+                            + f" into {port.port.name}")
+        self.solve()
+        return count
+
+    def connect(self, source, output, target, input, add=False):
+        """A wire into an input, in place of the one there, or with `add`
+        beside it."""
+        try:
+            wire = self.graph.connect(source, output, target, input, add=add)
         except HydraError as exc:
             self.status.setText(str(exc))
             return None
         self.canvas.sync_wires()
         self.changed()
         return wire
+
+    def remove_wire(self, source, output, target, input):
+        """Take away the wire from that output into that input: what a wire
+        drawn over it with Ctrl does."""
+        wire = self.graph.wire_between(source, output, target, input)
+        if wire is None:
+            self.status.setText("No wire runs there to take away")
+            return False
+        self.disconnect(wire)
+        self.status.setText("Wire taken away")
+        return True
 
     def disconnect(self, wire):
         self.graph.disconnect(wire)
@@ -1099,6 +1837,9 @@ class HydraEditor(QWidget):
     # ------------------------------------------------------------- solving
 
     def changed(self):
+        # a step for Ctrl+Z at once, so two changes in quick succession
+        # stay two steps
+        self.record()
         # At most one solve per tick, not one once the changes stop: a
         # slider dragged without a pause has to show while it moves.
         if not self._timer.isActive():
@@ -1109,22 +1850,83 @@ class HydraEditor(QWidget):
         self.results = self.graph.solve(self.window.scene)
         for nid, item in self.canvas.node_items.items():
             item.set_result(self.results.get(nid))
+        self.canvas.style_wires(self.results)
         self.shapes = self.graph.preview_shapes(self.results)
         self._show_preview()
         if not self.graph.nodes:
             self.status.setText("Double-click the canvas to add a component")
         else:
             self.status.setText("")
+        self.record()
+
+    # ------------------------------------------------------------ undo, redo
+
+    def record(self):
+        """A step for Ctrl+Z when the graph is not as it was after the last
+        one. A knob still being dragged is not a step yet: the drag as a
+        whole is, when it is let go."""
+        if not hasattr(self, "_undo") or self._restoring:
+            return
+        if any(item._sliding for item in self.canvas.node_items.values()):
+            return
+        now = self.graph.to_dict()
+        if now == self._state:
+            return
+        self._undo.append(self._state)
+        del self._undo[:-UNDO_STEPS]
+        self._redo.clear()
+        self._state = now
+
+    def forget_steps(self):
+        """A graph opened or begun anew starts a history of its own."""
+        self._undo, self._redo = [], []
+        self._state = self.graph.to_dict()
+
+    def undo(self):
+        return self._step(self._undo, self._redo, "Undone")
+
+    def redo(self):
+        return self._step(self._redo, self._undo, "Redone")
+
+    def _step(self, source, target, said):
+        self.record()                # a change not yet a step becomes one
+        if not source:
+            self.status.setText("Nothing to " + said[:-2].lower())
+            return False
+        target.append(self._state)
+        self._state = source.pop()
+        self._restoring = True
+        try:
+            self.load(self._state)
+        finally:
+            self._restoring = False
+        self.status.setText(said)
+        return True
 
     def set_active(self, active: bool):
         """A closed editor shows nothing in the model."""
         self.active = active
         self._show_preview()
 
+    def _selection_changed(self):
+        try:
+            self._show_preview()
+        except RuntimeError:
+            pass                     # the window this belonged to is gone
+
     def _show_preview(self):
-        self.window.scene.hydra_preview = (
-            self.meshes.overlay(self.shapes)
-            if self.active and self.shapes else None)
+        """The graph in the model: violet, and what the selected components
+        make in green instead, hidden ones too, so the selection shows."""
+        scene = self.window.scene
+        chosen = set(self.selected_ids()) if self.active else set()
+        shown = self.graph.preview_shapes(
+            self.results, only=set(self.graph.nodes) - chosen)
+        picked = (self.graph.preview_shapes(self.results, only=chosen,
+                                            hidden=True) if chosen else [])
+        scene.hydra_preview = (self.meshes.overlay(shown)
+                               if self.active and shown else None)
+        scene.hydra_selected = (self.selected_meshes.overlay(picked)
+                                if picked else None)
         for viewport in self.window.all_viewports():
             viewport.update()
 
@@ -1135,6 +1937,9 @@ class HydraEditor(QWidget):
             self.show_canvas()
         for nid in list(self.canvas.node_items):
             self.canvas.remove_item(nid)
+        for item in self.canvas.wire_items:
+            self.canvas.scene().removeItem(item)
+        self.canvas.wire_items = []
         self.graph = Graph.from_dict(data)
         for node in self.graph.nodes.values():
             self.canvas.add_item(node)
@@ -1144,6 +1949,7 @@ class HydraEditor(QWidget):
     def new_graph(self):
         self.load({})
         self.set_path(None)
+        self.forget_steps()
 
     def set_path(self, path):
         """The file Save writes to, named in the Hydra window's title."""
@@ -1197,6 +2003,7 @@ class HydraEditor(QWidget):
         self.load(data if isinstance(data, dict) else {})
         self.set_path(path)
         self._remember(path)
+        self.forget_steps()
         return True
 
     # ---------------------------------------------------------- start page
@@ -1214,8 +2021,11 @@ class HydraEditor(QWidget):
 
     def show_start(self):
         """The graph being worked on and the recent ones, as cards; the
-        empty canvas only when there is neither."""
-        current = self.graph.to_dict() if self.graph.nodes else None
+        empty canvas only when there is neither. The graph being worked on
+        is offered to continue only when it is not its file's as saved:
+        then the file's own card is the same thing."""
+        current = (self.graph.to_dict()
+                   if self.graph.nodes and self.unsaved() else None)
         recent = self.recent()
         if current is None and not recent:
             self.show_canvas()
@@ -1225,13 +2035,80 @@ class HydraEditor(QWidget):
         self.start.setFocus()
         return True
 
+    def unsaved(self):
+        """Whether the graph holds anything its file does not: never saved,
+        its file gone, or changed since it was saved."""
+        if self.path is None or not os.path.exists(self.path):
+            return True
+        saved = _read_graph(self.path)
+        return saved != json.loads(json.dumps(self.graph.to_dict()))
+
     def show_canvas(self):
         self.pages.setCurrentWidget(self.canvas)
 
     def starting(self):
         return self.pages.currentWidget() is self.start
 
+    def eventFilter(self, obj, event):
+        kind = event.type()
+        if (kind == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape
+                and getattr(self, "placing", None) is not None):
+            self.stop_placing()
+            return True
+        # Ctrl+S, and Ctrl+Shift+S, typed anywhere in Hydra save the graph,
+        # not the model the main window would
+        if kind in (QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress):
+            save = _save_key(event)
+            if save is not None and self._holds(obj):
+                if kind == QEvent.Type.KeyPress and save == "as":
+                    self.save_graph_as()
+                elif kind == QEvent.Type.KeyPress:
+                    self.save_graph()
+                event.accept()
+                return True
+            # in a text field they undo the typing, as they always do
+            step = _undo_key(event)
+            if (step is not None and self._holds(obj)
+                    and not isinstance(obj, QLineEdit)):
+                if kind == QEvent.Type.KeyPress and step == "undo":
+                    self.undo()
+                elif kind == QEvent.Type.KeyPress:
+                    self.redo()
+                event.accept()
+                return True
+        if kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            flag = _MODIFIER_OF.get(event.key())
+            if flag is not None and not event.isAutoRepeat():
+                mods = event.modifiers()
+                # whether the key's own flag is in yet differs by platform
+                mods = (mods | flag if kind == QEvent.Type.KeyPress
+                        else mods & ~flag)
+                self._modifiers_changed(mods)
+        elif kind == QEvent.Type.ApplicationDeactivate:
+            # let go in another program, a key would stay held here
+            self._modifiers_changed(Qt.KeyboardModifier.NoModifier)
+        return False
+
+    def _holds(self, obj):
+        """Whether a widget is Hydra's: the editor or anything in it, the
+        search and the value field that float above it included."""
+        try:
+            floating = (getattr(self, "search", None),
+                        getattr(self, "value_field", None))
+            return isinstance(obj, QWidget) and (
+                obj is self or self.isAncestorOf(obj)
+                or any(obj is f for f in floating if f is not None))
+        except RuntimeError:
+            return False
+
+    def _modifiers_changed(self, mods):
+        try:
+            self.canvas.scene().modifiers_changed(mods)
+        except RuntimeError:
+            pass        # the window this belonged to is gone
+
     def shutdown(self):
+        QApplication.instance().removeEventFilter(self)
         self.window.cfg.set("hydra_graph", self.graph.to_dict())
         self.window.cfg.set("hydra_path", self.path)
         self.set_active(False)
@@ -1255,7 +2132,9 @@ def graph_preview(data, width, height):
     boxes = {}
     for n in nodes:
         comp = COMPONENTS[n["key"]]
-        _labels, w, h = node_size(comp)
+        params = n.get("params", {})
+        _labels, w, h = node_size(comp, params.get("flags"),
+                                  params.get("name"))
         boxes[n["id"]] = (QRectF(n.get("x", 0.0), n.get("y", 0.0), w, h),
                           comp)
     bounds = QRectF()
@@ -1298,14 +2177,16 @@ class GraphCard(QFrame):
 
     PREVIEW = (210, 118)
 
-    def __init__(self, title, detail, data, open_it, parent=None):
+    def __init__(self, title, detail, data, open_it, parent=None,
+                 picture=None):
         super().__init__(parent)
         self.setObjectName("hydraCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedWidth(self.PREVIEW[0] + 16)
         self.open_it = open_it
-        picture = QLabel()
-        picture.setPixmap(graph_preview(data, *self.PREVIEW))
+        shown = QLabel()
+        shown.setPixmap(picture if picture is not None
+                        else graph_preview(data, *self.PREVIEW))
         name = QLabel(title)
         name.setObjectName("cardName")
         about = QLabel(detail)
@@ -1314,7 +2195,7 @@ class GraphCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(4)
-        layout.addWidget(picture)
+        layout.addWidget(shown)
         layout.addWidget(name)
         layout.addWidget(about)
         self.title = title
@@ -1356,7 +2237,10 @@ class HydraStart(QScrollArea):
         root.setSpacing(12)
         grid = QGridLayout()
         grid.setSpacing(14)
-        self.cards = []
+        # a new graph first, then the one being worked on, then the recent
+        self.cards = [GraphCard("New Graph", "Start from an empty canvas",
+                                None, self.editor.new_graph,
+                                picture=_new_picture(*GraphCard.PREVIEW))]
         if current is not None:
             self.cards.append(GraphCard(
                 "Continue", "Where you left off", current,
@@ -1384,6 +2268,21 @@ class HydraStart(QScrollArea):
         super().keyPressEvent(event)
 
 
+def _new_picture(width, height):
+    """The New Graph card's picture: a plus on an empty canvas."""
+    pix = QPixmap(width, height)
+    pix.fill(QColor("#232427"))
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QPen(_ACCENT, 3, Qt.PenStyle.SolidLine,
+                        Qt.PenCapStyle.RoundCap))
+    cx, cy, arm = width / 2, height / 2, 18
+    painter.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy))
+    painter.drawLine(QPointF(cx, cy - arm), QPointF(cx, cy + arm))
+    painter.end()
+    return pix
+
+
 def _read_graph(path):
     try:
         with open(path, encoding="utf-8") as fh:
@@ -1402,12 +2301,275 @@ def _card_detail(path):
     return f"{folder} · {when}"
 
 
+def placing_cursor(comp):
+    """The cursor a component waits on: a small node, its icon, title and
+    ports, with a plus at its corner, its middle where it will go."""
+    bold = QFont()
+    bold.setPointSizeF(8)
+    bold.setBold(True)
+    metrics = QFontMetrics(bold)
+    title = metrics.elidedText(comp.title, Qt.TextElideMode.ElideRight, 110)
+    ports = max(len(comp.inputs), len(comp.outputs), 1)
+    body = QRectF(6, 4, 37 + metrics.horizontalAdvance(title),
+                  max(26, ports * 9 + 8))
+    pix = QPixmap(int(body.right()) + 9, int(body.bottom()) + 9)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QPen(QColor("#1b1c1f"), 1))
+    painter.setBrush(_BODY)
+    painter.drawRoundedRect(body, 4, 4)
+    icon = component_icon(comp)
+    if icon is not None:
+        icon.paint(painter, QRect(int(body.left()) + 5,
+                                  int(body.center().y()) - 9, 18, 18))
+    painter.setFont(bold)
+    painter.setPen(_TEXT)
+    painter.drawText(body.adjusted(27, 0, 0, 0),
+                     Qt.AlignmentFlag.AlignVCenter, title)
+    painter.setPen(QPen(QColor("#1b1c1f"), 1))
+    for x, side in ((body.left(), comp.inputs), (body.right(), comp.outputs)):
+        for i, port in enumerate(side):
+            y = body.top() + body.height() * (i + 1) / (len(side) + 1)
+            painter.setBrush(_PORT.get(port.kind, _WIRE))
+            painter.drawEllipse(QPointF(x, y), 3, 3)
+    corner = body.bottomRight()
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(_ACCENT)
+    painter.drawEllipse(corner, 6.5, 6.5)
+    painter.setPen(QPen(QColor("#1b1c1f"), 2, Qt.PenStyle.SolidLine,
+                        Qt.PenCapStyle.RoundCap))
+    painter.drawLine(corner - QPointF(3, 0), corner + QPointF(3, 0))
+    painter.drawLine(corner - QPointF(0, 3), corner + QPointF(0, 3))
+    painter.end()
+    middle = body.center()
+    return QCursor(pix, int(middle.x()), int(middle.y()))
+
+
+class NodeButton(QToolButton):
+    """A component in the node bar: clicked, it goes in the middle of the
+    canvas; dragged, it goes where it is let go."""
+
+    def __init__(self, editor, comp):
+        super().__init__()
+        self.editor = editor
+        self.key = comp.key
+        self.setText(comp.title)
+        icon = component_icon(comp)
+        if icon is not None:
+            self.setIcon(icon)
+        self.setIconSize(QSize(18, 18))
+        self.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.setToolTip(comp.description)
+        self.clicked.connect(lambda: editor.start_placing(self.key))
+        self._pressed = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pressed = event.position()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (self._pressed is not None
+                and (event.position() - self._pressed).manhattanLength()
+                >= QApplication.startDragDistance()):
+            self._pressed = None
+            self.setDown(False)
+            drag = QDrag(self)
+            data = QMimeData()
+            data.setData(COMPONENT_MIME, self.key.encode())
+            drag.setMimeData(data)
+            drag.setPixmap(self.icon().pixmap(24, 24))
+            drag.exec(Qt.DropAction.CopyAction)
+            return
+        super().mouseMoveEvent(event)
+
+
+class NodeRow(QScrollArea):
+    """One tab's components side by side; too many to fit, the wheel
+    scrolls them sideways."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        for policy in (self.setHorizontalScrollBarPolicy,
+                       self.setVerticalScrollBarPolicy):
+            policy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+    def wheelEvent(self, event):
+        bar = self.horizontalScrollBar()
+        bar.setValue(bar.value() - event.angleDelta().y())
+
+
+class CardTabs(QTabBar):
+    """Tabs drawn as file cards, by their fills alone: the chosen one in
+    the colour of the panel it opens onto, its top corners rounded and its
+    foot flaring out into the panel; the others darker, lower, behind."""
+
+    ROUND = 5                  # the top corners
+    FLARE = 5                  # where the chosen tab's foot meets the edge
+
+    def __init__(self, panel):
+        super().__init__()
+        self.panel = QColor(panel)
+        self.setMouseTracking(True)
+        self._hovered = -1
+
+    def mouseMoveEvent(self, event):
+        hovered = self.tabAt(event.position().toPoint())
+        if hovered != self._hovered:
+            self._hovered = hovered
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = -1
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        chosen = self.currentIndex()
+        for i in range(self.count()):
+            if i != chosen:
+                self._paint_tab(painter, i, False)
+        if chosen >= 0:
+            self._paint_tab(painter, chosen, True)
+        painter.end()
+
+    def _paint_tab(self, painter, i, chosen):
+        rect = QRectF(self.tabRect(i))
+        if not chosen:
+            rect.adjust(2, 0, -2, 0)        # a little air between them
+        foot = self.height()                # where the panel begins
+        left, right = rect.left(), rect.right() + 1
+        top = rect.top() + (0 if chosen else 3)
+        r, f = self.ROUND, self.FLARE
+        outline = QPainterPath()
+        if chosen:
+            # a flare out into the edge on each side, but where the tab
+            # stands at the panel's own corner, a straight drop into it
+            if left - f >= 0:
+                outline.moveTo(left - f, foot)
+                outline.quadTo(left, foot, left, foot - f)
+            else:
+                outline.moveTo(left, foot)
+            outline.lineTo(left, top + r)
+        else:
+            outline.moveTo(left, foot)
+            outline.lineTo(left, top + r)
+        outline.quadTo(left, top, left + r, top)
+        outline.lineTo(right - r, top)
+        outline.quadTo(right, top, right, top + r)
+        if chosen:
+            outline.lineTo(right, foot - f)
+            outline.quadTo(right, foot, right + f, foot)
+        else:
+            outline.lineTo(right, foot)
+        body = QPainterPath(outline)
+        body.lineTo(body.currentPosition().x(), self.height())
+        body.lineTo(outline.elementAt(0).x, self.height())
+        body.closeSubpath()
+        hovered = i == self._hovered
+        fill = (self.panel if chosen
+                else QColor("#2c2e33") if hovered else QColor("#26282c"))
+        painter.fillPath(body, fill)
+        painter.setPen(QColor("#e4e5e7") if chosen or hovered
+                       else QColor("#9a9b9e"))
+        text = QRectF(rect.left(), top, rect.width(), foot - top)
+        painter.drawText(text, Qt.AlignmentFlag.AlignCenter, self.tabText(i))
+
+
+class NodeBar(QWidget):
+    """The components a tab at a time, a tab for each category, as in
+    Grasshopper: file-card tabs above, the chosen one joined to the panel
+    of its components below, as tabs are in any program. The tab last
+    chosen is the one it opens on."""
+
+    _PANEL = "#2f3136"         # the chosen tab and the panel it opens onto
+    _QSS = (
+        # no outlines anywhere: the shapes are told apart by their fills,
+        # which stay sharp however the screen is scaled
+        "NodeBar { background: #1f2023; }"
+        "QTabWidget::pane { background: %(panel)s; border: none;"
+        " border-radius: 6px; border-top-left-radius: 0; top: 0px; }"
+        # the tabs draw themselves; this only gives them their size
+        "QTabBar::tab { padding: 6px 18px; margin-right: 8px;"
+        " border: none; background: transparent; }"
+        # the pages show the pane's colour through, as one with the tab
+        "QTabWidget QStackedWidget, #nodeBarRow, NodeRow"
+        " { background: transparent; }"
+        # each component a button of its own, in the colours of a node
+        "QToolButton { color: #e4e5e7; background: #3a3d44;"
+        " border: 1px solid #1b1c1f; border-radius: 4px; padding: 5px 12px; }"
+        "QToolButton:hover { background: #454850; border-color: #d9a441; }"
+        "QToolButton:pressed { background: #26282c; }"
+    ) % {"panel": _PANEL}
+
+    def __init__(self, editor):
+        super().__init__()
+        self.editor = editor
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.setStyleSheet(self._QSS)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Fixed)
+        self.tabs = QTabWidget()
+        self.tabs.setTabBar(CardTabs(self._PANEL))
+        self.tabs.setDocumentMode(False)
+        self.tabs.tabBar().setExpanding(False)
+        self.tabs.tabBar().setDrawBase(False)
+        self.buttons: dict[str, NodeButton] = {}
+        self.groups: dict[str, list[str]] = {}
+        for category in CATEGORIES:
+            self.tabs.addTab(self._page(category), category)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 8, 10, 10)
+        root.addWidget(self.tabs)
+        self.tabs.currentChanged.connect(self._chosen)
+        shown = editor.window.cfg.get("hydra_tab", default=CATEGORIES[0])
+        self.tabs.setCurrentIndex(
+            CATEGORIES.index(shown) if shown in CATEGORIES else 0)
+        self.setFixedHeight(self.sizeHint().height())
+
+    def _page(self, category):
+        row = QWidget()
+        row.setObjectName("nodeBarRow")
+        buttons = QHBoxLayout(row)
+        buttons.setContentsMargins(12, 10, 12, 10)
+        buttons.setSpacing(6)
+        self.groups[category] = []
+        for comp in COMPONENTS.values():
+            if comp.category == category:
+                button = NodeButton(self.editor, comp)
+                buttons.addWidget(button)
+                self.buttons[comp.key] = button
+                self.groups[category].append(comp.key)
+        buttons.addStretch(1)
+        page = NodeRow()
+        page.setWidget(row)
+        page.setFixedHeight(row.sizeHint().height())
+        return page
+
+    def category(self) -> str:
+        """The tab being shown."""
+        return CATEGORIES[self.tabs.currentIndex()]
+
+    def show_category(self, category):
+        self.tabs.setCurrentIndex(CATEGORIES.index(category))
+
+    def _chosen(self, index):
+        self.editor.window.cfg.set("hydra_tab", CATEGORIES[index])
+
+
 class ComponentSearch(QFrame):
     """Type to find a component. Before anything is typed it offers the
     components every graph starts from; typing searches them all, and hides
     the ones whose name does not fit."""
 
-    chosen = Signal(str)
+    chosen = Signal(str, object)     # a component, and settings if typed
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Popup)
@@ -1445,6 +2607,13 @@ class ComponentSearch(QFrame):
 
     def show_found(self, text):
         self.list.clear()
+        # a number or a range typed is a slider set to it, offered first
+        typed = hydra.slider_from_text(text)
+        if typed is not None:
+            self.list.addItem(self._typed_slider(typed))
+        note = hydra.panel_from_text(text)
+        if note is not None:
+            self.list.addItem(self._typed_panel(note))
         for key in hydra.find_components(text):
             comp = COMPONENTS[key]
             item = QListWidgetItem(comp.title)
@@ -1479,12 +2648,127 @@ class ComponentSearch(QFrame):
                 return True
         return super().eventFilter(obj, event)
 
+    def _typed_slider(self, params):
+        comp = COMPONENTS["slider"]
+        places = params["decimals"]
+        low, high = (hydra.format_number(params[k], places)
+                     for k in ("min", "max"))
+        value = hydra.format_number(params["value"], places)
+        item = QListWidgetItem(f"Number Slider  {low} to {high}, at {value}")
+        icon = component_icon(comp)
+        if icon is not None:
+            item.setIcon(icon)
+        item.setToolTip("A slider set to what was typed")
+        item.setData(Qt.ItemDataRole.UserRole, "slider")
+        item.setData(Qt.ItemDataRole.UserRole + 1, params)
+        return item
+
+    def _typed_panel(self, params):
+        comp = COMPONENTS["panel"]
+        item = QListWidgetItem(f"Panel  \u201c{params['text']}\u201d")
+        icon = component_icon(comp)
+        if icon is not None:
+            item.setIcon(icon)
+        item.setToolTip("A panel holding what was typed")
+        item.setData(Qt.ItemDataRole.UserRole, "panel")
+        item.setData(Qt.ItemDataRole.UserRole + 1, params)
+        return item
+
     def _take(self, item):
         if item is None:
             return
         key = item.data(Qt.ItemDataRole.UserRole)
+        params = item.data(Qt.ItemDataRole.UserRole + 1)
         self.close()
-        self.chosen.emit(key)
+        self.chosen.emit(key, params)
+
+
+def _pipe_said(params) -> str:
+    """A Geometry Pipeline's filter in words."""
+    names = {"point": "points", "curve": "curves", "brep": "breps",
+             "mesh": "meshes"}
+    types = [names[t] for t in params.get("types", [])]
+    layer = params.get("layer") or "all layers"
+    return f"{', '.join(types) or 'no types'} on {layer}"
+
+
+def _command(menu, text, slot, tip="", keys=""):
+    """A menu entry, with its keys shown beside it but not taken: the keys
+    are Hydra's already, and taken here too they would clash with the main
+    window's."""
+    action = menu.addAction(f"{text}\t{keys}" if keys else text)
+    action.triggered.connect(lambda checked=False: slot())
+    if tip:
+        action.setToolTip(tip)
+    menu.setToolTipsVisible(True)
+    return action
+
+
+class NameField(QLineEdit):
+    """A component's name, at the top of its menu: clicked into, the whole
+    of it is chosen, to be typed over."""
+
+    def __init__(self, text):
+        super().__init__(text)
+        self.setMinimumWidth(180)
+        self.setStyleSheet(
+            "QLineEdit { background: #25272b; color: #e4e5e7;"
+            " border: 1px solid #45484f; border-radius: 3px;"
+            " padding: 3px 6px; margin: 4px 6px; font-weight: bold; }"
+            "QLineEdit:focus { border-color: #d9a441; }")
+
+    def mousePressEvent(self, event):
+        chosen = self.hasSelectedText() and len(self.selectedText()) == len(
+            self.text())
+        super().mousePressEvent(event)
+        if not chosen and not getattr(self, "_typed_in", False):
+            self.selectAll()
+            self._typed_in = True
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        QTimer.singleShot(0, self.selectAll)
+
+
+class PanelField(QPlainTextEdit):
+    """Typing into a panel: Ctrl+Enter or a click elsewhere keeps the text,
+    Escape leaves the panel as it was. Enter alone starts a new line."""
+
+    finished = Signal(bool)          # True to keep what was typed
+
+    def __init__(self, text, parent):
+        super().__init__(text, parent)
+        self._done = False
+        self.setStyleSheet(
+            "QPlainTextEdit { background: #25272b; color: #e4e5e7;"
+            " border: 1px solid #d9a441; border-radius: 3px; }")
+        self.setPlaceholderText("One item a line")
+
+    def event(self, event):
+        if (event.type() == QEvent.Type.ShortcutOverride
+                and event.key() == Qt.Key.Key_Escape):
+            event.accept()
+            return True
+        return super().event(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self._finish(False)
+            return
+        if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self._finish(True)
+            return
+        super().keyPressEvent(event)
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self._finish(True)
+
+    def _finish(self, keep):
+        if not self._done:
+            self._done = True
+            self.finished.emit(keep)
 
 
 class ValueField(QLineEdit):
@@ -1679,5 +2963,24 @@ def _mesh_arrays(shape):
             if len(mesh.triangles) else empty)
     segs = (mesh.edge_segments.reshape(-1, 3).astype(float)
             if len(mesh.edge_segments) else empty)
+    wires = _mesh_wires(shape)
+    if wires is not None:
+        segs = wires
     points = mesh.points.astype(float) if len(mesh.points) else empty
     return tris, segs, points
+
+
+def _mesh_wires(shape):
+    """Every edge of a mesh's triangles, for a mesh small enough to show
+    them all: the model shows a mesh's rim and creases only, which hides how
+    a mesh Hydra made, a Delaunay one say, is triangulated. None for other
+    shapes, and for a mesh as big as a scan."""
+    from ..core.mesh import MeshShape
+    if not isinstance(shape, MeshShape) or not (
+            0 < len(shape.triangles) <= MESH_WIRES_UP_TO):
+        return None
+    tris = shape.triangles.astype(np.int64)
+    edges = np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]],
+                            tris[:, [2, 0]]])
+    edges = np.unique(np.sort(edges, axis=1), axis=0)
+    return shape.vertices[edges].reshape(-1, 3).astype(float)

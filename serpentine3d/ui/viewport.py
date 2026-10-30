@@ -3796,6 +3796,11 @@ class Viewport(QOpenGLWidget):
         overlay = getattr(self.scene, "hydra_preview", None)
         if overlay is not None:
             self._draw_overlay(mvp, overlay, (.62, .55, 1.0))
+        # what the components selected in Hydra make, in green, as in
+        # Grasshopper: you see what you picked
+        selected = getattr(self.scene, "hydra_selected", None)
+        if selected is not None:
+            self._draw_overlay(mvp, selected, (.44, .81, .48))
 
     def _draw_overlay(self, mvp, geometry, color):
         if self.space != "model" or self._preview is None:

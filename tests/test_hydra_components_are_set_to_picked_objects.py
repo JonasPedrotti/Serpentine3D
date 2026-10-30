@@ -8,10 +8,11 @@ import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QFont, QMouseEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from serpentine3d.app import MainWindow
 from serpentine3d.core import geometry as geo
+from serpentine3d.core import hydra
 from serpentine3d.core.hydra import Graph
 from serpentine3d.core.mesh import mesh_from_brep
 
@@ -27,6 +28,11 @@ def win(tmp_path, monkeypatch):
     win.mark_saved()
     win.close()
     QApplication.processEvents()
+
+
+def _lines(port):
+    """A port's tooltip, line by line."""
+    return port.toolTip().splitlines()
 
 
 def _set_to(win, editor, node, objs):
@@ -56,8 +62,10 @@ def test_the_add_menu_offers_the_geometries_with_their_icons(win):
     actions = [a for a in editor.component_menu(None).actions()
                if not a.isSeparator()]
     assert [a.text() for a in actions] == [
-        "Point", "Curve", "Brep", "Mesh", "Number Slider",
-        "Construct Point", "Vector", "Move", "Rotate"]
+        "Point", "Curve", "Brep", "Mesh", "Boolean Toggle",
+        "Geometry Pipeline", "Panel", "Number Slider", "Construct Point",
+        "Vector", "Delaunay Mesh", "Move", "Rotate", "List Item",
+        "Remove Item"]
     assert all(not a.icon().isNull() for a in actions)
 
 
@@ -244,7 +252,9 @@ def test_a_right_click_without_dragging_opens_the_menu(menus):
 # -- the number slider ------------------------------------------------------
 
 def _menu_texts(menu):
-    return [a.text() for a in menu.actions() if not a.isSeparator()]
+    # the name field at the top is a widget, not an entry with text
+    return [a.text() for a in menu.actions()
+            if not a.isSeparator() and a.text()]
 
 
 def test_a_sliders_menu_offers_change_range_with_decimal_places_below(win):
@@ -487,15 +497,15 @@ def test_an_inputs_tooltip_shows_what_reaches_it_now(win):
     rotate = editor.add_component("rotate", (40, -20))
     editor.solve()
     angle = editor.canvas.node_items[rotate.id].port("Angle", False)
-    assert angle.toolTip() == "Angle: 0 (default)"
+    assert _lines(angle) == ["Number", "Default · 1 item", "", "[0] 0"]
     editor.connect(slider.id, "Number", rotate.id, "Angle")
     editor.solve()
-    assert angle.toolTip() == "Angle: 5"
+    assert _lines(angle) == ["Number", "1 item", "", "[0] 5"]
     editor.canvas.node_items[slider.id].slide_to(10_000)
     editor.solve()
-    assert angle.toolTip() == "Angle: 10"
+    assert _lines(angle) == ["Number", "1 item", "", "[0] 10"]
     geometry = editor.canvas.node_items[rotate.id].port("Geometry", False)
-    assert geometry.toolTip() == "Geometry: nothing"
+    assert _lines(geometry) == ["Geometry", "Nothing connected"]
 
 
 def test_a_waiting_components_input_names_are_drawn_white(win):
@@ -759,7 +769,8 @@ def test_set_vector_takes_two_points_picked_in_the_model(win):
     [v] = editor.results[node.id].outputs["Vector"]
     assert v.components == (0, 3, 0)
     item = editor.canvas.node_items[node.id]
-    assert item.port("B", False).toolTip() == "B: 1, 3, 0 (set in the model)"
+    assert _lines(item.port("B", False)) == [
+        "Point", "Set in the model · 1 item", "", "[0] Point 1, 3, 0"]
     assert item.summary() == "1 vector"
     segs = win.scene.hydra_preview[1]
     assert segs[:, 1].max() == pytest.approx(3.0)
@@ -791,8 +802,8 @@ def test_construct_point_has_x_y_z_inputs_that_default_to_zero(win):
     node = editor.add_component("construct_point", (0, 0))
     editor.solve()
     item = editor.canvas.node_items[node.id]
-    assert [p.toolTip() for p in item.inputs] == [
-        "X: 0 (default)", "Y: 0 (default)", "Z: 0 (default)"]
+    assert [_lines(p) for p in item.inputs] == [
+        ["Number", "Default · 1 item", "", "[0] 0"]] * 3
     assert editor.results[node.id].status == "ok"
     assert len(win.scene.hydra_preview[2]) == 1        # one point shown
 
@@ -1136,7 +1147,8 @@ def test_a_vector_wired_into_move_moves_the_preview(win):
     assert segs[:, 1] == pytest.approx(3.0)
     item = editor.canvas.node_items[move.id]
     assert [p.port.name for p in item.inputs] == ["G", "V"]
-    assert item.port("V", False).toolTip() == "V: 0, 3, 0"
+    assert _lines(item.port("V", False)) == [
+        "Vector", "1 item", "", "[0] Vector 0, 3, 0"]
 
 
 # -- cast ---------------------------------------------------------------------
@@ -1484,7 +1496,8 @@ def test_opening_hydra_shows_the_recent_graphs_as_cards(
     editor = _reopen(win)
     assert editor.starting()
     titles = [card.title for card in editor.start.cards]
-    assert titles == ["Continue", "second", "first"]      # newest first
+    # the last graph is its file as saved: its own card, no Continue
+    assert titles == ["New Graph", "second", "first"]
 
 
 def test_double_clicking_a_card_opens_that_graph(win, dialogs, tmp_path):
@@ -1502,7 +1515,7 @@ def test_continue_goes_back_to_the_graph_being_worked_on(
     editor = _save_graphs(win, dialogs, tmp_path, ["saved"])
     editor.add_component("rotate", (300, 0))          # not saved yet
     editor = _reopen(win)
-    QTest.mouseDClick(editor.start.cards[0], Qt.MouseButton.LeftButton)
+    QTest.mouseDClick(editor.start.cards[1], Qt.MouseButton.LeftButton)
     assert not editor.starting()
     assert "rotate" in [n.key for n in editor.graph.nodes.values()]
 
@@ -1532,7 +1545,8 @@ def test_a_graph_gone_from_disk_has_no_card(win, dialogs, tmp_path):
     _save_graphs(win, dialogs, tmp_path, ["kept", "gone"])
     os.remove(tmp_path / "gone.hydra")
     editor = _reopen(win)
-    assert [c.title for c in editor.start.cards] == ["Continue", "kept"]
+    assert [c.title for c in editor.start.cards] == [
+        "New Graph", "Continue", "kept"]
 
 
 def test_adding_a_component_leaves_the_start_page(win, dialogs, tmp_path):
@@ -1603,8 +1617,9 @@ def test_unsaved_work_is_offered_to_continue_on_the_start_page(win):
     try:
         editor = again.show_hydra()
         assert editor.starting()
-        assert [c.title for c in editor.start.cards] == ["Continue"]
-        QTest.mouseDClick(editor.start.cards[0], Qt.MouseButton.LeftButton)
+        assert [c.title for c in editor.start.cards] == [
+            "New Graph", "Continue"]
+        QTest.mouseDClick(editor.start.cards[1], Qt.MouseButton.LeftButton)
         assert [n.key for n in editor.graph.nodes.values()] == ["curve"]
     finally:
         again.mark_saved()
@@ -1620,7 +1635,8 @@ def test_a_graph_whose_file_is_still_there_is_offered_with_it(
     try:
         editor = again.show_hydra()
         assert editor.starting()
-        assert [c.title for c in editor.start.cards] == ["Continue", "graph"]
+        assert [c.title for c in editor.start.cards] == [
+            "New Graph", "graph"]
         assert editor.path == dialogs["answer"]
     finally:
         again.mark_saved()
@@ -1632,7 +1648,7 @@ def test_reopening_hydra_in_the_same_session_starts_on_the_cards(win):
     editor.add_component("brep", (0, 0))
     editor = _reopen(win)
     assert editor.starting()
-    assert [c.title for c in editor.start.cards] == ["Continue"]
+    assert [c.title for c in editor.start.cards] == ["New Graph", "Continue"]
 
 
 def test_the_search_has_no_scroll_bar_and_shows_every_entry_whole(win):
@@ -1648,3 +1664,1393 @@ def test_the_search_has_no_scroll_bar_and_shows_every_entry_whole(win):
         last = lst.visualItemRect(lst.item(lst.count() - 1))
         assert lst.viewport().rect().contains(last)
     search.close()
+
+
+# -- Shift adds a wire, Ctrl takes one away -------------------------------------
+
+_SHIFT = Qt.KeyboardModifier.ShiftModifier
+_CTRL = Qt.KeyboardModifier.ControlModifier
+
+
+def _drag_with(view, start_scene, end_scene, modifiers, check=None):
+    a = view.mapFromScene(start_scene)
+    b = view.mapFromScene(end_scene)
+    left = Qt.MouseButton.LeftButton
+
+    def send(kind, at, button, held):
+        QApplication.sendEvent(view.viewport(), QMouseEvent(
+            kind, QPointF(at), QPointF(view.mapToGlobal(at)), button, held,
+            modifiers))
+    send(QEvent.Type.MouseButtonPress, a, left, left)
+    send(QEvent.Type.MouseMove, (a + b) / 2, Qt.MouseButton.NoButton, left)
+    send(QEvent.Type.MouseMove, b, Qt.MouseButton.NoButton, left)
+    if check is not None:
+        check()
+    send(QEvent.Type.MouseButtonRelease, b, left, Qt.MouseButton.NoButton)
+
+
+def _breps_and_move(win, editor):
+    boxes = [win.scene.add(geo.make_box((4 * i, 0, 0), 1, 1, 1))
+             for i in range(2)]
+    upper = editor.add_component("brep", (-320, -80))
+    lower = editor.add_component("brep", (-320, 0))
+    editor.set_references(upper.id, [boxes[0].id])
+    editor.set_references(lower.id, [boxes[1].id])
+    move = editor.add_component("move", (40, -20))
+    editor.connect(lower.id, "Brep", move.id, "G")
+    view = editor.canvas
+    view.centerOn(-120, -30)
+    QApplication.processEvents()
+    return upper, lower, move
+
+
+def _ports(editor, source, target, input="G"):
+    view = editor.canvas
+    return (view.node_items[source.id].port("Brep", True).scenePos(),
+            view.node_items[target.id].port(input, False))
+
+
+def test_shift_dragging_a_second_wire_into_g_moves_both_breps(win):
+    editor = _shown(win)
+    upper, lower, move = _breps_and_move(win, editor)
+    start, g = _ports(editor, upper, move)
+    seen = []
+    _drag_with(editor.canvas, start, g.scenePos(), _SHIFT,
+               lambda: seen.append((g._hover, g.hint())))
+    assert seen == [(True, "add")]
+    assert sorted(w.source for w in editor.graph.wires) == sorted(
+        [upper.id, lower.id])
+    editor.solve()
+    assert len(editor.results[move.id].outputs["G"]) == 2
+    assert _lines(g)[:2] == ["Geometry", "2 items"]
+
+
+def test_a_plain_drag_still_replaces_the_wire_there(win):
+    editor = _shown(win)
+    upper, lower, move = _breps_and_move(win, editor)
+    start, g = _ports(editor, upper, move)
+    _drag_with(editor.canvas, start, g.scenePos(),
+               Qt.KeyboardModifier.NoModifier)
+    assert [w.source for w in editor.graph.wires] == [upper.id]
+
+
+def test_ctrl_dragging_over_a_wire_takes_it_away(win):
+    editor = _shown(win)
+    upper, lower, move = _breps_and_move(win, editor)
+    start, g = _ports(editor, lower, move)
+    seen = []
+    _drag_with(editor.canvas, start, g.scenePos(), _CTRL,
+               lambda: seen.append(g.hint()))
+    assert seen == ["remove"]
+    assert editor.graph.wires == []
+    assert "taken away" in editor.status.text()
+
+
+def test_ctrl_dragging_where_no_wire_runs_takes_nothing(win):
+    editor = _shown(win)
+    upper, lower, move = _breps_and_move(win, editor)
+    start, g = _ports(editor, upper, move)
+    _drag_with(editor.canvas, start, g.scenePos(), _CTRL)
+    assert [w.source for w in editor.graph.wires] == [lower.id]
+    assert "No wire" in editor.status.text()
+
+
+def test_ctrl_takes_away_only_the_wire_retraced_of_two(win):
+    editor = _shown(win)
+    upper, lower, move = _breps_and_move(win, editor)
+    editor.connect(upper.id, "Brep", move.id, "G", add=True)
+    start, g = _ports(editor, upper, move)
+    _drag_with(editor.canvas, start, g.scenePos(), _CTRL)
+    assert [w.source for w in editor.graph.wires] == [lower.id]
+
+
+def test_ctrl_dragged_from_the_input_back_to_its_output_also_takes_it(win):
+    editor = _shown(win)
+    upper, lower, move = _breps_and_move(win, editor)
+    out, g = _ports(editor, lower, move)
+    _drag_with(editor.canvas, g.scenePos(), out, _CTRL)
+    assert editor.graph.wires == []
+
+
+def test_a_hovered_port_hints_what_shift_and_ctrl_would_do(win):
+    editor = _shown(win)
+    upper, lower, move = _breps_and_move(win, editor)
+    _start, g = _ports(editor, upper, move)
+    assert g.hint(Qt.KeyboardModifier.NoModifier) is None
+    assert g.hint(_SHIFT) == "add"
+    assert g.hint(_CTRL) == "remove"
+    assert g.hint(_SHIFT | _CTRL) is None
+
+
+def test_the_hint_is_drawn_green_for_add_and_red_for_remove(win):
+    from PySide6.QtGui import QImage, QPainter
+    from serpentine3d.ui import hydra_editor
+    editor = _shown(win)
+    upper, lower, move = _breps_and_move(win, editor)
+    _start, g = _ports(editor, upper, move)
+
+    def drawn(mode):
+        g.set_highlight(True, mode)
+        rect = g.boundingRect()
+        image = QImage(int(rect.width()), int(rect.height()),
+                       QImage.Format.Format_ARGB32)
+        image.fill(0)
+        painter = QPainter(image)
+        painter.translate(-rect.topLeft())
+        g.paint(painter, None)
+        painter.end()
+        return {image.pixelColor(x, y).name()
+                for x in range(image.width()) for y in range(image.height())
+                if image.pixelColor(x, y).alpha() == 255}
+    assert hydra_editor._HINT["add"].name() in drawn("add")
+    assert hydra_editor._HINT["remove"].name() in drawn("remove")
+    g.set_highlight(False)
+
+
+def test_pressing_shift_while_dragging_turns_the_wire_green_at_once(win):
+    editor = _shown(win)
+    upper, lower, move = _breps_and_move(win, editor)
+    start, g = _ports(editor, upper, move)
+    scene = editor.canvas.scene()
+
+    def press_shift_midway():
+        scene.modifiers_changed(_SHIFT)
+        assert scene._drag[1].mode == "add"
+        assert g.hint() == "add"
+    _drag_with(editor.canvas, start, g.scenePos(),
+               Qt.KeyboardModifier.NoModifier, press_shift_midway)
+
+
+def _key(widget, kind, key, modifiers):
+    from PySide6.QtGui import QKeyEvent
+    QApplication.sendEvent(widget, QKeyEvent(kind, key, modifiers))
+
+
+def test_the_hint_comes_with_the_key_and_goes_when_it_is_let_go(win):
+    editor = _shown(win)
+    upper, lower, move = _breps_and_move(win, editor)
+    _start, g = _ports(editor, upper, move)
+    g.set_highlight(True)                      # the cursor is over it
+    # the keys land on the main window: hovering gave Hydra no focus
+    press, release = QEvent.Type.KeyPress, QEvent.Type.KeyRelease
+    _key(win, press, Qt.Key.Key_Shift, _SHIFT)
+    assert g.hint() == "add"
+    _key(win, release, Qt.Key.Key_Shift, Qt.KeyboardModifier.NoModifier)
+    assert g.hint() is None
+    _key(win, press, Qt.Key.Key_Control, _CTRL)
+    assert g.hint() == "remove"
+    _key(win, release, Qt.Key.Key_Control, Qt.KeyboardModifier.NoModifier)
+    assert g.hint() is None
+
+
+def test_a_key_let_go_reads_as_let_go_whatever_the_platform_reports(win):
+    editor = _shown(win)
+    upper, lower, move = _breps_and_move(win, editor)
+    _start, g = _ports(editor, upper, move)
+    g.set_highlight(True)
+    _key(win, QEvent.Type.KeyPress, Qt.Key.Key_Shift,
+         Qt.KeyboardModifier.NoModifier)       # flag not in yet on press
+    assert g.hint() == "add"
+    _key(win, QEvent.Type.KeyRelease, Qt.Key.Key_Shift, _SHIFT)
+    assert g.hint() is None                    # flag still in on release
+
+
+def test_leaving_the_app_with_a_key_held_puts_the_hint_out(win):
+    editor = _shown(win)
+    upper, lower, move = _breps_and_move(win, editor)
+    _start, g = _ports(editor, upper, move)
+    g.set_highlight(True)
+    _key(win, QEvent.Type.KeyPress, Qt.Key.Key_Shift, _SHIFT)
+    QApplication.sendEvent(QApplication.instance(),
+                           QEvent(QEvent.Type.ApplicationDeactivate))
+    assert g.hint() is None
+
+
+def test_a_closed_window_no_longer_listens_for_the_keys(win):
+    editor = win.show_hydra()
+    win.mark_saved()
+    win.close()
+    _key(QApplication.instance(), QEvent.Type.KeyPress, Qt.Key.Key_Shift,
+         _SHIFT)                               # must not reach a dead scene
+
+
+# -- Graft and Flatten on a port, and wires drawn by what they carry -----------
+
+def _boxes_vectors_move(win, editor):
+    boxes = [win.scene.add(geo.make_box((4 * i, 0, 0), 1, 1, 1))
+             for i in range(2)]
+    brep = editor.add_component("brep", (-320, -40))
+    editor.set_references(brep.id, [b.id for b in boxes])
+    move = editor.add_component("move", (40, -20))
+    editor.connect(brep.id, "Brep", move.id, "G")
+    for i, z in enumerate((2, 5)):
+        v = editor.add_component("vector", (-320, 60 + 60 * i))
+        editor.set_inputs(v.id, {"A": (0, 0, 0), "B": (0, 0, z)})
+        editor.connect(v.id, "Vector", move.id, "V", add=True)
+    editor.solve()
+    return brep, move
+
+
+def test_right_clicking_a_port_offers_graft_and_flatten(win):
+    editor = win.show_hydra()
+    brep, move = _boxes_vectors_move(win, editor)
+    g = editor.canvas.node_items[move.id].port("G", False)
+    menu = editor.port_menu(g)
+    assert [a.text() for a in menu.actions() if not a.isSeparator()] == [
+        "Graft", "Flatten", "Reverse", "Internalize"]
+    assert not any(a.isChecked() for a in menu.actions())
+
+
+def test_grafting_an_input_from_its_menu_crosses_the_lists(win):
+    editor = win.show_hydra()
+    brep, move = _boxes_vectors_move(win, editor)
+    assert len(editor.results[move.id].outputs["G"]) == 2
+    g = editor.canvas.node_items[move.id].port("G", False)
+    [graft] = [a for a in editor.port_menu(g).actions() if a.text() == "Graft"]
+    graft.trigger()
+    assert move.params["flags"] == {"in:G": "graft"}
+    assert len(editor.results[move.id].outputs["G"]) == 4
+    assert g.flag() == "graft"
+    assert _lines(g)[:2] == ["Geometry", "2 items"]
+    # and the menu shows it ticked; ticking it off again takes it away
+    [graft] = [a for a in editor.port_menu(g).actions() if a.text() == "Graft"]
+    assert graft.isChecked()
+    graft.trigger()
+    assert "flags" not in move.params
+    assert len(editor.results[move.id].outputs["G"]) == 2
+
+
+def test_graft_and_flatten_rule_each_other_out_on_a_port(win):
+    editor = win.show_hydra()
+    brep, move = _boxes_vectors_move(win, editor)
+    out = editor.canvas.node_items[move.id].port("G", True)
+    editor.set_flag(out, "graft")
+    editor.set_flag(out, "flatten")
+    assert move.params["flags"] == {"out:G": "flatten"}
+
+
+def test_a_right_click_on_a_port_opens_its_menu_not_the_components(
+        win, monkeypatch):
+    editor = _shown(win)
+    brep, move = _boxes_vectors_move(win, editor)
+    g = editor.canvas.node_items[move.id].port("G", False)
+    opened = []
+
+    class Menu:
+        def __init__(self, kind):
+            self.kind = kind
+
+        def exec(self, *args):
+            opened.append(self.kind)
+    monkeypatch.setattr(editor, "port_menu", lambda port: Menu(port))
+    monkeypatch.setattr(editor, "node_menu", lambda item: Menu("node"))
+    editor.show_menu(g.scenePos(), QPoint(0, 0))
+    assert opened == [g]
+
+
+def test_wires_are_drawn_by_what_they_carry(win):
+    editor = win.show_hydra()
+    brep, move = _boxes_vectors_move(win, editor)
+    carried = {(w.wire.source, w.wire.input): w.carries
+               for w in editor.canvas.wire_items}
+    assert carried[(brep.id, "G")] == "list"          # two boxes
+    vectors = [n for n in editor.graph.nodes.values() if n.key == "vector"]
+    assert all(carried[(v.id, "V")] == "item" for v in vectors)
+    editor.set_flag(editor.canvas.node_items[brep.id].port("Brep", True),
+                    "graft")
+    carried = {(w.wire.source, w.wire.input): w.carries
+               for w in editor.canvas.wire_items}
+    assert carried[(brep.id, "G")] == "tree"
+
+
+def test_a_list_wire_is_drawn_as_two_lines_and_a_tree_wire_dashed(win):
+    from PySide6.QtGui import QImage, QPainter
+    from serpentine3d.ui.hydra_editor import WireItem
+    from serpentine3d.core.hydra import Wire
+
+    def lines_across(carries):
+        item = WireItem(Wire("a", "o", "b", "i"))
+        item.carries = carries
+        item.set_ends(QPointF(0, 20), QPointF(200, 20))
+        image = QImage(200, 40, QImage.Format.Format_ARGB32)
+        image.fill(0)
+        painter = QPainter(image)
+        item.paint(painter, None)
+        painter.end()
+        alpha = [image.pixelColor(100, y).alpha() for y in range(40)]
+        column = [a > 120 for a in alpha]
+        runs = sum(1 for a, b in zip([False] + column, column) if b and not a)
+        # along the top line, at the row it is drawn strongest in
+        top = max(range(20), key=lambda y: alpha[y])
+        row = [image.pixelColor(x, top).alpha() > 60 for x in range(20, 180)]
+        gaps = sum(1 for a, b in zip(row, row[1:]) if a and not b)
+        return runs, gaps
+    assert lines_across("item")[0] == 1
+    assert lines_across("list")[0] == 2
+    list_gaps = lines_across("list")[1]
+    assert lines_across("tree")[1] > list_gaps + 3
+
+
+def test_a_flag_is_marked_inside_the_component_beside_its_port(win):
+    from PySide6.QtGui import QImage, QPainter
+    editor = win.show_hydra()
+    brep, move = _boxes_vectors_move(win, editor)
+    item = editor.canvas.node_items[move.id]
+    g = item.port("G", False)
+
+    def beside_g():
+        image = QImage(int(item.width), int(item.height),
+                       QImage.Format.Format_ARGB32)
+        image.fill(0)
+        painter = QPainter(image)
+        item.paint(painter, None)
+        painter.end()
+        y = int(g.y())
+        return [image.pixelColor(x, yy).name()
+                for x in range(4, 15) for yy in range(y - 4, y + 5)]
+    plain = beside_g()
+    editor.set_flag(g, "graft")
+    assert beside_g() != plain
+    assert "#e4e5e7" in beside_g()
+
+
+def test_a_port_flag_survives_copy_and_paste(win):
+    editor = win.show_hydra()
+    brep, move = _boxes_vectors_move(win, editor)
+    editor.set_flag(editor.canvas.node_items[move.id].port("G", False),
+                    "graft")
+    [copy] = editor.duplicate([move.id])
+    assert editor.graph.nodes[copy].params["flags"] == {"in:G": "graft"}
+    editor.graph.nodes[copy].params["flags"]["in:G"] = "flatten"
+    assert move.params["flags"] == {"in:G": "graft"}
+
+
+# -- where the marks and names go, Reverse, and a right-click on a name ----------
+
+def test_one_flagged_input_moves_every_input_name_so_they_stand_in_line(win):
+    editor = win.show_hydra()
+    brep, move = _boxes_vectors_move(win, editor)
+    item = editor.canvas.node_items[move.id]
+    plain_names, plain_width = item.names_at(), item.width
+    editor.set_flag(item.port("G", False), "graft")
+    assert item.names_at() > plain_names       # past the mark, for G and V
+    assert item.width > plain_width            # the room comes from the node
+    editor.set_flag(item.port("G", False), None)
+    assert (item.names_at(), item.width) == (plain_names, plain_width)
+
+
+def test_a_mark_stands_clear_of_the_ports_dot(win):
+    from serpentine3d.ui.hydra_editor import MARK_FROM, PORT_RADIUS
+    assert MARK_FROM - 3.5 > PORT_RADIUS + 2
+
+
+def test_an_outputs_mark_has_room_of_its_own_beside_the_title(win):
+    editor = win.show_hydra()
+    brep, move = _boxes_vectors_move(win, editor)
+    item = editor.canvas.node_items[move.id]
+    plain = item.width
+    editor.set_flag(item.port("G", True), "flatten")
+    assert item.width > plain
+    assert item.port("G", True).x() == item.width   # the dot moved out too
+
+
+def test_reverse_is_in_the_menu_and_goes_with_graft(win):
+    editor = win.show_hydra()
+    brep, move = _boxes_vectors_move(win, editor)
+    g = editor.canvas.node_items[move.id].port("G", False)
+    editor.set_flag(g, "graft")
+    [reverse] = [a for a in editor.port_menu(g).actions()
+                 if a.text() == "Reverse"]
+    reverse.trigger()
+    assert g.flags() == ["reverse", "graft"]
+    assert move.params["flags"]["in:G"] == ["reverse", "graft"]
+    assert _lines(g)[1] == "2 items"
+    # Flatten in Graft's place keeps the Reverse
+    editor.set_flag(g, "flatten")
+    assert g.flags() == ["reverse", "flatten"]
+    editor.set_reverse(g, False)
+    assert move.params["flags"] == {"in:G": "flatten"}
+
+
+def test_two_marks_on_a_port_make_room_for_two(win):
+    editor = win.show_hydra()
+    brep, move = _boxes_vectors_move(win, editor)
+    item = editor.canvas.node_items[move.id]
+    g = item.port("G", False)
+    editor.set_flag(g, "graft")
+    one = item.names_at()
+    editor.set_reverse(g, True)
+    assert item.names_at() > one
+
+
+def test_a_right_click_on_an_inputs_name_opens_that_inputs_menu(
+        win, monkeypatch):
+    editor = _shown(win)
+    brep, move = _boxes_vectors_move(win, editor)
+    item = editor.canvas.node_items[move.id]
+    opened = []
+
+    class Menu:
+        def __init__(self, what):
+            self.what = what
+
+        def exec(self, *args):
+            opened.append(self.what)
+    monkeypatch.setattr(editor, "port_menu", lambda port: Menu(port))
+    monkeypatch.setattr(editor, "node_menu", lambda node: Menu("node"))
+    for name in ("G", "V"):
+        port = item.port(name, False)
+        on_name = item.mapToScene(QPointF(item.names_at() + 3, port.y()))
+        editor.show_menu(on_name, QPoint(0, 0))
+    middle = item.mapToScene(QPointF(item.width / 2, item.height / 2))
+    editor.show_menu(middle, QPoint(0, 0))
+    assert opened == [item.port("G", False), item.port("V", False), "node"]
+
+
+def test_a_saved_card_preview_makes_room_for_marks_too(win):
+    from serpentine3d.ui.hydra_editor import graph_preview
+    graph = Graph()
+    graph.add_node("move", params={"flags": {"in:G": "graft"}})
+    assert not graph_preview(graph.to_dict(), 210, 118).isNull()
+
+
+@pytest.mark.parametrize("output", [False, True])
+def test_reverse_is_marked_right_of_graft_or_flatten(win, monkeypatch, output):
+    from serpentine3d.ui import hydra_editor
+    editor = win.show_hydra()
+    brep, move = _boxes_vectors_move(win, editor)
+    item = editor.canvas.node_items[move.id]
+    port = item.port("G", output)
+    editor.set_flag(port, "graft")
+    editor.set_reverse(port, True)
+    drawn = []
+    monkeypatch.setattr(hydra_editor, "_paint_flag",
+                        lambda painter, flag, at: drawn.append((flag, at.x())))
+    item._paint_flags(None)
+    xs = dict(drawn)
+    assert xs["reverse"] > xs["graft"]
+
+
+# -- Ctrl+S in Hydra -----------------------------------------------------------
+
+def test_ctrl_s_in_hydra_saves_the_graph_not_the_model(win, dialogs):
+    editor = _shown(win)
+    editor.add_component("curve", (0, 0))
+    editor.canvas.setFocus()
+    saved_model = []
+    win._file_save = lambda *a, **k: saved_model.append(1)
+    QTest.keyClick(editor.canvas, Qt.Key.Key_S,
+                   Qt.KeyboardModifier.ControlModifier)
+    assert dialogs["save"] == 1                  # a new graph asks where
+    assert _saved_keys(dialogs["answer"]) == ["curve"]
+    editor.add_component("mesh", (0, 80))
+    QTest.keyClick(editor.canvas, Qt.Key.Key_S,
+                   Qt.KeyboardModifier.ControlModifier)
+    assert dialogs["save"] == 1                  # then saves without asking
+    assert _saved_keys(dialogs["answer"]) == ["curve", "mesh"]
+    assert saved_model == []
+
+
+def test_ctrl_shift_s_in_hydra_saves_the_graph_as(win, dialogs, tmp_path):
+    editor = _shown(win)
+    editor.add_component("curve", (0, 0))
+    editor.save_graph()
+    dialogs["answer"] = str(tmp_path / "other.hydra")
+    editor.canvas.setFocus()
+    QTest.keyClick(editor.canvas, Qt.Key.Key_S,
+                   Qt.KeyboardModifier.ControlModifier
+                   | Qt.KeyboardModifier.ShiftModifier)
+    assert dialogs["save"] == 2
+    assert editor.path == str(tmp_path / "other.hydra")
+
+
+def test_ctrl_s_outside_hydra_is_still_the_models(win, dialogs):
+    from PySide6.QtGui import QKeyEvent
+    editor = _shown(win)
+    event = QKeyEvent(QEvent.Type.ShortcutOverride, Qt.Key.Key_S,
+                      Qt.KeyboardModifier.ControlModifier)
+    assert not editor.eventFilter(win.viewport, event)
+    assert dialogs["save"] == 0
+
+
+# -- Internalize in the menus -----------------------------------------------------
+
+def test_a_geometry_components_menu_offers_internalize(win):
+    editor = win.show_hydra()
+    box = win.scene.add(geo.make_box((0, 0, 0), 1, 1, 1))
+    brep = editor.add_component("brep", (0, 0))
+    assert not _menu_action(editor, brep, "Internalize").isEnabled()
+    editor.set_references(brep.id, [box.id])
+    _menu_action(editor, brep, "Internalize").trigger()
+    win.scene.remove(box.id)
+    editor.solve()
+    item = editor.canvas.node_items[brep.id]
+    assert item.result.status == "ok"
+    assert item.summary() == "1 brep (internalized)"
+    assert len(win.scene.hydra_preview[0])            # still shown
+
+
+def test_setting_a_geometry_component_again_lets_its_copy_go(win):
+    editor = win.show_hydra()
+    a = win.scene.add(geo.make_box((0, 0, 0), 1, 1, 1))
+    b = win.scene.add(geo.make_box((5, 0, 0), 1, 1, 1))
+    brep = editor.add_component("brep", (0, 0))
+    editor.set_references(brep.id, [a.id])
+    editor.internalize(brep.id)
+    editor.set_references(brep.id, [b.id])
+    assert "internal" not in brep.params
+    assert editor.canvas.node_items[brep.id].summary() == "1 brep"
+
+
+def test_an_inputs_menu_offers_internalize_and_outputs_do_not(win):
+    editor = win.show_hydra()
+    brep, move = _boxes_vectors_move(win, editor)
+    item = editor.canvas.node_items[move.id]
+    texts = [a.text() for a in editor.port_menu(item.port("G", True)).actions()]
+    assert "Internalize" not in texts
+    [keep] = [a for a in editor.port_menu(item.port("V", False)).actions()
+              if a.text() == "Internalize"]
+    assert keep.isEnabled()
+    keep.trigger()
+    assert [w.input for w in editor.graph.wires if w.target == move.id] == [
+        "G"]
+    assert len(editor.canvas.wire_items) == 1
+    assert _lines(item.port("V", False))[:2] == [
+        "Vector", "Internalized · 2 items"]
+    assert len(editor.results[move.id].outputs["G"]) == 2
+
+
+def test_internalize_is_greyed_out_on_an_input_with_no_wire(win):
+    editor = win.show_hydra()
+    move = editor.add_component("move", (0, 0))
+    editor.solve()
+    g = editor.canvas.node_items[move.id].port("G", False)
+    [keep] = [a for a in editor.port_menu(g).actions()
+              if a.text() == "Internalize"]
+    assert not keep.isEnabled()
+
+
+def test_set_vector_replaces_what_a_vectors_input_had_internalized(win):
+    editor = win.show_hydra()
+    a = editor.add_component("construct_point", (-300, 0))
+    v = editor.add_component("vector", (0, 0))
+    editor.connect(a.id, "Point", v.id, "A")
+    editor.solve()
+    editor.internalize_input(editor.canvas.node_items[v.id].port("A", False))
+    assert "A" in v.params["internal"]
+    editor.set_inputs(v.id, {"A": (0, 0, 0), "B": (1, 0, 0)})
+    assert "internal" not in v.params
+
+
+def test_an_internalized_graph_saves_and_opens_whole(win, dialogs):
+    editor = win.show_hydra()
+    box = win.scene.add(geo.make_box((0, 0, 0), 1, 1, 1))
+    brep = editor.add_component("brep", (0, 0))
+    editor.set_references(brep.id, [box.id])
+    editor.internalize(brep.id)
+    editor.save_graph()
+    editor.new_graph()
+    win.scene.remove(box.id)
+    editor.open_path(dialogs["answer"])
+    assert editor.results[brep.id].status == "ok"
+    assert len(editor.results[brep.id].outputs["Brep"]) == 1
+
+
+# -- Ctrl+Z and Ctrl+Y in Hydra ----------------------------------------------------
+
+_Z = (Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+_Y = (Qt.Key.Key_Y, Qt.KeyboardModifier.ControlModifier)
+
+
+def test_ctrl_z_takes_back_the_last_change_and_ctrl_y_brings_it_again(win):
+    editor = _shown(win)
+    editor.add_component("curve", (0, 0))
+    rotate = editor.add_component("rotate", (200, 0))
+    editor.canvas.setFocus()
+    QTest.keyClick(editor.canvas, *_Z)
+    assert [n.key for n in editor.graph.nodes.values()] == ["curve"]
+    QTest.keyClick(editor.canvas, *_Z)
+    assert editor.graph.nodes == {}
+    QTest.keyClick(editor.canvas, *_Y)
+    QTest.keyClick(editor.canvas, *_Y)
+    assert sorted(n.key for n in editor.graph.nodes.values()) == [
+        "curve", "rotate"]
+    assert rotate.id in editor.canvas.node_items
+
+
+def test_a_wire_a_flag_and_a_delete_are_each_a_step(win):
+    editor = win.show_hydra()
+    curve = editor.add_component("curve", (0, 0))
+    move = editor.add_component("move", (200, 0))
+    editor.connect(curve.id, "Curve", move.id, "G")
+    editor.set_flag(editor.canvas.node_items[move.id].port("G", False),
+                    "graft")
+    editor.remove_nodes([curve.id])
+    editor.undo()
+    assert len(editor.graph.wires) == 1
+    editor.undo()
+    assert "flags" not in editor.graph.nodes[move.id].params
+    editor.undo()
+    assert editor.graph.wires == []
+
+
+def test_a_slider_drag_is_one_step_not_one_for_every_tick(win):
+    editor = win.show_hydra()
+    slider = editor.add_component("slider", (0, 0))
+    item = editor.canvas.node_items[slider.id]
+    item._sliding = True
+    for x in range(60, 200, 10):
+        item.slide_to(x)
+        editor.solve()
+    item._sliding = False
+    editor.record()
+    moved = slider.params["value"]
+    editor.undo()
+    assert editor.graph.nodes[slider.id].params["value"] == 5.0
+    editor.redo()
+    assert editor.graph.nodes[slider.id].params["value"] == moved
+
+
+def test_a_component_moved_is_put_back_by_undo(win):
+    editor = _shown(win)
+    curve = editor.add_component("curve", (0, 0))
+    item = editor.canvas.node_items[curve.id]
+    item.setPos(150, 90)
+    editor.record()
+    editor.undo()
+    assert (editor.graph.nodes[curve.id].x,
+            editor.graph.nodes[curve.id].y) == (0, 0)
+    assert editor.canvas.node_items[curve.id].pos() == QPointF(0, 0)
+
+
+def test_ctrl_z_in_hydra_leaves_the_model_alone(win):
+    editor = _shown(win)
+    box = win.scene.add(geo.make_box((0, 0, 0), 1, 1, 1))
+    editor.add_component("curve", (0, 0))
+    editor.canvas.setFocus()
+    QTest.keyClick(editor.canvas, *_Z)
+    assert win.scene.get(box.id) is not None
+    assert editor.graph.nodes == {}
+
+
+def test_a_new_change_after_undo_clears_what_redo_would_bring(win):
+    editor = win.show_hydra()
+    editor.add_component("curve", (0, 0))
+    editor.undo()
+    editor.add_component("mesh", (0, 0))
+    assert not editor.redo()
+    assert [n.key for n in editor.graph.nodes.values()] == ["mesh"]
+
+
+def test_opening_a_graph_starts_a_history_of_its_own(win, dialogs):
+    editor = win.show_hydra()
+    editor.add_component("curve", (0, 0))
+    editor.save_graph()
+    editor.add_component("mesh", (0, 0))
+    editor.open_path(dialogs["answer"])
+    assert not editor.undo()
+    assert [n.key for n in editor.graph.nodes.values()] == ["curve"]
+
+
+def test_ctrl_z_in_a_text_field_undoes_the_typing_not_the_graph(win):
+    editor = _shown(win)
+    slider = editor.add_component("slider", (0, 0))
+    field = editor.type_value(editor.canvas.node_items[slider.id])
+    field.setFocus()
+    QApplication.processEvents()
+    QTest.keyClicks(field, "12")
+    QTest.keyClick(field, *_Z)
+    assert slider.id in editor.graph.nodes
+
+
+# -- what is selected in Hydra shows in the model ---------------------------------
+
+def _two_box_nodes(win, editor):
+    a = win.scene.add(geo.make_box((0, 0, 0), 1, 1, 1))
+    b = win.scene.add(geo.make_box((5, 0, 0), 1, 1, 1))
+    first = editor.add_component("brep", (0, 0))
+    second = editor.add_component("brep", (0, 80))
+    editor.set_references(first.id, [a.id])
+    editor.set_references(second.id, [b.id])
+    editor.solve()
+    return first, second
+
+
+def test_selecting_a_component_shows_what_it_makes_in_green(win):
+    editor = win.show_hydra()
+    first, second = _two_box_nodes(win, editor)
+    both = len(win.scene.hydra_preview[0])
+    assert win.scene.hydra_selected is None
+    editor.canvas.node_items[first.id].setSelected(True)
+    green = win.scene.hydra_selected
+    assert green is not None and len(green[0]) == both // 2
+    assert len(win.scene.hydra_preview[0]) == both // 2  # not drawn twice
+    assert green[0][:, 0].max() < 2                      # the first box
+    editor.canvas.scene().clearSelection()
+    assert win.scene.hydra_selected is None
+    assert len(win.scene.hydra_preview[0]) == both
+
+
+def test_several_selected_components_all_show_in_green(win):
+    editor = win.show_hydra()
+    first, second = _two_box_nodes(win, editor)
+    for node in (first, second):
+        editor.canvas.node_items[node.id].setSelected(True)
+    assert win.scene.hydra_preview is None
+    assert win.scene.hydra_selected[0][:, 0].max() > 5
+
+
+def test_a_hidden_component_still_shows_when_it_is_selected(win):
+    editor = win.show_hydra()
+    first, second = _two_box_nodes(win, editor)
+    editor.hide([first.id])
+    editor.canvas.node_items[first.id].setSelected(True)
+    assert win.scene.hydra_selected is not None
+    editor.canvas.scene().clearSelection()
+    assert win.scene.hydra_selected is None
+
+
+def test_a_selected_vector_shows_its_arrow_in_green(win):
+    editor = win.show_hydra()
+    v = editor.add_component("vector", (0, 0))
+    editor.set_inputs(v.id, {"A": (0, 0, 0), "B": (0, 4, 0)})
+    editor.canvas.node_items[v.id].setSelected(True)
+    assert win.scene.hydra_selected[1][:, 1].max() == pytest.approx(4)
+
+
+def test_closing_hydra_takes_the_green_away_too(win):
+    win.show()
+    editor = win.show_hydra()
+    first, second = _two_box_nodes(win, editor)
+    editor.canvas.node_items[first.id].setSelected(True)
+    win._hydra_dock.close()
+    QApplication.processEvents()
+    assert win.scene.hydra_selected is None
+
+
+# -- the menu bar -------------------------------------------------------------------
+
+def _menu(editor, title):
+    [menu] = [a.menu() for a in editor.menus.actions() if a.text() == title]
+    return menu
+
+
+def _entries(menu):
+    return [a.text().split("\t")[0] for a in menu.actions()
+            if not a.isSeparator()]
+
+
+def test_the_menu_bar_holds_file_and_edit(win):
+    editor = win.show_hydra()
+    assert [a.text() for a in editor.menus.actions()] == ["File", "Edit"]
+
+
+def test_the_node_bar_shows_every_component_by_category(win):
+    editor = win.show_hydra()
+    bar = editor.nodes_bar
+    assert bar.groups == {
+        "Geometry": ["point", "curve", "brep", "mesh"],
+        "Input": ["toggle", "pipeline", "panel", "slider"],
+        "Vector": ["construct_point", "vector"],
+        "Mesh": ["delaunay"],
+        "Transform": ["move", "rotate"],
+        "List": ["list_item", "remove_item"]}
+    for key, button in bar.buttons.items():
+        assert button.text() == hydra.COMPONENTS[key].title
+        assert not button.icon().isNull()
+        assert button.toolButtonStyle() == (
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+
+
+def test_the_node_bar_has_a_tab_for_each_category(win):
+    editor = win.show_hydra()
+    tabs = editor.nodes_bar.tabs
+    assert [tabs.tabText(i) for i in range(tabs.count())] == [
+        "Geometry", "Input", "Vector", "Mesh", "Transform", "List"]
+
+
+def test_a_tab_shows_its_own_components_and_only_those(win):
+    win.show()
+    editor = win.show_hydra()
+    bar = editor.nodes_bar
+    bar.show_category("Transform")
+    QApplication.processEvents()
+    shown = {key for key, button in bar.buttons.items()
+             if button.isVisibleTo(bar)}
+    assert shown == {"move", "rotate"}
+    bar.show_category("List")
+    QApplication.processEvents()
+    shown = {key for key, button in bar.buttons.items()
+             if button.isVisibleTo(bar)}
+    assert shown == {"list_item", "remove_item"}
+
+
+def test_the_node_bar_opens_on_the_tab_last_chosen(win):
+    editor = win.show_hydra()
+    editor.nodes_bar.show_category("Vector")
+    win.mark_saved()
+    win.close()
+    again = MainWindow()
+    try:
+        assert again.show_hydra().nodes_bar.category() == "Vector"
+    finally:
+        again.mark_saved()
+        again.close()
+
+
+def test_clicking_a_component_in_the_node_bar_waits_for_a_click(win):
+    editor = _shown(win)
+    editor.nodes_bar.show_category("List")
+    editor.nodes_bar.buttons["list_item"].click()
+    assert editor.graph.nodes == {}               # nothing put down yet
+    assert editor.placing == "list_item"
+    assert "List Item" in editor.status.text()
+    viewport = editor.canvas.viewport()
+    assert viewport.cursor().shape() == Qt.CursorShape.BitmapCursor
+
+
+def test_a_component_dragged_from_the_node_bar_lands_where_it_is_let_go(win):
+    from PySide6.QtCore import QMimeData
+    from PySide6.QtGui import QDropEvent
+    from serpentine3d.ui.hydra_editor import COMPONENT_MIME, node_size
+    editor = _shown(win)
+    view = editor.canvas
+    data = QMimeData()
+    data.setData(COMPONENT_MIME, b"rotate")
+    at = view.viewport().rect().center() + QPoint(40, 30)
+    drop = QDropEvent(QPointF(at), Qt.DropAction.CopyAction, data,
+                      Qt.MouseButton.LeftButton,
+                      Qt.KeyboardModifier.NoModifier)
+    view.dropEvent(drop)
+    [node] = editor.graph.nodes.values()
+    assert node.key == "rotate"
+    _labels, width, height = node_size(hydra.COMPONENTS["rotate"])
+    middle = view.mapToScene(at)
+    assert node.x == pytest.approx(middle.x() - width / 2, abs=1)
+    assert node.y == pytest.approx(middle.y() - height / 2, abs=1)
+
+
+def test_the_node_bar_keeps_its_height_whichever_tab_is_shown(win):
+    win.show()
+    editor = win.show_hydra()
+    bar = editor.nodes_bar
+    heights = set()
+    for category in ("Geometry", "Input", "List"):
+        bar.show_category(category)
+        QApplication.processEvents()
+        heights.add(bar.height())
+    assert len(heights) == 1
+
+
+def test_file_and_edit_hold_the_commands_with_their_keys_shown(win):
+    editor = win.show_hydra()
+    assert _entries(_menu(editor, "File")) == [
+        "New", "Open…", "Save", "Save As…"]
+    assert _entries(_menu(editor, "Edit")) == [
+        "Undo", "Redo", "Copy", "Paste", "Delete", "Hide", "Show"]
+    save = [a for a in _menu(editor, "File").actions()
+            if a.text().startswith("Save\t")][0]
+    assert save.text() == "Save\tCtrl+S"
+    # shown, not taken: the keys stay Hydra's own, clear of the main window
+    every = [a for t in ("File", "Edit") for a in _menu(editor, t).actions()]
+    assert all(a.shortcut().isEmpty() for a in every)
+
+
+def test_edit_undo_in_the_menu_undoes(win):
+    editor = win.show_hydra()
+    editor.add_component("curve", (0, 0))
+    [undo] = [a for a in _menu(editor, "Edit").actions()
+              if a.text().startswith("Undo")]
+    undo.trigger()
+    assert editor.graph.nodes == {}
+
+
+def test_file_new_in_the_menu_starts_an_empty_graph(win):
+    editor = win.show_hydra()
+    editor.add_component("curve", (0, 0))
+    [new] = [a for a in _menu(editor, "File").actions() if a.text() == "New"]
+    new.trigger()
+    assert editor.graph.nodes == {}
+
+
+# -- tooltips that show the data ---------------------------------------------------
+
+def _list_item_from_three(win, editor, flags=None):
+    shapes = [geo.make_box((0, 0, 0), 1, 1, 1),
+              geo.make_box((3, 0, 0), 1, 1, 1),
+              geo.make_line((0, 5, 0), (1, 5, 0))]
+    brep = editor.add_component("brep", (-300, -60))
+    editor.set_references(brep.id, [win.scene.add(s).id for s in shapes[:2]])
+    curve = editor.add_component("curve", (-300, 40))
+    editor.set_references(curve.id, [win.scene.add(shapes[2]).id])
+    item = editor.add_component("list_item", (0, 0))
+    editor.connect(brep.id, "Brep", item.id, "L")
+    editor.connect(curve.id, "Curve", item.id, "L", add=True)
+    if flags:
+        item.params["flags"] = flags
+    editor.solve()
+    return editor.canvas.node_items[item.id]
+
+
+def test_a_tooltip_says_what_the_input_takes_then_lists_its_items(win):
+    editor = win.show_hydra()
+    item = _list_item_from_three(win, editor)
+    assert _lines(item.port("L", False)) == [
+        "List", "3 items", "", "[0] Brep", "[1] Brep", "[2] Curve"]
+
+
+def test_numbers_points_and_vectors_are_listed_with_their_values(win):
+    editor = win.show_hydra()
+    v = editor.add_component("vector", (0, 0))
+    editor.set_inputs(v.id, {"A": (0, 0, 0), "B": (0, 2, 5)})
+    item = editor.canvas.node_items[v.id]
+    assert _lines(item.port("B", False))[-1] == "[0] Point 0, 2, 5"
+    assert _lines(item.port("Vector", True))[-1] == "[0] Vector 0, 2, 5"
+    angle = editor.add_component("rotate", (0, 100))
+    editor.solve()
+    port = editor.canvas.node_items[angle.id].port("Angle", False)
+    assert _lines(port) == ["Number", "Default · 1 item", "", "[0] 0"]
+
+
+def test_a_tree_is_listed_branch_by_branch(win):
+    editor = win.show_hydra()
+    item = _list_item_from_three(win, editor, {"in:L": "graft"})
+    assert _lines(item.port("L", False)) == [
+        "List", "3 items", "",
+        "Branch {0;0} · 1 item", "  [0] Brep",
+        "Branch {0;1} · 1 item", "  [0] Brep",
+        "Branch {0;2} · 1 item", "  [0] Curve"]
+
+
+def test_a_long_list_shows_its_first_items_and_counts_the_rest():
+    from serpentine3d.core.hydra import Tree, list_tree
+    lines = list_tree(Tree.of(list(range(40))))
+    assert lines[0] == "[ 0] 0" and lines[11] == "[11] 11"
+    assert lines[-1] == "… 28 more" and len(lines) == 13
+
+
+def test_an_input_with_nothing_says_so_and_lists_nothing(win):
+    editor = win.show_hydra()
+    move = editor.add_component("move", (0, 0))
+    editor.solve()
+    port = editor.canvas.node_items[move.id].port("G", False)
+    assert _lines(port) == ["Geometry", "Nothing connected"]
+
+
+def test_every_port_of_every_component_says_what_it_is_for():
+    for comp in hydra.COMPONENTS.values():
+        for port in comp.inputs + comp.outputs:
+            assert port.description, (comp.key, port.name)
+
+
+def test_over_an_inputs_letter_the_inputs_tooltip_shows(win):
+    from PySide6.QtWidgets import QGraphicsSceneHoverEvent
+    editor = win.show_hydra()
+    item = _list_item_from_three(win, editor)
+    port = item.port("L", False)
+
+    def hover(x, y):
+        event = QGraphicsSceneHoverEvent(QEvent.Type.GraphicsSceneHoverMove)
+        event.setPos(QPointF(x, y))
+        item.hoverMoveEvent(event)
+        return item.toolTip()
+    assert hover(item.names_at() + 2, port.y()) == port.toolTip()
+    assert hover(item.width / 2, item.height / 2).startswith(
+        "The item at index i")
+
+
+# -- a component clicked in the node bar, placed with the next click ---------------
+
+def _click_canvas(editor, at, button=Qt.MouseButton.LeftButton):
+    view = editor.canvas
+    QTest.mouseClick(view.viewport(), button, pos=view.mapFromScene(at))
+
+
+def test_the_next_click_on_the_canvas_puts_the_component_there(win):
+    from serpentine3d.ui.hydra_editor import node_size
+    editor = _shown(win)
+    editor.nodes_bar.show_category("Transform")
+    editor.nodes_bar.buttons["rotate"].click()
+    at = QPointF(120, 80)
+    _click_canvas(editor, at)
+    [node] = editor.graph.nodes.values()
+    _labels, width, height = node_size(hydra.COMPONENTS["rotate"])
+    assert node.key == "rotate"
+    assert node.x == pytest.approx(at.x() - width / 2, abs=1)
+    assert node.y == pytest.approx(at.y() - height / 2, abs=1)
+    assert editor.placing is None
+    assert editor.canvas.viewport().cursor().shape() != (
+        Qt.CursorShape.BitmapCursor)
+
+
+def test_one_click_puts_one_down(win):
+    editor = _shown(win)
+    editor.nodes_bar.buttons["curve"].click()
+    _click_canvas(editor, QPointF(0, 0))
+    _click_canvas(editor, QPointF(200, 0))
+    assert [n.key for n in editor.graph.nodes.values()] == ["curve"]
+
+
+def test_escape_or_the_right_button_puts_nothing_down(win):
+    editor = _shown(win)
+    editor.nodes_bar.buttons["curve"].click()
+    QTest.keyClick(editor.nodes_bar.buttons["curve"], Qt.Key.Key_Escape)
+    assert editor.placing is None
+    editor.nodes_bar.buttons["curve"].click()
+    _click_canvas(editor, QPointF(0, 0), Qt.MouseButton.RightButton)
+    assert editor.placing is None and editor.graph.nodes == {}
+
+
+def test_clicking_another_component_in_the_bar_waits_with_that_one(win):
+    editor = _shown(win)
+    editor.nodes_bar.buttons["curve"].click()
+    editor.nodes_bar.buttons["mesh"].click()
+    _click_canvas(editor, QPointF(0, 0))
+    assert [n.key for n in editor.graph.nodes.values()] == ["mesh"]
+
+
+def test_the_cursor_it_waits_on_shows_its_icon_and_a_plus(win):
+    from serpentine3d.ui.hydra_editor import placing_cursor
+    cursor = placing_cursor(hydra.COMPONENTS["rotate"])
+    image = cursor.pixmap().toImage()
+    assert not cursor.pixmap().isNull()
+    assert image.width() > 1.5 * image.height()             # a node, wide
+    right, bottom = image.width() - 9, image.height() - 9
+    assert image.pixelColor(right - 3, bottom - 3).name() == "#d9a441"
+    assert image.pixelColor(right, bottom).name() == "#1b1c1f"   # the plus
+    hot = cursor.hotSpot()
+    assert abs(hot.x() - (6 + right) / 2) <= 1
+    assert abs(hot.y() - (4 + bottom) / 2) <= 1
+
+
+def test_a_listing_shows_each_branch_with_its_count_and_empty_ones_too():
+    from serpentine3d.core.hydra import Tree, list_tree
+    lines = list_tree(Tree({(0,): [1.5, 2.0], (1,): [], (2,): [7.0]}))
+    assert lines == ["Branch {0} · 2 items", "  [0] 1.5", "  [1] 2",
+                     "Branch {1} · empty",
+                     "Branch {2} · 1 item", "  [0] 7"]
+
+
+def test_a_plain_list_is_listed_without_branch_headings():
+    from serpentine3d.core.hydra import Tree, list_tree
+    assert list_tree(Tree.of([3.0, 4.0])) == ["[0] 3", "[1] 4"]
+
+
+# -- a number or a range typed into the search ----------------------------------
+
+@pytest.mark.parametrize("text, settings", [
+    ("0-15", (0.0, 15.0, 5.0, 0)),
+    ("0.0-2.5", (0.0, 2.5, 2.5, 1)),
+    ("-10 - -2", (-10.0, -2.0, -2.0, 0)),
+    ("7,25", (0.0, 10.0, 7.25, 2)),
+    ("40", (0.0, 40.0, 40.0, 0)),
+])
+def test_typing_a_number_or_a_range_and_enter_makes_that_slider(
+        win, text, settings):
+    editor = _shown(win)
+    search = editor.find_component(QPointF(30, 40), QPoint(200, 200))
+    QTest.keyClicks(search.field, text)
+    assert search.list.item(0).text().startswith("Number Slider  ")
+    QTest.keyClick(search.field, Qt.Key.Key_Return)
+    [node] = editor.graph.nodes.values()
+    assert node.key == "slider" and (node.x, node.y) == (30, 40)
+    p = node.params
+    assert (p["min"], p["max"], p["value"], p["decimals"]) == settings
+
+
+def test_a_typed_slider_says_its_range_in_the_list(win):
+    editor = _shown(win)
+    search = editor.find_component(QPointF(0, 0), QPoint(200, 200))
+    QTest.keyClicks(search.field, "0.0-12")
+    assert search.list.item(0).text() == "Number Slider  0.0 to 12.0, at 5.0"
+    search.close()
+
+
+def test_a_name_typed_offers_no_slider(win):
+    editor = _shown(win)
+    search = editor.find_component(QPointF(0, 0), QPoint(200, 200))
+    QTest.keyClicks(search.field, "rot")
+    assert [search.list.item(i).text()
+            for i in range(search.list.count())] == ["Rotate"]
+    search.close()
+
+
+def test_a_typed_slider_is_one_step_to_undo(win):
+    editor = _shown(win)
+    search = editor.find_component(QPointF(0, 0), QPoint(200, 200))
+    QTest.keyClicks(search.field, "0-15")
+    QTest.keyClick(search.field, Qt.Key.Key_Return)
+    editor.undo()
+    assert editor.graph.nodes == {}
+
+
+def test_the_new_graph_card_comes_first_and_starts_an_empty_graph(
+        win, dialogs, tmp_path):
+    _save_graphs(win, dialogs, tmp_path, ["saved"])
+    editor = _reopen(win)
+    new = editor.start.cards[0]
+    assert new.title == "New Graph"
+    QTest.mouseDClick(new, Qt.MouseButton.LeftButton)
+    assert not editor.starting()
+    assert editor.graph.nodes == {} and editor.path is None
+
+
+# -- the panel in the editor ------------------------------------------------------
+
+def test_double_clicking_a_panel_opens_a_field_to_type_into(win):
+    editor = _shown(win)
+    panel = editor.add_component("panel", (0, 0))
+    item = editor.canvas.node_items[panel.id]
+    assert item.panel_lines() == (["Double-click to type"], False)
+    field = editor.type_panel(item)
+    assert field is not None and field.isVisible()
+    field.setPlainText("one\ntwo")
+    QTest.keyClick(field, Qt.Key.Key_Return,
+                   Qt.KeyboardModifier.ControlModifier)
+    assert editor.panel_field is None
+    assert panel.params["text"] == "one\ntwo"
+    editor.solve()
+    assert editor.results[panel.id].outputs["Out"] == ["one", "two"]
+    assert item.panel_lines() == (["one", "two"], True)
+
+
+def test_enter_alone_starts_a_new_line_and_escape_keeps_the_old_text(win):
+    editor = _shown(win)
+    panel = editor.add_component("panel", (0, 0), {"text": "kept"})
+    field = editor.type_panel(editor.canvas.node_items[panel.id])
+    QTest.keyClicks(field, "x")
+    QTest.keyClick(field, Qt.Key.Key_Return)
+    assert editor.panel_field is field             # still typing
+    QTest.keyClick(field, Qt.Key.Key_Escape)
+    assert editor.panel_field is None
+    assert panel.params["text"] == "kept"
+
+
+def test_a_panel_with_a_wire_shows_what_comes_in_and_cannot_be_typed_into(
+        win):
+    editor = _shown(win)
+    boxes = [win.scene.add(geo.make_box((3 * k, 0, 0), 1, 1, 1))
+             for k in range(2)]
+    brep = editor.add_component("brep", (-300, 0))
+    editor.set_references(brep.id, [b.id for b in boxes])
+    panel = editor.add_component("panel", (0, 0))
+    editor.connect(brep.id, "Brep", panel.id, "In")
+    editor.solve()
+    item = editor.canvas.node_items[panel.id]
+    assert item.panel_lines() == (["[0] Brep", "[1] Brep"], True)
+    assert editor.type_panel(item) is None
+    assert "take the wire away" in editor.status.text()
+
+
+def test_typing_a_quotation_mark_and_text_into_the_search_makes_that_panel(
+        win):
+    editor = _shown(win)
+    search = editor.find_component(QPointF(20, 30), QPoint(200, 200))
+    QTest.keyClicks(search.field, '"Hallo Welt')
+    assert search.list.item(0).text() == "Panel  “Hallo Welt”"
+    QTest.keyClick(search.field, Qt.Key.Key_Return)
+    [node] = editor.graph.nodes.values()
+    assert node.key == "panel" and node.params["text"] == "Hallo Welt"
+    assert (node.x, node.y) == (20, 30)
+
+
+def test_a_typed_number_after_a_quotation_mark_is_a_panel_not_a_slider(win):
+    editor = _shown(win)
+    search = editor.find_component(QPointF(0, 0), QPoint(200, 200))
+    QTest.keyClicks(search.field, '"12')
+    assert search.list.item(0).text() == "Panel  “12”"
+    QTest.keyClick(search.field, Qt.Key.Key_Return)
+    [node] = editor.graph.nodes.values()
+    assert node.key == "panel" and node.params["text"] == "12"
+
+
+@pytest.mark.parametrize("output", [False, True])
+def test_a_panels_flags_are_marked_beside_its_ports(win, monkeypatch, output):
+    from serpentine3d.ui import hydra_editor
+    editor = win.show_hydra()
+    panel = editor.add_component("panel", (0, 0), {"text": "a\nb"})
+    item = editor.canvas.node_items[panel.id]
+    plain = item.panel_area()
+    port = item.port("Out" if output else "In", output)
+    editor.set_flag(port, "graft")
+    editor.set_reverse(port, True)
+    drawn = []
+    monkeypatch.setattr(hydra_editor, "_paint_flag",
+                        lambda painter, flag, at: drawn.append((flag, at)))
+    from PySide6.QtGui import QImage, QPainter
+    image = QImage(int(item.width), int(item.height),
+                   QImage.Format.Format_ARGB32)
+    painter = QPainter(image)
+    item.paint(painter, None)
+    painter.end()
+    assert sorted(f for f, _at in drawn) == ["graft", "reverse"]
+    area = item.panel_area()
+    # the text keeps its width, and no mark lies on it
+    assert area.width() == pytest.approx(plain.width())
+    assert all(not area.contains(at) for _f, at in drawn)
+    assert all(at.y() == pytest.approx(port.y()) for _f, at in drawn)
+
+
+def test_continue_is_offered_only_for_what_the_file_does_not_hold(
+        win, dialogs):
+    editor = win.show_hydra()
+    editor.add_component("curve", (0, 0))
+    editor.save_graph()
+    assert not editor.unsaved()
+    editor = _reopen(win)
+    assert [c.title for c in editor.start.cards] == ["New Graph", "graph"]
+    editor.show_canvas()
+    editor.add_component("mesh", (0, 120))       # changed after saving
+    assert editor.unsaved()
+    editor = _reopen(win)
+    assert [c.title for c in editor.start.cards] == [
+        "New Graph", "Continue", "graph"]
+
+
+# -- a mesh in the preview shows all its triangles --------------------------------
+
+def _delaunay_preview(win, editor, coords):
+    points = editor.add_component("point", (-300, 0))
+    editor.set_references(points.id, [win.scene.add(geo.make_point(c)).id
+                                      for c in coords])
+    editor.set_preview(points.id, False)
+    mesh = editor.add_component("delaunay", (0, 0))
+    editor.connect(points.id, "Point", mesh.id, "P")
+    editor.solve()
+    return mesh
+
+
+def test_a_flat_meshes_inner_edges_show_in_the_preview(win):
+    editor = win.show_hydra()
+    _delaunay_preview(win, editor, [(0, 0, 0), (4, 0, 0), (4, 4, 0),
+                                    (0, 4, 0), (2, 2, 0)])
+    segments = win.scene.hydra_preview[1].reshape(-1, 2, 3)
+    # four triangles round the middle point: four rim edges, four inside
+    assert len(segments) == 8
+    inner = [s for s in segments
+             if any(np.allclose(end[:2], (2, 2)) for end in s)]
+    assert len(inner) == 4
+
+
+def test_a_mesh_as_big_as_a_scan_shows_only_its_rim_and_creases():
+    from serpentine3d.core.mesh import MeshShape
+    from serpentine3d.ui import hydra_editor
+    n = 230
+    xs, ys = np.meshgrid(np.arange(n), np.arange(n))
+    verts = np.column_stack([xs.ravel(), ys.ravel(), np.zeros(n * n)])
+    quads = [(y * n + x, y * n + x + 1, (y + 1) * n + x)
+             for y in range(n - 1) for x in range(n - 1)]
+    quads += [(y * n + x + 1, (y + 1) * n + x + 1, (y + 1) * n + x)
+              for y in range(n - 1) for x in range(n - 1)]
+    big = MeshShape(verts, np.array(quads))
+    assert len(big.triangles) > hydra_editor.MESH_WIRES_UP_TO
+    assert hydra_editor._mesh_wires(big) is None
+
+
+def test_an_empty_optional_input_says_it_is_optional(win):
+    editor = win.show_hydra()
+    mesh = editor.add_component("delaunay", (0, 0))
+    editor.solve()
+    outline = editor.canvas.node_items[mesh.id].port("Outline", False)
+    assert _lines(outline) == ["Closed curve", "Optional · nothing connected"]
+
+
+# -- renaming a component ---------------------------------------------------------
+
+def _name_field(editor, node):
+    return editor.node_menu(editor.canvas.node_items[node.id]).name_field
+
+
+def test_the_menu_starts_with_the_components_name_to_type_over(win):
+    editor = win.show_hydra()
+    pipe = editor.add_component("pipeline", (0, 0))
+    menu = editor.node_menu(editor.canvas.node_items[pipe.id])
+    first = menu.actions()[0]
+    assert first.defaultWidget() is menu.name_field
+    assert menu.name_field.text() == "Geometry Pipeline"
+
+
+def test_a_click_into_the_name_chooses_all_of_it(win):
+    editor = _shown(win)
+    pipe = editor.add_component("pipeline", (0, 0))
+    field = _name_field(editor, pipe)
+    field.show()
+    QApplication.processEvents()
+    QTest.mouseClick(field, Qt.MouseButton.LeftButton,
+                     pos=field.rect().center())
+    assert field.selectedText() == "Geometry Pipeline"
+
+
+def test_a_name_typed_in_shows_beside_the_icon_and_sizes_the_node(win):
+    editor = win.show_hydra()
+    pipe = editor.add_component("pipeline", (0, 0))
+    item = editor.canvas.node_items[pipe.id]
+    before = item.width
+    field = _name_field(editor, pipe)
+    field.setText("Survey points of the north slope")
+    field.editingFinished.emit()
+    assert pipe.title == "Survey points of the north slope"
+    assert pipe.params["name"] == "Survey points of the north slope"
+    assert item.width > before
+    assert item.outputs[0].x() == item.width
+
+
+def test_an_empty_name_brings_the_components_own_back(win):
+    editor = win.show_hydra()
+    move = editor.add_component("move", (0, 0))
+    editor.rename(move.id, "Lift")
+    assert move.title == "Lift"
+    editor.rename(move.id, "   ")
+    assert move.title == "Move" and "name" not in move.params
+
+
+def test_a_renaming_is_one_step_to_undo(win):
+    editor = win.show_hydra()
+    move = editor.add_component("move", (0, 0))
+    editor.rename(move.id, "Lift")
+    editor.undo()
+    assert editor.graph.nodes[move.id].title == "Move"
+
+
+def test_a_slider_and_a_toggle_show_a_name_they_are_given(win):
+    editor = win.show_hydra()
+    slider = editor.add_component("slider", (0, 0))
+    item = editor.canvas.node_items[slider.id]
+    rail = item._rail()[0]
+    width = item.width
+    editor.rename(slider.id, "Height")
+    assert item._rail()[0] > rail and item.width > width
+    toggle = editor.add_component("toggle", (0, 80))
+    editor.rename(toggle.id, "Closed")
+    assert editor.canvas.node_items[toggle.id]._given_name_room() > 0
+
+
+def test_a_panel_shows_its_name_in_its_title_strip(win, monkeypatch):
+    from PySide6.QtGui import QImage, QPainter
+    editor = win.show_hydra()
+    panel = editor.add_component("panel", (0, 0), {"text": "x"})
+    editor.rename(panel.id, "Notes")
+    item = editor.canvas.node_items[panel.id]
+    written = []
+    real = QPainter.drawText
+
+    def spy(painter, *args):
+        written.append(args[-1])
+        return real(painter, *args)
+    monkeypatch.setattr(QPainter, "drawText", spy)
+    image = QImage(int(item.width), int(item.height),
+                   QImage.Format.Format_ARGB32)
+    painter = QPainter(image)
+    item.paint(painter, None)
+    painter.end()
+    assert "Notes" in written and "Panel" not in written
+
+
+def test_a_name_is_kept_in_the_file_and_in_a_copy(win):
+    editor = win.show_hydra()
+    move = editor.add_component("move", (0, 0))
+    editor.rename(move.id, "Lift")
+    [copy] = editor.duplicate([move.id])
+    assert editor.graph.nodes[copy].title == "Lift"
+    again = Graph.from_dict(editor.graph.to_dict())
+    assert again.nodes[move.id].title == "Lift"
