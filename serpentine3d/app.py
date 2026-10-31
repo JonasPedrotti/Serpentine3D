@@ -559,7 +559,7 @@ class MainWindow(QMainWindow):
         starts on the recent graphs; raising it when open does not."""
         opening = self._hydra_dock is None or self._hydra_dock.isHidden()
         if self._hydra_dock is None:
-            from .ui.hydra_editor import HydraEditor
+            from .ui.hydra import HydraEditor
             self.hydra = HydraEditor(self)
             from .ui.icons import hydra_icon
             dock = QDockWidget("Hydra", self)

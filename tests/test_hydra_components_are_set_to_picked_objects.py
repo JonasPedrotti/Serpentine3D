@@ -6,9 +6,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QFont, QMouseEvent
+from PySide6.QtGui import QColor, QFont, QMouseEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QWidget
 
 from serpentine3d.app import MainWindow
 from serpentine3d.core import geometry as geo
@@ -63,9 +63,10 @@ def test_the_add_menu_offers_the_geometries_with_their_icons(win):
                if not a.isSeparator()]
     assert [a.text() for a in actions] == [
         "Point", "Curve", "Brep", "Mesh", "Boolean Toggle",
-        "Geometry Pipeline", "Panel", "Number Slider", "Construct Point",
-        "Vector", "Delaunay Mesh", "Move", "Rotate", "List Item",
-        "Remove Item"]
+        "Geometry Pipeline", "Panel", "Number Slider", "Addition",
+        "Subtraction", "Multiplication", "Division", "Series", "Range",
+        "Random", "List Item", "Remove Item", "Construct Point", "Vector",
+        "Move", "Rotate", "Delaunay Mesh"]
     assert all(not a.icon().isNull() for a in actions)
 
 
@@ -283,7 +284,7 @@ def test_choosing_decimal_places_changes_what_the_slider_shows(win):
 
 
 def test_change_range_takes_a_typed_range_with_its_decimals(win, monkeypatch):
-    from serpentine3d.ui import hydra_editor
+    from serpentine3d.ui.hydra import fields
     editor = win.show_hydra()
     node = editor.add_component("slider", (0, 0))
     item = editor.canvas.node_items[node.id]
@@ -291,8 +292,8 @@ def test_change_range_takes_a_typed_range_with_its_decimals(win, monkeypatch):
     def typed(dialog):
         dialog.low.setText("0,125")
         dialog.high.setText("2,5")
-        return hydra_editor.QDialog.DialogCode.Accepted
-    monkeypatch.setattr(hydra_editor.RangeDialog, "exec", typed)
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(fields.RangeDialog, "exec", typed)
     editor.change_range(item)
     assert (node.params["min"], node.params["max"]) == (0.125, 2.5)
     assert node.params["decimals"] == 3
@@ -301,7 +302,8 @@ def test_change_range_takes_a_typed_range_with_its_decimals(win, monkeypatch):
 
 
 def test_the_range_dialog_will_not_take_a_range_that_is_not_one(win):
-    from serpentine3d.ui.hydra_editor import QDialogButtonBox, RangeDialog
+    from PySide6.QtWidgets import QDialogButtonBox
+    from serpentine3d.ui.hydra.fields import RangeDialog
     editor = win.show_hydra()
     node = editor.add_component("slider", (0, 0))
     dialog = RangeDialog(node.params, editor)
@@ -509,7 +511,7 @@ def test_an_inputs_tooltip_shows_what_reaches_it_now(win):
 
 
 def test_a_waiting_components_input_names_are_drawn_white(win):
-    from serpentine3d.ui import hydra_editor
+    from serpentine3d.ui.hydra import style
     editor = win.show_hydra()
     rotate = editor.add_component("rotate", (0, 0))
     editor.solve()
@@ -527,7 +529,7 @@ def test_a_waiting_components_input_names_are_drawn_white(win):
         def font(self):
             return QFont()
     item._paint_labels(Spy())
-    assert hydra_editor.QColor(pens[0]) == hydra_editor._TEXT
+    assert QColor(pens[0]) == style.TEXT
 
 
 def test_a_slider_dropped_on_rotates_geometry_is_turned_away_and_says_why(win):
@@ -562,10 +564,10 @@ def test_the_graph_is_there_again_after_a_restart(win):
 
 def test_sliding_an_angle_turns_the_preview_without_meshing_it_again(
         win, monkeypatch):
-    from serpentine3d.ui import hydra_editor
+    from serpentine3d.ui.hydra import preview
     meshed = []
-    real = hydra_editor._mesh_arrays
-    monkeypatch.setattr(hydra_editor, "_mesh_arrays",
+    real = preview._mesh_arrays
+    monkeypatch.setattr(preview, "_mesh_arrays",
                         lambda shape: meshed.append(shape) or real(shape))
     editor = win.show_hydra()
     box = win.scene.add(geo.make_box((1, 0, 0), 1, 1, 1))
@@ -1015,7 +1017,7 @@ def test_double_clicking_the_canvas_opens_a_search_to_type_into(win):
 
 
 def test_a_right_click_on_the_canvas_opens_the_same_search(win):
-    from serpentine3d.ui.hydra_editor import ComponentSearch
+    from serpentine3d.ui.hydra.fields import ComponentSearch
     editor = _shown(win)
     editor.show_menu(QPointF(0, 0), QPoint(200, 200))
     assert isinstance(editor.search, ComponentSearch)
@@ -1174,7 +1176,7 @@ def _rotated_lines(win, editor, count=2):
 
 
 def _answer_cast(monkeypatch, layer=None, group=None, seen=None):
-    from serpentine3d.ui import hydra_editor
+    from serpentine3d.ui.hydra import fields
 
     def answer(dialog):
         if seen is not None:
@@ -1183,8 +1185,8 @@ def _answer_cast(monkeypatch, layer=None, group=None, seen=None):
             dialog.layers.setCurrentIndex(dialog.layers.findData(layer))
         if group is not None:
             dialog.group.setChecked(group)
-        return hydra_editor.QDialog.DialogCode.Accepted
-    monkeypatch.setattr(hydra_editor.CastDialog, "exec", answer)
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(fields.CastDialog, "exec", answer)
 
 
 def test_cast_is_in_the_menu_of_components_that_make_geometry(win):
@@ -1252,7 +1254,7 @@ def test_the_group_box_only_shows_for_more_than_one_object(win, monkeypatch):
 
 
 def test_the_dialog_offers_every_layer_and_starts_on_the_current_one(win):
-    from serpentine3d.ui.hydra_editor import CastDialog
+    from serpentine3d.ui.hydra.fields import CastDialog
     editor = win.show_hydra()
     layers = win.scene.layers
     dialog = CastDialog(layers, 2, False, editor)
@@ -1272,11 +1274,11 @@ def test_a_cast_is_one_undo_step(win, monkeypatch):
 
 
 def test_cancelling_the_dialog_casts_nothing(win, monkeypatch):
-    from serpentine3d.ui import hydra_editor
+    from serpentine3d.ui.hydra import fields
     editor = win.show_hydra()
     lines, curve, angle, rotate = _rotated_lines(win, editor)
-    monkeypatch.setattr(hydra_editor.CastDialog, "exec",
-                        lambda dialog: hydra_editor.QDialog.DialogCode.Rejected)
+    monkeypatch.setattr(fields.CastDialog, "exec",
+                        lambda dialog: QDialog.DialogCode.Rejected)
     assert editor.cast(rotate.id) == []
     assert len(win.scene.all()) == 2
 
@@ -1567,7 +1569,7 @@ def test_an_opened_graph_is_a_recent_one_too(win, dialogs, tmp_path):
 
 
 def test_a_cards_picture_shows_the_graph(win):
-    from serpentine3d.ui.hydra_editor import graph_preview
+    from serpentine3d.ui.hydra.start import graph_preview
     graph = Graph()
     a = graph.add_node("curve", 0, 0)
     b = graph.add_node("rotate", 300, 40)
@@ -1784,7 +1786,7 @@ def test_a_hovered_port_hints_what_shift_and_ctrl_would_do(win):
 
 def test_the_hint_is_drawn_green_for_add_and_red_for_remove(win):
     from PySide6.QtGui import QImage, QPainter
-    from serpentine3d.ui import hydra_editor
+    from serpentine3d.ui.hydra import style
     editor = _shown(win)
     upper, lower, move = _breps_and_move(win, editor)
     _start, g = _ports(editor, upper, move)
@@ -1802,8 +1804,8 @@ def test_the_hint_is_drawn_green_for_add_and_red_for_remove(win):
         return {image.pixelColor(x, y).name()
                 for x in range(image.width()) for y in range(image.height())
                 if image.pixelColor(x, y).alpha() == 255}
-    assert hydra_editor._HINT["add"].name() in drawn("add")
-    assert hydra_editor._HINT["remove"].name() in drawn("remove")
+    assert style.HINT["add"].name() in drawn("add")
+    assert style.HINT["remove"].name() in drawn("remove")
     g.set_highlight(False)
 
 
@@ -1965,7 +1967,7 @@ def test_wires_are_drawn_by_what_they_carry(win):
 
 def test_a_list_wire_is_drawn_as_two_lines_and_a_tree_wire_dashed(win):
     from PySide6.QtGui import QImage, QPainter
-    from serpentine3d.ui.hydra_editor import WireItem
+    from serpentine3d.ui.hydra.items import WireItem
     from serpentine3d.core.hydra import Wire
 
     def lines_across(carries):
@@ -2040,7 +2042,7 @@ def test_one_flagged_input_moves_every_input_name_so_they_stand_in_line(win):
 
 
 def test_a_mark_stands_clear_of_the_ports_dot(win):
-    from serpentine3d.ui.hydra_editor import MARK_FROM, PORT_RADIUS
+    from serpentine3d.ui.hydra.style import MARK_FROM, PORT_RADIUS
     assert MARK_FROM - 3.5 > PORT_RADIUS + 2
 
 
@@ -2108,7 +2110,7 @@ def test_a_right_click_on_an_inputs_name_opens_that_inputs_menu(
 
 
 def test_a_saved_card_preview_makes_room_for_marks_too(win):
-    from serpentine3d.ui.hydra_editor import graph_preview
+    from serpentine3d.ui.hydra.start import graph_preview
     graph = Graph()
     graph.add_node("move", params={"flags": {"in:G": "graft"}})
     assert not graph_preview(graph.to_dict(), 210, 118).isNull()
@@ -2116,7 +2118,7 @@ def test_a_saved_card_preview_makes_room_for_marks_too(win):
 
 @pytest.mark.parametrize("output", [False, True])
 def test_reverse_is_marked_right_of_graft_or_flatten(win, monkeypatch, output):
-    from serpentine3d.ui import hydra_editor
+    from serpentine3d.ui.hydra import items
     editor = win.show_hydra()
     brep, move = _boxes_vectors_move(win, editor)
     item = editor.canvas.node_items[move.id]
@@ -2124,7 +2126,7 @@ def test_reverse_is_marked_right_of_graft_or_flatten(win, monkeypatch, output):
     editor.set_flag(port, "graft")
     editor.set_reverse(port, True)
     drawn = []
-    monkeypatch.setattr(hydra_editor, "_paint_flag",
+    monkeypatch.setattr(items, "_paint_flag",
                         lambda painter, flag, at: drawn.append((flag, at.x())))
     item._paint_flags(None)
     xs = dict(drawn)
@@ -2298,11 +2300,11 @@ def test_a_slider_drag_is_one_step_not_one_for_every_tick(win):
     editor = win.show_hydra()
     slider = editor.add_component("slider", (0, 0))
     item = editor.canvas.node_items[slider.id]
-    item._sliding = True
+    item.mid_drag = True
     for x in range(60, 200, 10):
         item.slide_to(x)
         editor.solve()
-    item._sliding = False
+    item.mid_drag = False
     editor.record()
     moved = slider.params["value"]
     editor.undo()
@@ -2451,10 +2453,12 @@ def test_the_node_bar_shows_every_component_by_category(win):
     assert bar.groups == {
         "Geometry": ["point", "curve", "brep", "mesh"],
         "Input": ["toggle", "pipeline", "panel", "slider"],
+        "Math": ["addition", "subtraction", "multiplication", "division",
+                 "series", "range", "random"],
+        "List": ["list_item", "remove_item"],
         "Vector": ["construct_point", "vector"],
-        "Mesh": ["delaunay"],
         "Transform": ["move", "rotate"],
-        "List": ["list_item", "remove_item"]}
+        "Mesh": ["delaunay"]}
     for key, button in bar.buttons.items():
         assert button.text() == hydra.COMPONENTS[key].title
         assert not button.icon().isNull()
@@ -2466,7 +2470,7 @@ def test_the_node_bar_has_a_tab_for_each_category(win):
     editor = win.show_hydra()
     tabs = editor.nodes_bar.tabs
     assert [tabs.tabText(i) for i in range(tabs.count())] == [
-        "Geometry", "Input", "Vector", "Mesh", "Transform", "List"]
+        "Geometry", "Input", "Math", "List", "Vector", "Transform", "Mesh"]
 
 
 def test_a_tab_shows_its_own_components_and_only_those(win):
@@ -2512,7 +2516,8 @@ def test_clicking_a_component_in_the_node_bar_waits_for_a_click(win):
 def test_a_component_dragged_from_the_node_bar_lands_where_it_is_let_go(win):
     from PySide6.QtCore import QMimeData
     from PySide6.QtGui import QDropEvent
-    from serpentine3d.ui.hydra_editor import COMPONENT_MIME, node_size
+    from serpentine3d.ui.hydra.special import node_size
+    from serpentine3d.ui.hydra.style import COMPONENT_MIME
     editor = _shown(win)
     view = editor.canvas
     data = QMimeData()
@@ -2547,7 +2552,8 @@ def test_file_and_edit_hold_the_commands_with_their_keys_shown(win):
     assert _entries(_menu(editor, "File")) == [
         "New", "Open…", "Save", "Save As…"]
     assert _entries(_menu(editor, "Edit")) == [
-        "Undo", "Redo", "Copy", "Paste", "Delete", "Hide", "Show"]
+        "Undo", "Redo", "Copy", "Paste", "Delete", "Group", "Ungroup", "Hide",
+        "Show"]
     save = [a for a in _menu(editor, "File").actions()
             if a.text().startswith("Save\t")][0]
     assert save.text() == "Save\tCtrl+S"
@@ -2667,7 +2673,7 @@ def _click_canvas(editor, at, button=Qt.MouseButton.LeftButton):
 
 
 def test_the_next_click_on_the_canvas_puts_the_component_there(win):
-    from serpentine3d.ui.hydra_editor import node_size
+    from serpentine3d.ui.hydra.special import node_size
     editor = _shown(win)
     editor.nodes_bar.show_category("Transform")
     editor.nodes_bar.buttons["rotate"].click()
@@ -2710,7 +2716,7 @@ def test_clicking_another_component_in_the_bar_waits_with_that_one(win):
 
 
 def test_the_cursor_it_waits_on_shows_its_icon_and_a_plus(win):
-    from serpentine3d.ui.hydra_editor import placing_cursor
+    from serpentine3d.ui.hydra.bar import placing_cursor
     cursor = placing_cursor(hydra.COMPONENTS["rotate"])
     image = cursor.pixmap().toImage()
     assert not cursor.pixmap().isNull()
@@ -2866,7 +2872,7 @@ def test_a_typed_number_after_a_quotation_mark_is_a_panel_not_a_slider(win):
 
 @pytest.mark.parametrize("output", [False, True])
 def test_a_panels_flags_are_marked_beside_its_ports(win, monkeypatch, output):
-    from serpentine3d.ui import hydra_editor
+    from serpentine3d.ui.hydra import items
     editor = win.show_hydra()
     panel = editor.add_component("panel", (0, 0), {"text": "a\nb"})
     item = editor.canvas.node_items[panel.id]
@@ -2875,7 +2881,7 @@ def test_a_panels_flags_are_marked_beside_its_ports(win, monkeypatch, output):
     editor.set_flag(port, "graft")
     editor.set_reverse(port, True)
     drawn = []
-    monkeypatch.setattr(hydra_editor, "_paint_flag",
+    monkeypatch.setattr(items, "_paint_flag",
                         lambda painter, flag, at: drawn.append((flag, at)))
     from PySide6.QtGui import QImage, QPainter
     image = QImage(int(item.width), int(item.height),
@@ -2934,7 +2940,7 @@ def test_a_flat_meshes_inner_edges_show_in_the_preview(win):
 
 def test_a_mesh_as_big_as_a_scan_shows_only_its_rim_and_creases():
     from serpentine3d.core.mesh import MeshShape
-    from serpentine3d.ui import hydra_editor
+    from serpentine3d.ui.hydra import preview
     n = 230
     xs, ys = np.meshgrid(np.arange(n), np.arange(n))
     verts = np.column_stack([xs.ravel(), ys.ravel(), np.zeros(n * n)])
@@ -2943,8 +2949,8 @@ def test_a_mesh_as_big_as_a_scan_shows_only_its_rim_and_creases():
     quads += [(y * n + x + 1, (y + 1) * n + x + 1, (y + 1) * n + x)
               for y in range(n - 1) for x in range(n - 1)]
     big = MeshShape(verts, np.array(quads))
-    assert len(big.triangles) > hydra_editor.MESH_WIRES_UP_TO
-    assert hydra_editor._mesh_wires(big) is None
+    assert len(big.triangles) > preview.MESH_WIRES_UP_TO
+    assert preview._mesh_wires(big) is None
 
 
 def test_an_empty_optional_input_says_it_is_optional(win):
@@ -3054,3 +3060,560 @@ def test_a_name_is_kept_in_the_file_and_in_a_copy(win):
     assert editor.graph.nodes[copy].title == "Lift"
     again = Graph.from_dict(editor.graph.to_dict())
     assert again.nodes[move.id].title == "Lift"
+
+
+# -- a sign and a number typed into the search -------------------------------------
+
+def _typed_into_search(editor, text):
+    search = editor.find_component(QPointF(0, 0), QPoint(0, 0))
+    search.field.setText(text)
+    return search
+
+
+def test_plus_two_typed_offers_an_addition_with_b_kept_at_two_first(win):
+    editor = _shown(win)
+    search = _typed_into_search(editor, "+2")
+    first = search.list.item(0)
+    assert first.text() == "Addition  A + 2"
+    search._take(first)
+    [node] = editor.graph.nodes.values()
+    assert node.key == "addition"
+    assert node.internal("B").branches[(0,)] == [2.0]
+    editor.solve()
+    assert editor.results[node.id].outputs["Result"].branches[(0,)] == [2.0]
+
+
+def test_times_and_divided_by_are_typed_as_on_a_keyboard(win):
+    editor = _shown(win)
+    for text, said in (("*3", "Multiplication  A × 3"),
+                       ("x3", "Multiplication  A × 3"),
+                       ("/0,5", "Division  A ÷ 0.5"),
+                       (":4", "Division  A ÷ 4")):
+        search = _typed_into_search(editor, text)
+        assert search.list.item(0).text() == said
+        search.close()
+
+
+def test_minus_two_is_first_a_slider_then_a_subtraction(win):
+    editor = _shown(win)
+    search = _typed_into_search(editor, "-2")
+    assert search.list.item(0).data(Qt.ItemDataRole.UserRole) == "slider"
+    assert search.list.item(1).text() == "Subtraction  A - 2"
+
+
+# -- a panel dragged to another size by its corner ---------------------------------
+
+def _drag_on_canvas(editor, a, b):
+    view = editor.canvas
+    a, b = view.mapFromScene(a), view.mapFromScene(b)
+    left = Qt.MouseButton.LeftButton
+
+    def send(kind, at, button, held):
+        QApplication.sendEvent(view.viewport(), QMouseEvent(
+            kind, QPointF(at), QPointF(view.mapToGlobal(at)), button, held,
+            Qt.KeyboardModifier.NoModifier))
+    send(QEvent.Type.MouseButtonPress, a, left, left)
+    send(QEvent.Type.MouseMove, (a + b) / 2, Qt.MouseButton.NoButton, left)
+    send(QEvent.Type.MouseMove, b, Qt.MouseButton.NoButton, left)
+    send(QEvent.Type.MouseButtonRelease, b, left, Qt.MouseButton.NoButton)
+
+
+def test_a_panel_dragged_by_its_corner_takes_the_new_size(win):
+    editor = _shown(win)
+    panel = editor.add_component("panel", (0, 0), {"text": "x"})
+    item = editor.canvas.node_items[panel.id]
+    width, height = item.width, item.height
+    corner = item.mapToScene(QPointF(width - 4, height - 4))
+    _drag_on_canvas(editor, corner, corner + QPointF(80, 60))
+    assert item.width == pytest.approx(width + 80, abs=2)
+    assert item.height == pytest.approx(height + 60, abs=2)
+    assert (item.x(), item.y()) == (0, 0)              # it did not move
+    assert item.outputs[0].x() == item.width
+    assert item.outputs[0].y() == pytest.approx(item.height / 2)
+    again = Graph.from_dict(editor.graph.to_dict())
+    assert again.nodes[panel.id].params["size"] == panel.params["size"]
+
+
+def test_a_panel_is_not_dragged_smaller_than_it_can_show(win):
+    editor = _shown(win)
+    panel = editor.add_component("panel", (0, 0))
+    item = editor.canvas.node_items[panel.id]
+    corner = item.mapToScene(QPointF(item.width - 4, item.height - 4))
+    _drag_on_canvas(editor, corner, QPointF(-500, -500))
+    assert panel.params["size"] == [120, 60]
+
+
+def test_a_panels_new_size_is_one_step_to_undo(win):
+    editor = _shown(win)
+    panel = editor.add_component("panel", (0, 0))
+    item = editor.canvas.node_items[panel.id]
+    width = item.width
+    corner = item.mapToScene(QPointF(item.width - 4, item.height - 4))
+    _drag_on_canvas(editor, corner, corner + QPointF(100, 0))
+    editor.undo()
+    assert editor.canvas.node_items[panel.id].width == width
+
+
+def test_a_double_click_on_the_corner_brings_the_first_size_back(win):
+    editor = _shown(win)
+    panel = editor.add_component("panel", (0, 0), {"size": [400, 300]})
+    item = editor.canvas.node_items[panel.id]
+    assert item.height == 300
+    view = editor.canvas
+    corner = view.mapFromScene(item.mapToScene(
+        QPointF(item.width - 4, item.height - 4)))
+    QTest.mouseDClick(view.viewport(), Qt.MouseButton.LeftButton, pos=corner)
+    assert "size" not in panel.params
+    assert item.height == 130
+
+
+# -- components lined up with others while dragged ----------------------------------
+
+def _drag_holding(editor, a, b, check=None):
+    """A left drag on the canvas from scene point a to b; `check` is called
+    before it is let go."""
+    view = editor.canvas
+    a, b = view.mapFromScene(a), view.mapFromScene(b)
+    left = Qt.MouseButton.LeftButton
+
+    def send(kind, at, button, held):
+        QApplication.sendEvent(view.viewport(), QMouseEvent(
+            kind, QPointF(at), QPointF(view.mapToGlobal(at)), button, held,
+            Qt.KeyboardModifier.NoModifier))
+    send(QEvent.Type.MouseButtonPress, a, left, left)
+    send(QEvent.Type.MouseMove, (a + b) / 2, Qt.MouseButton.NoButton, left)
+    send(QEvent.Type.MouseMove, b, Qt.MouseButton.NoButton, left)
+    if check is not None:
+        check()
+    send(QEvent.Type.MouseButtonRelease, b, left, Qt.MouseButton.NoButton)
+
+
+def _grab_point(item):
+    # the middle of its title, clear of its ports
+    return item.mapToScene(QPointF(item.width - 20, item.height / 2))
+
+
+def test_a_component_dragged_near_another_lines_up_with_its_left_edge(win):
+    editor = _shown(win)
+    editor.add_component("move", (0, 0))
+    moved = editor.add_component("rotate", (300, 300))
+    item = editor.canvas.node_items[moved.id]
+    start = _grab_point(item)
+    shown = []
+    # dropped 3 to the right of the other's left edge, far below it
+    _drag_holding(editor, start, start + QPointF(-297, -100),
+                  lambda: shown.append(list(editor.canvas.scene()._guides)))
+    assert moved.x == 0 and moved.y == 200
+    [guide] = shown[0]
+    assert guide.x1() == guide.x2() == 0
+    assert editor.canvas.scene()._guides == []        # gone once let go
+
+
+def test_a_component_lines_up_by_its_bottom_too(win):
+    editor = _shown(win)
+    panel = editor.add_component("panel", (0, 0))
+    other = editor.canvas.node_items[panel.id]
+    moved = editor.add_component("curve", (400, 400))
+    item = editor.canvas.node_items[moved.id]
+    start = _grab_point(item)
+    # its bottom 3 below the panel's, far to the right
+    top = other.height - item.height + 3
+    _drag_holding(editor, start, start + QPointF(-60, top - 400))
+    assert moved.y + item.height == other.height
+
+
+def test_a_component_far_from_any_other_goes_where_it_is_dragged(win):
+    editor = _shown(win)
+    editor.add_component("move", (0, 0))
+    moved = editor.add_component("rotate", (300, 300))
+    item = editor.canvas.node_items[moved.id]
+    start = _grab_point(item)
+    _drag_holding(editor, start, start + QPointF(77, 91))
+    assert (moved.x, moved.y) == (377, 391)
+
+
+def test_a_wired_component_lines_up_so_the_wire_runs_straight(win):
+    editor = _shown(win)
+    slider = editor.add_component("slider", (0, 0))
+    rotate = editor.add_component("rotate", (400, 300))
+    editor.connect(slider.id, "Number", rotate.id, "Angle")
+    item = editor.canvas.node_items[rotate.id]
+    out = editor.canvas.node_items[slider.id].port("Number", True)
+    angle = item.port("Angle", False)
+    start = _grab_point(item)
+    gap = out.scenePos().y() - angle.scenePos().y()
+    # dropped 4 below where the wire would run straight
+    _drag_holding(editor, start, start + QPointF(0, gap + 4))
+    assert angle.scenePos().y() == out.scenePos().y()
+
+
+def test_dragging_a_slider_knob_lines_nothing_up(win):
+    editor = _shown(win)
+    editor.add_component("move", (0, 0))
+    slider = editor.add_component("slider", (300, 3))
+    item = editor.canvas.node_items[slider.id]
+    x0, x1 = item._rail()
+    a = item.mapToScene(QPointF(x0 + 5, NODE_MIDDLE))
+    _drag_holding(editor, a, item.mapToScene(QPointF(x1 - 5, NODE_MIDDLE)))
+    assert (slider.x, slider.y) == (300, 3)
+
+
+NODE_MIDDLE = 14
+
+
+def test_a_component_far_off_does_not_pull_a_dragged_one_into_line(win):
+    editor = _shown(win)
+    editor.add_component("move", (0, -3000))           # off the screen
+    moved = editor.add_component("rotate", (300, 300))
+    item = editor.canvas.node_items[moved.id]
+    start = _grab_point(item)
+    _drag_holding(editor, start, start + QPointF(-297, 0))
+    assert moved.x == 3                    # not lined up with x 0 up there
+
+
+# -- the align bar over two or more chosen components -------------------------------
+
+def _three_chosen(editor):
+    nodes = [editor.add_component("curve", (0, 0)),
+             editor.add_component("move", (150, 40)),
+             editor.add_component("point", (420, 15))]
+    for node in nodes:
+        editor.canvas.node_items[node.id].setSelected(True)
+    return nodes
+
+
+def test_the_align_bar_shows_only_while_two_or_more_are_chosen(win):
+    editor = _shown(win)
+    bar = editor.canvas.align_bar
+    curve = editor.add_component("curve", (0, 0))
+    move = editor.add_component("move", (200, 0))
+    assert not bar.isVisible()
+    editor.canvas.node_items[curve.id].setSelected(True)
+    assert not bar.isVisible()
+    editor.canvas.node_items[move.id].setSelected(True)
+    assert bar.isVisible()
+    # at the canvas's top right corner
+    view = editor.canvas.viewport()
+    assert bar.geometry().right() == view.width() - 8 - 1
+    assert bar.geometry().top() == 8
+    editor.canvas.scene().clearSelection()
+    assert not bar.isVisible()
+
+
+def test_spacing_evenly_needs_three(win):
+    editor = _shown(win)
+    bar = editor.canvas.align_bar
+    a = editor.add_component("curve", (0, 0))
+    b = editor.add_component("move", (200, 0))
+    for node in (a, b):
+        editor.canvas.node_items[node.id].setSelected(True)
+    assert not bar.buttons["across"].isEnabled()
+    c = editor.add_component("point", (400, 0))
+    editor.canvas.node_items[c.id].setSelected(True)
+    assert bar.buttons["across"].isEnabled()
+
+
+def test_align_left_lines_the_chosen_up_on_the_leftmost_edge(win):
+    editor = _shown(win)
+    nodes = _three_chosen(editor)
+    editor.canvas.align_bar.buttons["left"].click()
+    assert [n.x for n in nodes] == [0, 0, 0]
+    assert [n.y for n in nodes] == [0, 40, 15]
+
+
+def test_align_middle_puts_them_side_by_side_on_one_line(win):
+    editor = _shown(win)
+    nodes = _three_chosen(editor)
+    editor.align("middle")
+    middles = {n.y + editor.canvas.node_items[n.id].height / 2
+               for n in nodes}
+    assert len(middles) == 1
+
+
+def test_spacing_evenly_leaves_the_same_gap_between_each(win):
+    editor = _shown(win)
+    nodes = _three_chosen(editor)
+    editor.align("across")
+    items = sorted((editor.canvas.node_items[n.id] for n in nodes),
+                   key=lambda i: i.x())
+    gaps = [b.x() - (a.x() + a.width) for a, b in zip(items, items[1:])]
+    assert gaps[0] == pytest.approx(gaps[1])
+    assert items[0].x() == 0                     # the first stays
+    assert items[-1].x() == 420                  # and the last
+
+
+def test_an_alignment_is_one_step_to_undo(win):
+    editor = _shown(win)
+    nodes = _three_chosen(editor)
+    editor.align("left")
+    editor.undo()
+    assert [editor.graph.nodes[n.id].x for n in nodes] == [0, 150, 420]
+
+
+def test_arranging_boxes_aligns_their_edges_and_middles():
+    from serpentine3d.ui.hydra.align import arranged
+    boxes = [(0, 0, 10, 10), (20, 5, 30, 20)]
+    assert arranged(boxes, "right") == [(40, 0), (20, 5)]
+    assert arranged(boxes, "center") == [(20, 0), (10, 5)]
+    assert arranged(boxes, "bottom") == [(0, 15), (20, 5)]
+
+
+# -- choosing as in the model: Shift or Ctrl and a click, or a box ------------------
+
+def _click_node(editor, node, modifiers=Qt.KeyboardModifier.NoModifier):
+    item = editor.canvas.node_items[node.id]
+    view = editor.canvas
+    at = view.mapFromScene(_grab_point(item))
+    QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, modifiers,
+                     at)
+
+
+def _chosen(editor):
+    return {i.node.id for i in editor.canvas.chosen_items()}
+
+
+def test_shift_and_a_click_add_one_to_the_choice_and_take_it_out_again(win):
+    editor = _shown(win)
+    a = editor.add_component("curve", (0, 0))
+    b = editor.add_component("move", (200, 0))
+    shift = Qt.KeyboardModifier.ShiftModifier
+    _click_node(editor, a)
+    _click_node(editor, b, shift)
+    assert _chosen(editor) == {a.id, b.id}
+    _click_node(editor, b, shift)
+    assert _chosen(editor) == {a.id}
+
+
+def test_ctrl_and_a_click_do_the_same_as_in_the_model(win):
+    editor = _shown(win)
+    a = editor.add_component("curve", (0, 0))
+    b = editor.add_component("move", (200, 0))
+    ctrl = Qt.KeyboardModifier.ControlModifier
+    _click_node(editor, a)
+    _click_node(editor, b, ctrl)
+    assert _chosen(editor) == {a.id, b.id}
+    _click_node(editor, a, ctrl)
+    assert _chosen(editor) == {b.id}
+
+
+def test_a_plain_click_chooses_only_that_one(win):
+    editor = _shown(win)
+    a = editor.add_component("curve", (0, 0))
+    b = editor.add_component("move", (200, 0))
+    _click_node(editor, a)
+    _click_node(editor, b)
+    assert _chosen(editor) == {b.id}
+
+
+def _box_on_canvas(editor, a, b, modifiers):
+    view = editor.canvas
+    a, b = view.mapFromScene(a), view.mapFromScene(b)
+    left = Qt.MouseButton.LeftButton
+
+    def send(kind, at, button, held):
+        QApplication.sendEvent(view.viewport(), QMouseEvent(
+            kind, QPointF(at), QPointF(view.mapToGlobal(at)), button, held,
+            modifiers))
+    send(QEvent.Type.MouseButtonPress, a, left, left)
+    send(QEvent.Type.MouseMove, (a + b) / 2, Qt.MouseButton.NoButton, left)
+    send(QEvent.Type.MouseMove, b, Qt.MouseButton.NoButton, left)
+    send(QEvent.Type.MouseButtonRelease, b, left, Qt.MouseButton.NoButton)
+
+
+def test_a_box_with_shift_adds_to_the_choice_and_with_ctrl_takes_from_it(win):
+    editor = _shown(win)
+    a = editor.add_component("curve", (0, 0))
+    b = editor.add_component("curve", (300, 0))
+    c = editor.add_component("curve", (300, 200))
+    _click_node(editor, a)
+    # round b alone
+    _box_on_canvas(editor, QPointF(280, -30), QPointF(450, 60),
+                   Qt.KeyboardModifier.ShiftModifier)
+    assert _chosen(editor) == {a.id, b.id}
+    # round b and c, with Ctrl: b goes, c was never in
+    _box_on_canvas(editor, QPointF(280, -30), QPointF(450, 260),
+                   Qt.KeyboardModifier.ControlModifier)
+    assert _chosen(editor) == {a.id}
+
+
+def test_a_click_on_nothing_with_shift_keeps_the_choice(win):
+    editor = _shown(win)
+    a = editor.add_component("curve", (0, 0))
+    _click_node(editor, a)
+    view = editor.canvas
+    QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton,
+                     Qt.KeyboardModifier.ShiftModifier,
+                     view.mapFromScene(QPointF(600, 600)))
+    assert _chosen(editor) == {a.id}
+    QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton,
+                     Qt.KeyboardModifier.NoModifier,
+                     view.mapFromScene(QPointF(600, 600)))
+    assert _chosen(editor) == set()
+
+
+def test_ctrl_a_chooses_every_component_not_the_models_objects(win):
+    editor = _shown(win)
+    box = win.scene.add(geo.make_box((0, 0, 0), 1, 1, 1))
+    a = editor.add_component("curve", (0, 0))
+    b = editor.add_component("move", (200, 0))
+    editor.canvas.setFocus()
+    QTest.keyClick(editor.canvas, Qt.Key.Key_A,
+                   Qt.KeyboardModifier.ControlModifier)
+    assert _chosen(editor) == {a.id, b.id}
+    assert not win.selection.is_selected(box.id)
+
+
+def test_ctrl_e_fits_every_component_into_view(win):
+    editor = _shown(win)
+    editor.add_component("curve", (-900, -700))
+    editor.add_component("move", (900, 700))
+    view = editor.canvas
+    view.setFocus()
+    QTest.keyClick(view, Qt.Key.Key_E, Qt.KeyboardModifier.ControlModifier)
+    shown = view.mapToScene(view.viewport().rect()).boundingRect()
+    for item in view.node_items.values():
+        assert shown.contains(item.sceneBoundingRect())
+
+
+# -- groups: a background round components, moved and ended as one -----------------
+
+def _grouped(editor):
+    a = editor.add_component("curve", (0, 0))
+    b = editor.add_component("move", (200, 60))
+    for node in (a, b):
+        editor.canvas.node_items[node.id].setSelected(True)
+    view = editor.canvas
+    view.setFocus()
+    QTest.keyClick(view, Qt.Key.Key_G, Qt.KeyboardModifier.ControlModifier)
+    [group] = view.group_items.values()
+    return a, b, group
+
+
+def test_ctrl_g_puts_the_chosen_components_on_one_background(win):
+    editor = _shown(win)
+    a, b, group = _grouped(editor)
+    assert set(editor.graph.groups[group.group_id]) == {a.id, b.id}
+    rect = group.boundingRect()
+    for node in (a, b):
+        assert rect.contains(
+            editor.canvas.node_items[node.id].sceneBoundingRect())
+    assert group.zValue() < editor.canvas.node_items[a.id].zValue()
+
+
+def test_a_component_moved_alone_takes_the_background_with_it(win):
+    editor = _shown(win)
+    a, b, group = _grouped(editor)
+    item = editor.canvas.node_items[b.id]
+    item.setPos(500, 300)
+    assert group.boundingRect().contains(item.sceneBoundingRect())
+    assert editor.graph.nodes[a.id].x == 0          # the other stays
+
+
+def test_dragging_the_background_moves_the_whole_group(win):
+    editor = _shown(win)
+    a, b, group = _grouped(editor)
+    corner = group.boundingRect().topLeft() + QPointF(5, 5)
+    _drag_holding(editor, corner, corner + QPointF(100, 50))
+    assert (a.x, a.y) == (100, 50)
+    assert (b.x, b.y) == (300, 110)
+    editor.undo()
+    assert (editor.graph.nodes[a.id].x, editor.graph.nodes[b.id].x) == (0, 200)
+
+
+def test_delete_on_the_background_ends_the_grouping_not_the_components(win):
+    editor = _shown(win)
+    a, b, group = _grouped(editor)
+    corner = group.boundingRect().topLeft() + QPointF(5, 5)
+    view = editor.canvas
+    QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton,
+                     pos=view.mapFromScene(corner))
+    assert view.chosen_group is group and group.chosen
+    assert view.chosen_items() == []
+    QTest.keyClick(view, Qt.Key.Key_Delete)
+    assert editor.graph.groups == {} and view.group_items == {}
+    assert set(editor.graph.nodes) == {a.id, b.id}
+
+
+def test_a_click_beside_the_group_lets_it_go(win):
+    editor = _shown(win)
+    _a, _b, group = _grouped(editor)
+    view = editor.canvas
+    corner = group.boundingRect().topLeft() + QPointF(5, 5)
+    QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton,
+                     pos=view.mapFromScene(corner))
+    QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton,
+                     pos=view.mapFromScene(QPointF(900, 900)))
+    assert view.chosen_group is None and not group.chosen
+
+
+def test_ctrl_shift_g_ends_the_group_of_the_chosen_components(win):
+    editor = _shown(win)
+    a, _b, _group = _grouped(editor)
+    view = editor.canvas
+    view.scene().clearSelection()
+    view.node_items[a.id].setSelected(True)
+    QTest.keyClick(view, Qt.Key.Key_G, Qt.KeyboardModifier.ControlModifier
+                   | Qt.KeyboardModifier.ShiftModifier)
+    assert editor.graph.groups == {} and view.group_items == {}
+
+
+def test_a_group_is_one_step_to_undo_and_comes_back_from_the_file(win):
+    editor = _shown(win)
+    _a, _b, group = _grouped(editor)
+    gid = group.group_id
+    editor.load(editor.graph.to_dict())
+    assert set(editor.canvas.group_items) == {gid}
+    editor.undo()
+    assert editor.graph.groups == {} and editor.canvas.group_items == {}
+
+
+def test_deleting_a_grouped_component_shrinks_its_group(win):
+    editor = _shown(win)
+    a, b, group = _grouped(editor)
+    view = editor.canvas
+    view.scene().clearSelection()
+    view.node_items[b.id].setSelected(True)
+    QTest.keyClick(view, Qt.Key.Key_Delete)
+    assert editor.graph.groups == {group.group_id: [a.id]}
+    assert group.boundingRect().width() < 200
+
+
+def test_a_right_click_on_the_background_offers_an_empty_name_to_fill(win):
+    editor = _shown(win)
+    _a, _b, group = _grouped(editor)
+    menu = editor.group_menu(group)
+    assert menu.actions()[0].defaultWidget() is menu.name_field
+    assert menu.name_field.text() == ""
+    assert "Ungroup" in [a.text() for a in menu.actions()]
+    menu.name_field.setText("Facade")
+    menu.name_field.editingFinished.emit()
+    assert group.name() == "Facade"
+    # written over the group, above its background, in the middle
+    assert group.boundingRect().top() < group._rect.top() - 10
+    assert group._name_rect().center().x() == pytest.approx(
+        group._rect.center().x())
+    editor.undo()
+    assert editor.graph.group_names == {}
+
+
+def test_the_background_is_where_a_right_click_finds_the_group(win):
+    editor = _shown(win)
+    _a, _b, group = _grouped(editor)
+    corner = group._rect.topLeft() + QPointF(5, 5)
+    assert editor.canvas.group_at(corner) is group
+    inside = editor.canvas.node_items[_a.id].sceneBoundingRect().center()
+    assert editor.canvas.group_at(inside) is None   # a component is over it
+    assert editor.canvas.group_at(QPointF(2000, 2000)) is None
+
+
+def test_a_groups_background_lies_behind_its_wires(win):
+    editor = _shown(win)
+    slider = editor.add_component("slider", (0, 0))
+    rotate = editor.add_component("rotate", (300, 0))
+    editor.connect(slider.id, "Number", rotate.id, "Angle")
+    for node in (slider, rotate):
+        editor.canvas.node_items[node.id].setSelected(True)
+    editor.group_selected()
+    [group] = editor.canvas.group_items.values()
+    [wire] = editor.canvas.wire_items
+    assert group.zValue() < wire.zValue()

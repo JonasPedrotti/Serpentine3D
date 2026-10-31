@@ -470,6 +470,59 @@ def _points(p):
     _dot(p, 19, 15)
 
 
+def _sign(p, *strokes):
+    # a sign of arithmetic in a round badge, the badge in the accent
+    p.save()
+    p.setBrush(_FILL)
+    p.drawEllipse(QPointF(11, 11), 8.5, 8.5)
+    p.setPen(QPen(_ACCENT, 2.0, Qt.PenStyle.SolidLine,
+                  Qt.PenCapStyle.RoundCap))
+    for x0, y0, x1, y1 in strokes:
+        p.drawLine(QPointF(x0, y0), QPointF(x1, y1))
+    p.restore()
+
+
+def _addition(p):
+    _sign(p, (7, 11, 15, 11), (11, 7, 11, 15))
+
+
+def _subtraction(p):
+    _sign(p, (7, 11, 15, 11))
+
+
+def _multiplication(p):
+    _sign(p, (8, 8, 14, 14), (14, 8, 8, 14))
+
+
+def _division(p):
+    _sign(p, (7, 11, 15, 11))
+    _dot(p, 11, 7.3, r=1.3)
+    _dot(p, 11, 14.7, r=1.3)
+
+
+def _series(p):
+    # bars that each stand a step taller than the one before
+    for i, x in enumerate((4, 9, 14, 19)):
+        p.drawLine(QPointF(x, 19), QPointF(x, 15 - 3.5 * i))
+        _dot(p, x, 15 - 3.5 * i, r=1.4)
+
+
+def _range(p):
+    # a span from one end to the other, divided into equal steps
+    p.drawLine(QPointF(3, 13), QPointF(19, 13))
+    for x in (3, 7, 11, 15, 19):
+        p.drawLine(QPointF(x, 10), QPointF(x, 16))
+    _dot(p, 3, 7, r=1.6)
+    _dot(p, 19, 7, r=1.6)
+
+
+def _random(p):
+    # a die, its pips scattered
+    p.drawRoundedRect(QRectF(3, 3, 16, 16), 3, 3)
+    for x, y in ((7, 7), (15, 7), (11, 11), (7, 15), (15, 15)):
+        _dot(p, x, y, r=1.4)
+
+
 _DRAWERS = {
     "line": _line, "polyline": _polyline, "curve": _curve, "circle": _circle,
     "arc": _arc, "rectangle": _rect, "extrude": _extrude, "revolve": _revolve,
@@ -483,8 +536,61 @@ _DRAWERS = {
     "pointson": _points, "point": _point, "mesh": _mesh, "vector": _vector,
     "hydra": _hydra, "listitem": _list_item,
     "listremove": _list_remove, "toggle": _toggle, "pipeline": _pipeline,
-    "panel": _panel, "delaunay": _delaunay,
+    "panel": _panel, "delaunay": _delaunay, "addition": _addition,
+    "subtraction": _subtraction, "multiplication": _multiplication,
+    "division": _division, "series": _series, "range": _range,
+    "random": _random,
 }
+
+
+def _bars(p, rects):
+    p.save()
+    p.setBrush(_FILL)
+    for rect in rects:
+        p.drawRoundedRect(QRectF(*rect), 1.5, 1.5)
+    p.restore()
+
+
+def _align_drawer(how):
+    """Bars lined up on the accent line, or spaced evenly between two."""
+    def draw(p):
+        p.save()
+        p.setPen(QPen(_ACCENT, 1.7, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap))
+        if how in ("left", "center", "right"):
+            x = {"left": 4, "center": 11, "right": 18}[how]
+            p.drawLine(QPointF(x, 2.5), QPointF(x, 19.5))
+        elif how in ("top", "middle", "bottom"):
+            y = {"top": 4, "middle": 11, "bottom": 18}[how]
+            p.drawLine(QPointF(2.5, y), QPointF(19.5, y))
+        elif how == "across":
+            p.drawLine(QPointF(2.5, 3), QPointF(2.5, 19))
+            p.drawLine(QPointF(19.5, 3), QPointF(19.5, 19))
+        else:
+            p.drawLine(QPointF(3, 2.5), QPointF(19, 2.5))
+            p.drawLine(QPointF(3, 19.5), QPointF(19, 19.5))
+        p.restore()
+        long, short = 13, 8
+        if how in ("left", "center", "right"):
+            start = {"left": lambda w: 4, "center": lambda w: 11 - w / 2,
+                     "right": lambda w: 18 - w}[how]
+            _bars(p, [(start(long), 5, long, 4.5),
+                      (start(short), 12.5, short, 4.5)])
+        elif how in ("top", "middle", "bottom"):
+            start = {"top": lambda h: 4, "middle": lambda h: 11 - h / 2,
+                     "bottom": lambda h: 18 - h}[how]
+            _bars(p, [(5, start(long), 4.5, long),
+                      (12.5, start(short), 4.5, short)])
+        elif how == "across":
+            _bars(p, [(5, 7, 3, 8), (9.5, 5, 3, 12), (14, 8, 3, 6)])
+        else:
+            _bars(p, [(7, 5, 8, 3), (5, 9.5, 12, 3), (8, 14, 6, 3)])
+    return draw
+
+
+def align_icon(how: str) -> QIcon:
+    """The mark of a button that aligns, or spaces evenly, what is chosen."""
+    return QIcon(_Drawn(_align_drawer(how), SIZE, 1.4))
 
 
 def hydra_icon() -> QIcon:

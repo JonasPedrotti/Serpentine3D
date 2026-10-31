@@ -961,8 +961,9 @@ def test_internalized_data_is_read_back_once_not_on_every_solve(monkeypatch):
     graph.internalize(brep.id, scene)
     again = Graph.from_dict(graph.to_dict())
     reads = []
-    real = hydra.unpack_tree
-    monkeypatch.setattr(hydra, "unpack_tree",
+    from serpentine3d.core.hydra import graph as graph_module
+    real = graph_module.unpack_tree
+    monkeypatch.setattr(graph_module, "unpack_tree",
                         lambda data: reads.append(1) or real(data))
     for _ in range(3):
         again.solve(scene)
@@ -1456,3 +1457,147 @@ def test_a_component_given_its_own_name_keeps_it_and_can_lose_it():
     assert node.title == "Turn the roof"
     node.rename("Rotate")                  # its own name: nothing to keep
     assert "name" not in node.params
+
+
+# -- math ---------------------------------------------------------------------
+
+def _solved(key, **inputs):
+    """What a component makes from numbers set on its inputs by sliders."""
+    graph = Graph()
+    node = graph.add_node(key)
+    for name, value in inputs.items():
+        slider = graph.add_node("slider")
+        hydra.set_range(slider.params, -1000, 1000)
+        hydra.set_decimals(slider.params, 3)
+        hydra.set_slider(slider.params, value)
+        graph.connect(slider.id, "Number", node.id, name)
+    return graph.solve(None)[node.id]
+
+
+def _values(key, **inputs):
+    [tree] = _solved(key, **inputs).outputs.values()
+    return [v for branch in tree.branches.values() for v in branch]
+
+
+def test_the_four_operations_work_on_two_numbers():
+    assert _values("addition", A=2, B=3) == [5]
+    assert _values("subtraction", A=2, B=3) == [-1]
+    assert _values("multiplication", A=2, B=3) == [6]
+    assert _values("division", A=3, B=2) == [1.5]
+
+
+def test_an_operation_left_unwired_leaves_a_number_as_it_is():
+    assert _values("addition", A=7) == [7]
+    assert _values("multiplication", A=7) == [7]
+    assert _values("division", A=7) == [7]
+
+
+def test_division_by_zero_is_said_not_raised():
+    result = _solved("division", A=1, B=0)
+    assert result.status == "error" and "0" in result.message
+
+
+def test_an_operation_works_on_each_number_of_a_list():
+    graph = Graph()
+    series = graph.add_node("series")
+    add = graph.add_node("addition")
+    graph.connect(series.id, "Series", add.id, "A")
+    [tree] = graph.solve(None)[add.id].outputs.values()
+    assert tree.branches[(0,)] == list(range(10))
+
+
+def test_series_counts_up_from_its_start_by_its_step():
+    assert _values("series") == list(range(10))
+    assert _values("series", S=5, N=-2, C=3) == [5, 3, 1]
+    assert _values("series", C=0) == []
+
+
+def test_range_divides_its_span_into_equal_steps():
+    assert _values("range", S=0, E=10, N=4) == [0, 2.5, 5, 7.5, 10]
+    assert _values("range", S=3, E=9, N=0) == [3]
+
+
+def test_random_is_the_same_for_the_same_seed_and_within_its_bounds():
+    first = _values("random", Min=-5, Max=5, N=50, Seed=7)
+    assert len(first) == 50 and all(-5 <= v <= 5 for v in first)
+    assert _values("random", Min=-5, Max=5, N=50, Seed=7) == first
+    assert _values("random", Min=-5, Max=5, N=50, Seed=8) != first
+
+
+def test_a_count_below_zero_is_said():
+    result = _solved("series", C=-1)
+    assert result.status == "error" and "less than 0" in result.message
+
+
+def test_the_math_components_are_found_by_their_short_names():
+    assert hydra.find_components("add")[0] == "addition"
+    assert hydra.find_components("+")[0] == "addition"
+    assert hydra.find_components("rnd")[0] == "random"
+
+
+# -- groups -------------------------------------------------------------------
+
+def test_components_grouped_are_kept_together_in_the_file():
+    graph = Graph()
+    a, b, c = (graph.add_node("curve") for _ in range(3))
+    gid = graph.group([a.id, b.id])
+    assert graph.groups == {gid: [a.id, b.id]}
+    assert graph.group_of(a.id) == gid and graph.group_of(c.id) is None
+    again = Graph.from_dict(graph.to_dict())
+    assert again.groups == {gid: [a.id, b.id]}
+
+
+def test_a_component_is_in_one_group_at_most():
+    graph = Graph()
+    a, b, c = (graph.add_node("curve") for _ in range(3))
+    first = graph.group([a.id, b.id])
+    second = graph.group([b.id, c.id])
+    assert graph.groups == {first: [a.id], second: [b.id, c.id]}
+    graph.group([a.id])
+    assert first not in graph.groups           # empty, so gone
+
+
+def test_a_component_removed_leaves_its_group_and_the_last_ends_it():
+    graph = Graph()
+    a, b = graph.add_node("curve"), graph.add_node("curve")
+    gid = graph.group([a.id, b.id])
+    graph.remove_node(a.id)
+    assert graph.groups == {gid: [b.id]}
+    graph.remove_node(b.id)
+    assert graph.groups == {}
+
+
+def test_ungrouping_leaves_the_components():
+    graph = Graph()
+    a, b = graph.add_node("curve"), graph.add_node("curve")
+    gid = graph.group([a.id, b.id])
+    graph.ungroup(gid)
+    assert graph.groups == {} and set(graph.nodes) == {a.id, b.id}
+
+
+def test_a_group_copied_whole_is_pasted_as_a_group_of_the_copies():
+    graph = Graph()
+    a, b, c = (graph.add_node("curve") for _ in range(3))
+    graph.group([a.id, b.id])
+    fresh = graph.paste(graph.part([a.id, b.id]))
+    assert len(graph.groups) == 2
+    assert sorted(graph.groups[graph.group_of(fresh[0])]) == sorted(fresh)
+    # a group copied in part is not
+    graph.paste(graph.part([a.id, c.id]))
+    assert len(graph.groups) == 2
+
+
+def test_a_group_keeps_its_name_in_the_file_and_in_a_copy():
+    graph = Graph()
+    a, b = graph.add_node("curve"), graph.add_node("curve")
+    gid = graph.group([a.id, b.id])
+    graph.name_group(gid, "  Facade  ")
+    assert graph.group_names == {gid: "Facade"}
+    again = Graph.from_dict(graph.to_dict())
+    assert again.group_names == {gid: "Facade"}
+    fresh = graph.paste(graph.part([a.id, b.id]))
+    assert graph.group_names[graph.group_of(fresh[0])] == "Facade"
+    graph.name_group(gid, "")
+    assert gid not in graph.group_names
+    graph.ungroup(graph.group_of(fresh[0]))
+    assert list(graph.group_names) == []
