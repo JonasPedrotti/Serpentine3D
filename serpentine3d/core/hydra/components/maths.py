@@ -135,3 +135,24 @@ COMPONENTS["random"] = Component(
     icon="random", solve=_random,
     description="N random numbers between Min and Max, the same ones for "
                 "the same Seed")
+
+
+def _round(N, D):
+    places = int(round(D))
+    if places < 0:
+        raise HydraError("Decimals cannot be less than 0")
+    return round(N, places)
+
+
+COMPONENTS["round"] = Component(
+    "round", "Round", "Math",
+    inputs=(Port("N", "number", label="Number",
+                 description="The number to round"),
+            Port("D", "number", 0.0, label="Decimals",
+                 description="How many places after the point: none "
+                             "unless set")),
+    outputs=(Port("R", "number", label="Result",
+                  description="N rounded to D places"),),
+    icon="round", solve=_round,
+    description="N rounded to D decimal places, to a whole number unless "
+                "set")

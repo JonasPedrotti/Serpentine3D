@@ -41,8 +41,8 @@ COMPONENTS: dict[str, Component] = {}
 
 # the node bar's tabs: what goes in, the numbers and lists worked on, then
 # the geometry changed and made
-CATEGORIES = ("Geometry", "Input", "Math", "List", "Vector", "Transform",
-              "Mesh")
+CATEGORIES = ("Geometry", "Input", "Math", "List", "Text", "Vector",
+              "Curve", "Transform", "Mesh")
 
 
 # What the search on the canvas offers before anything is typed: the
@@ -63,6 +63,13 @@ NICKNAMES = {
     "addition": ("add", "plus", "+"), "subtraction": ("sub", "minus"),
     "multiplication": ("mul", "times", "*"), "division": ("div", "/"),
     "series": ("ser",), "range": ("rng",), "random": ("rnd", "rand"),
+    "unit_x": ("x", "ux"), "unit_y": ("y", "uy"), "unit_z": ("z", "uz"),
+    "contour": ("con", "section", "slice"),
+    "round": ("int",), "concatenate": ("concat", "join", "&"),
+    "text_tag": ("tag", "label", "text"),
+    "deconstruct_point": ("dpt", "decon", "xyz"),
+    "point_on_curve": ("poc", "eval"),
+    "group": ("grp",), "ungroup": ("ungrp", "explode"),
 }
 
 
@@ -99,4 +106,4 @@ class Result:
 
 # each adds its own components, in the order the node bar shows them
 from . import (  # noqa: E402,F401
-    geometry, inputs, maths, lists, vector, transform, mesh)
+    geometry, inputs, maths, lists, text, vector, curve, transform, mesh)

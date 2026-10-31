@@ -125,6 +125,8 @@ class HydraEditor(QWidget):
         file = menus.addMenu("File")
         add_command(file, "New", self.new_graph, "Start an empty graph")
         add_command(file, "Open…", self.open_graph, "Open a .hydra file")
+        add_command(file, "Start Page", self.show_start,
+                 "The recent graphs as cards, to open one")
         file.addSeparator()
         add_command(file, "Save", self.save_graph,
                  "Save to the graph's file, asking where only the first time",
@@ -321,10 +323,9 @@ class HydraEditor(QWidget):
             if result is None:
                 continue
             for port in self.graph.nodes[nid].component.outputs:
-                if port.kind in GEOMETRY_KINDS:
-                    shapes.extend(result.outputs.get(port.name, []))
-                elif port.kind == "any":
-                    # only what it carries that is geometry can be cast
+                if port.kind in GEOMETRY_KINDS or port.kind == "any":
+                    # only what it carries that is geometry can be cast; a
+                    # group stays one, to be one of the model's groups
                     shapes.extend(v for v in result.outputs.get(port.name, [])
                                   if hydra.fits("geometry", v))
         return shapes
@@ -335,7 +336,8 @@ class HydraEditor(QWidget):
         shapes = self.cast_shapes(node_ids)
         if not shapes:
             return []
-        dialog = CastDialog(self.window.scene.layers, len(shapes),
+        dialog = CastDialog(self.window.scene.layers,
+                            len(hydra.shapes_in(shapes)),
                             bool(self.window.cfg.get("hydra_cast_group",
                                                      default=False)), self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -354,14 +356,33 @@ class HydraEditor(QWidget):
         if self.window.processor.busy:
             self.status.setText("Finish or cancel the active command first")
             return []
+        from ...core.mesh import MeshShape
+        from ...core.text_object import TextShape
         from ...script_runtime import isolated_copy
         scene = self.window.scene
         self.window.history.checkpoint("Hydra: Cast")
-        objects = [scene.add(isolated_copy(shape), layer_id=layer_id)
-                   for shape in shapes]
+        def model_copy(shape):
+            # a mesh goes in as flat triangles, the way the graph shows it,
+            # and lettering as text to edit, not as its outlines
+            if isinstance(shape, MeshShape):
+                return hydra.faceted(shape)
+            if isinstance(shape, TextShape):
+                return shape.copy()
+            return isolated_copy(shape)
+        objects, kept = [], []
+        for value in shapes:
+            members = [scene.add(model_copy(shape), layer_id=layer_id)
+                       for shape in hydra.shapes_in([value])]
+            objects.extend(members)
+            if isinstance(value, hydra.GeometryGroup) and len(members) > 1:
+                kept.append([obj.id for obj in members])
         ids = [obj.id for obj in objects]
         if group and len(ids) > 1:
+            # all of it one group, groups and all
             scene.update_many(ids, group_id=uuid.uuid4().hex[:8])
+        else:
+            for members in kept:
+                scene.update_many(members, group_id=uuid.uuid4().hex[:8])
         self.window.selection.set(ids)
         said = f"{len(ids)} object" + ("" if len(ids) == 1 else "s")
         where = scene.layers.full_path(layer_id)
@@ -733,6 +754,13 @@ class HydraEditor(QWidget):
             lambda: self.name_group(group.group_id, field.text()))
         field.returnPressed.connect(menu.close)
         menu.addSeparator()
+        # the components chosen, put in this group too
+        chosen = [nid for nid in self.selected_ids()
+                  if nid not in self.graph.groups.get(group.group_id, [])]
+        add = menu.addAction("Add to Group",
+                             lambda: self.add_to_group(group.group_id, chosen))
+        add.setEnabled(bool(chosen))
+        add.setToolTip("Put the selected components in this group too")
         menu.addAction("Ungroup", lambda: self.ungroup(group.group_id))
         menu.name_field = field
         return menu
@@ -749,6 +777,12 @@ class HydraEditor(QWidget):
         self.graph.name_group(group_id, name)
         if item is not None:
             item.update()
+        self.changed()
+
+    def add_to_group(self, group_id, node_ids):
+        if not self.graph.add_to_group(group_id, node_ids):
+            return
+        self.canvas.sync_groups()
         self.changed()
 
     def ungroup(self, group_id):

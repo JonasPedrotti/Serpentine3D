@@ -9,7 +9,7 @@ from .. import geometry as g
 from .components import COMPONENTS, Component, Result
 from .kinds import (
     GEOMETRY_KINDS, HydraError, Port, Vector, arrow, coerce, fits,
-    is_shape, kind_said, said_of, takes,
+    kind_said, said_of, shapes_in, takes,
 )
 from .tree import Tree, apply_flag, flag_key, pack_tree, unpack_tree
 
@@ -112,6 +112,23 @@ class Graph:
         group_id = group_id or uuid.uuid4().hex[:8]
         self.groups[group_id] = ids
         return group_id
+
+    def add_to_group(self, group_id: str, node_ids) -> list:
+        """Put these components in a group as well, out of any other they
+        were in; its name stays. Returns those it took."""
+        members = self.groups.get(group_id)
+        if members is None:
+            return []
+        fresh = [nid for nid in dict.fromkeys(node_ids)
+                 if nid in self.nodes and nid not in members]
+        if fresh:
+            for gid in [g for g in self.groups if g != group_id]:
+                self.groups[gid] = [n for n in self.groups[gid]
+                                    if n not in fresh]
+                if not self.groups[gid]:
+                    self.ungroup(gid)
+            members.extend(fresh)
+        return fresh
 
     def ungroup(self, group_id: str):
         """The group gone; its components stay where they are."""
@@ -332,14 +349,14 @@ class Graph:
         branches = {name: list(tree.branches.items())
                     for name, tree in args.items()}
         widest = max(branches.values(), key=len)
-        out = Tree()
+        outs = {p.name: Tree() for p in comp.outputs}
         for b in range(len(widest)):
             pair = {name: bs[min(b, len(bs) - 1)][1]
                     for name, bs in branches.items()}
             whole = {p.name for p in comp.inputs if p.access == "list"}
             items = {name: values for name, values in pair.items()
                      if name not in whole}
-            made = []
+            made = {p.name: [] for p in comp.outputs}
             if all(pair.values()):
                 # then, within the pair, their items the same way; a list
                 # input takes its branch whole, every time
@@ -359,14 +376,19 @@ class Graph:
                             RuntimeError) as exc:
                         return Result(empty, "error",
                                       str(exc) or type(exc).__name__)
-                    # an output that gives lists gives its items to the
-                    # branch, not the list as one item
-                    if comp.outputs[0].access == "list":
-                        made.extend(value)
-                    else:
-                        made.append(value)
-            out.branches[widest[b][0]] = made
-        return Result({comp.outputs[0].name: out})
+                    # a component with several outputs gives one value for
+                    # each, in their order
+                    values = (value if len(comp.outputs) > 1 else (value,))
+                    for port, given in zip(comp.outputs, values):
+                        # an output that gives lists gives its items to the
+                        # branch, not the list as one item
+                        if port.access == "list":
+                            made[port.name].extend(given)
+                        else:
+                            made[port.name].append(given)
+            for name, items in made.items():
+                outs[name].branches[widest[b][0]] = items
+        return Result(outs)
 
     @staticmethod
     def _misfit(comp, item):
@@ -397,14 +419,17 @@ class Graph:
             for port in self.nodes[nid].component.outputs:
                 values = result.outputs.get(port.name, [])
                 if port.kind in GEOMETRY_KINDS:
-                    shapes.extend(values)
+                    shapes.extend(shapes_in(values))
                 elif port.kind == "vector":
-                    shapes.extend(arrow(v.start, v.end) for v in values)
+                    # one with no length has nothing to show
+                    shapes.extend(arrow(v.start, v.end) for v in values
+                                  if v.length > 1e-12)
                 elif port.kind == "any":
                     # what it carries shows as what it is
-                    shapes.extend(v for v in values if is_shape(v))
+                    shapes.extend(shapes_in(values))
                     shapes.extend(arrow(v.start, v.end) for v in values
-                                  if isinstance(v, Vector))
+                                  if isinstance(v, Vector)
+                                  and v.length > 1e-12)
         return shapes
 
     # ------------------------------------------------------------- copying

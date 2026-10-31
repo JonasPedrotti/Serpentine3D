@@ -523,6 +523,117 @@ def _random(p):
         _dot(p, x, y, r=1.4)
 
 
+def _unit_drawer(tip):
+    """An arrow from the origin along one axis, the others faint behind."""
+    def draw(p):
+        origin = QPointF(6, 16)
+        axes = {"x": QPointF(19, 16), "y": QPointF(14, 8),
+                "z": QPointF(6, 3)}
+        p.save()
+        p.setPen(QPen(_STROKE, 1.0, Qt.PenStyle.DashLine))
+        for name, end in axes.items():
+            if name != tip:
+                p.drawLine(origin, end)
+        p.restore()
+        end = axes[tip]
+        p.drawLine(origin, end)
+        d = end - origin
+        length = (d.x() ** 2 + d.y() ** 2) ** 0.5
+        ux, uy = d.x() / length, d.y() / length
+        for k in (1, -1):
+            p.drawLine(end, QPointF(end.x() - 4 * ux + 2.5 * k * uy,
+                                    end.y() - 4 * uy - 2.5 * k * ux))
+        _dot(p, origin.x(), origin.y(), r=1.4)
+    return draw
+
+
+def _round(p):
+    # a number and its rounder neighbour, the step between them
+    p.drawLine(QPointF(3, 15), QPointF(19, 15))
+    for x in (5, 11, 17):
+        p.drawLine(QPointF(x, 13), QPointF(x, 17))
+    path = QPainterPath(QPointF(8, 15))
+    path.cubicTo(QPointF(8, 6), QPointF(11, 6), QPointF(11, 12))
+    p.drawPath(path)
+    _dot(p, 11, 15, r=1.8)
+
+
+def _concatenate(p):
+    # two pieces of text joined into one
+    p.drawRoundedRect(QRectF(2.5, 7, 7.5, 8), 1.5, 1.5)
+    p.drawRoundedRect(QRectF(12, 7, 7.5, 8), 1.5, 1.5)
+    p.save()
+    p.setPen(QPen(_ACCENT, 1.7, Qt.PenStyle.SolidLine,
+                  Qt.PenCapStyle.RoundCap))
+    p.drawLine(QPointF(9, 11), QPointF(13, 11))
+    p.restore()
+
+
+def _text_tag(p):
+    # a capital T on a dot, the place it stands
+    p.drawLine(QPointF(5, 4), QPointF(17, 4))
+    p.drawLine(QPointF(11, 4), QPointF(11, 15))
+    _dot(p, 11, 18.5, r=1.8)
+
+
+def _deconstruct_point(p):
+    # a point and the three axes it is measured along
+    origin = QPointF(5, 17)
+    p.save()
+    p.setPen(QPen(_STROKE, 1.0, Qt.PenStyle.DashLine))
+    p.drawLine(origin, QPointF(19, 17))
+    p.drawLine(origin, QPointF(5, 3))
+    p.drawLine(origin, QPointF(14, 9))
+    p.restore()
+    p.drawLine(QPointF(14, 9), QPointF(14, 17))
+    _dot(p, 14, 9, r=2.0)
+
+
+def _point_on_curve(p):
+    path = QPainterPath(QPointF(3, 17))
+    path.cubicTo(QPointF(7, 3), QPointF(15, 3), QPointF(19, 15))
+    p.drawPath(path)
+    p.save()
+    p.setPen(QPen(_ACCENT, 1.4, Qt.PenStyle.SolidLine,
+                  Qt.PenCapStyle.RoundCap))
+    p.drawLine(QPointF(11, 6.6), QPointF(17, 6.6))
+    p.restore()
+    _dot(p, 11, 6.6, r=2.0)
+
+
+def _group_shapes(p):
+    p.drawEllipse(QPointF(8, 9), 3.2, 3.2)
+    p.drawRect(QRectF(11.5, 11, 6, 6))
+    p.drawLine(QPointF(5, 17), QPointF(10, 13))
+
+
+def _group(p):
+    # shapes held in one dashed frame
+    _group_shapes(p)
+    p.save()
+    p.setPen(QPen(_ACCENT, 1.3, Qt.PenStyle.DashLine))
+    p.drawRoundedRect(QRectF(2.5, 3.5, 17, 16), 3, 3)
+    p.restore()
+
+
+def _ungroup(p):
+    # the frame opened, the shapes let out
+    _group_shapes(p)
+    p.save()
+    p.setPen(QPen(_ACCENT, 1.3, Qt.PenStyle.DashLine))
+    p.drawLine(QPointF(2.5, 3.5), QPointF(8, 3.5))
+    p.drawLine(QPointF(2.5, 3.5), QPointF(2.5, 9))
+    p.drawLine(QPointF(19.5, 19.5), QPointF(14, 19.5))
+    p.drawLine(QPointF(19.5, 19.5), QPointF(19.5, 14))
+    p.restore()
+
+
+def _contour(p):
+    # a hill cut into rings, the way a map draws it
+    for rx, ry in ((8.5, 6.5), (5.5, 4), (2.5, 1.8)):
+        p.drawEllipse(QPointF(11, 12), rx, ry)
+    _dot(p, 11, 12, r=1.2)
+
 _DRAWERS = {
     "line": _line, "polyline": _polyline, "curve": _curve, "circle": _circle,
     "arc": _arc, "rectangle": _rect, "extrude": _extrude, "revolve": _revolve,
@@ -539,7 +650,11 @@ _DRAWERS = {
     "panel": _panel, "delaunay": _delaunay, "addition": _addition,
     "subtraction": _subtraction, "multiplication": _multiplication,
     "division": _division, "series": _series, "range": _range,
-    "random": _random,
+    "random": _random, "unitx": _unit_drawer("x"),
+    "unity": _unit_drawer("y"), "unitz": _unit_drawer("z"),
+    "contour": _contour, "round": _round, "concatenate": _concatenate,
+    "texttag": _text_tag, "deconstructpoint": _deconstruct_point,
+    "pointoncurve": _point_on_curve, "group": _group, "ungroup": _ungroup,
 }
 
 

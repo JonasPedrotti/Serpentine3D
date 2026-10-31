@@ -239,6 +239,7 @@ class NodeItem(QGraphicsItem):
         self.setAcceptHoverEvents(True)
         self.labels, self.width, self.height = self.size(
             comp, node.params.get("flags"), node.title, node.params)
+        self.out_labels = self.outputs_width(comp, node.params.get("flags"))
         self.inputs = [PortItem(self, p, False, i, len(comp.inputs))
                        for i, p in enumerate(comp.inputs)]
         self.outputs = [PortItem(self, p, True, i, len(comp.outputs))
@@ -253,6 +254,18 @@ class NodeItem(QGraphicsItem):
         return (names + max(QFontMetrics(small).horizontalAdvance(p.name)
                             for p in comp.inputs) + 10 if comp.inputs else 0)
 
+    @staticmethod
+    def outputs_width(comp, flags=None):
+        """How wide the column of output names is, with their marks; none
+        for a component with one output, which needs no name."""
+        if len(comp.outputs) < 2:
+            return 0
+        small = QFont()
+        small.setPointSizeF(8)
+        return (10 + mark_room(marks(comp, flags, True))
+                + max(QFontMetrics(small).horizontalAdvance(p.name)
+                      for p in comp.outputs) + 10)
+
     @classmethod
     def size(cls, comp, flags=None, title=None, params=None):
         """Its input names column, width and height: as wide as the names
@@ -263,9 +276,11 @@ class NodeItem(QGraphicsItem):
         bold.setBold(True)
         labels = cls.labels_width(comp, flags)
         named = QFontMetrics(bold).horizontalAdvance(title or comp.title)
-        width = max(NODE_WIDTH, labels + NODE_HEIGHT + named + 18
-                    + mark_room(marks(comp, flags, True)))
-        height = max(NODE_HEIGHT, INPUT_ROW * len(comp.inputs) + 8)
+        outs = (cls.outputs_width(comp, flags)
+                or mark_room(marks(comp, flags, True)))
+        width = max(NODE_WIDTH, labels + NODE_HEIGHT + named + 18 + outs)
+        rows = max(len(comp.inputs), len(comp.outputs))
+        height = max(NODE_HEIGHT, INPUT_ROW * rows + 8)
         return labels, width, height
 
     def relayout(self):
@@ -275,6 +290,8 @@ class NodeItem(QGraphicsItem):
         self.labels, self.width, self.height = self.size(
             self.node.component, self.node.params.get("flags"),
             self.node.title, self.node.params)
+        self.out_labels = self.outputs_width(self.node.component,
+                                             self.node.params.get("flags"))
         for ports in (self.inputs, self.outputs):
             for row, port in enumerate(ports):
                 port.setY(self.height * (row + 1) / (len(ports) + 1))
@@ -296,11 +313,12 @@ class NodeItem(QGraphicsItem):
             if (pos.x() < self.labels
                     and abs(pos.y() - port.y()) <= INPUT_ROW / 2):
                 return port
-        room = mark_room(marks(self.node.component,
-                               self.node.params.get("flags"), True))
+        room = self.out_labels or mark_room(
+            marks(self.node.component, self.node.params.get("flags"), True))
+        reach = INPUT_ROW / 2 if self.out_labels else NODE_HEIGHT / 2
         for port in self.outputs:
             if (pos.x() > self.width - room - 8
-                    and abs(pos.y() - port.y()) <= NODE_HEIGHT / 2):
+                    and abs(pos.y() - port.y()) <= reach):
                 return port
         return None
 
@@ -332,8 +350,8 @@ class NodeItem(QGraphicsItem):
         """What it shows inside its box: here its title."""
         self.paint_head(painter)
         left = self.labels + NODE_HEIGHT + 2
-        room = mark_room(marks(self.node.component,
-                               self.node.params.get("flags"), True))
+        room = self.out_labels or mark_room(
+            marks(self.node.component, self.node.params.get("flags"), True))
         painter.drawText(QRectF(left, 0, self.width - left - 8 - room,
                                 self.height),
                          Qt.AlignmentFlag.AlignVCenter,
@@ -344,6 +362,8 @@ class NodeItem(QGraphicsItem):
         painter set for its title."""
         if self.inputs:
             self._paint_labels(painter)
+        if self.out_labels:
+            self._paint_output_labels(painter)
         top = int((self.height - NODE_HEIGHT) / 2)
         icon = component_icon(self.node.component)
         if icon is not None:
@@ -394,6 +414,25 @@ class NodeItem(QGraphicsItem):
         painter.setPen(QPen(QColor("#1b1c1f"), 1))
         painter.drawLine(QPointF(self.labels, 5),
                          QPointF(self.labels, self.height - 5))
+        painter.restore()
+
+    def _paint_output_labels(self, painter):
+        painter.save()
+        font = QFont(painter.font())
+        font.setPointSizeF(8)
+        painter.setFont(font)
+        status = self.result.status if self.result else "ok"
+        painter.setPen(MUTED if status == "ok" else TEXT)
+        left = self.width - self.out_labels
+        right = self.width - 10 - mark_room(marks(
+            self.node.component, self.node.params.get("flags"), True))
+        for port in self.outputs:
+            painter.drawText(QRectF(left, port.y() - INPUT_ROW / 2,
+                                    right - left, INPUT_ROW),
+                             Qt.AlignmentFlag.AlignVCenter
+                             | Qt.AlignmentFlag.AlignRight, port.port.name)
+        painter.setPen(QPen(QColor("#1b1c1f"), 1))
+        painter.drawLine(QPointF(left, 5), QPointF(left, self.height - 5))
         painter.restore()
 
     def add_menu_entries(self, menu):

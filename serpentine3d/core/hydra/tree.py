@@ -4,7 +4,7 @@ Graft, Flatten and Reverse flags, and how a tree is kept in a file."""
 from __future__ import annotations
 
 from .. import geometry as g
-from .kinds import Vector, describe_item
+from .kinds import GeometryGroup, Vector, describe_item
 
 
 def list_tree(tree, most: int = 12) -> list:
@@ -52,6 +52,8 @@ def pack(value):
         return {"text": value}
     if isinstance(value, bool):
         return {"boolean": value}
+    if isinstance(value, GeometryGroup):
+        return {"group": [pack(shape) for shape in value.shapes]}
     if not isinstance(value, (int, float, tuple, Vector)):
         return {"geometry": base64.b64encode(
             g.shape_to_bytes(value)).decode("ascii")}
@@ -75,6 +77,8 @@ def unpack(data):
     if "vector" in data:
         start, end = data["vector"]
         return Vector(tuple(start), tuple(end))
+    if "group" in data:
+        return GeometryGroup(tuple(unpack(item) for item in data["group"]))
     return g.shape_from_bytes(base64.b64decode(data["geometry"]))
 
 

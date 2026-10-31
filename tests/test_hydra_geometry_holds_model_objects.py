@@ -548,7 +548,8 @@ def test_typing_finds_any_component_best_match_first(text, first):
 
 
 def test_a_search_hides_what_does_not_fit():
-    assert hydra.find_components("point") == ["point", "construct_point"]
+    assert hydra.find_components("point") == [
+        "point", "point_on_curve", "construct_point", "deconstruct_point"]
     assert hydra.find_components("nothing like it") == []
 
 
@@ -558,11 +559,12 @@ def test_every_word_typed_has_to_fit():
 
 
 @pytest.mark.parametrize("text, found", [
-    ("pt", ["point", "construct_point"]),
-    ("PT", ["point", "construct_point"]),
+    ("pt", ["point", "construct_point", "deconstruct_point"]),
+    ("PT", ["point", "construct_point", "deconstruct_point"]),
     ("crv", ["curve"]),
     ("msh", ["mesh"]),
-    ("vec", ["vector", "construct_point"]),
+    ("vec", ["vector", "construct_point", "unit_x", "unit_y", "unit_z",
+             "deconstruct_point"]),
     ("rot", ["rotate"]),
     ("cpt", ["construct_point"]),
 ])
@@ -1601,3 +1603,361 @@ def test_a_group_keeps_its_name_in_the_file_and_in_a_copy():
     assert gid not in graph.group_names
     graph.ungroup(graph.group_of(fresh[0]))
     assert list(graph.group_names) == []
+
+
+# -- unit vectors -------------------------------------------------------------
+
+def test_a_unit_vector_points_along_its_axis_as_long_as_its_factor():
+    for key, along in (("unit_x", (1, 0, 0)), ("unit_y", (0, 1, 0)),
+                       ("unit_z", (0, 0, 1))):
+        [v] = _values(key)
+        assert v.components == along
+        [v] = _values(key, F=-2.5)
+        assert v.components == tuple(-2.5 * a for a in along)
+
+
+def test_a_unit_vector_moves_geometry_along_its_axis():
+    scene = Scene()
+    box = scene.add(geo.make_box((0, 0, 0), 1, 1, 1))
+    graph = Graph()
+    brep = graph.add_node("brep", params={"refs": [box.id]})
+    unit = graph.add_node("unit_z")
+    move = graph.add_node("move")
+    graph.connect(brep.id, "Brep", move.id, "G")
+    graph.connect(unit.id, "V", move.id, "V")
+    [moved] = graph.solve(scene)[move.id].outputs["G"].branches[(0,)]
+    low, high = geo.bbox(moved)
+    assert low[2] == pytest.approx(1) and high[2] == pytest.approx(2)
+
+
+def test_a_vector_with_no_length_shows_nothing_and_breaks_nothing():
+    graph = Graph()
+    unit = graph.add_node("unit_x")
+    graph.connect(_slider_at(graph, 0).id, "Number", unit.id, "F")
+    results = graph.solve(None)
+    assert results[unit.id].status == "ok"
+    assert graph.preview_shapes(results) == []
+
+
+def _slider_at(graph, value):
+    slider = graph.add_node("slider")
+    hydra.set_range(slider.params, -1000, 1000)
+    hydra.set_slider(slider.params, value)
+    return slider
+
+
+# -- contour ------------------------------------------------------------------
+
+def test_contour_cuts_a_sphere_into_level_curves_upwards_by_default():
+    scene = Scene()
+    sphere = scene.add(geo.make_sphere((0, 0, 0), 5))
+    graph = Graph()
+    brep = graph.add_node("brep", params={"refs": [sphere.id]})
+    contour = graph.add_node("contour")
+    graph.connect(brep.id, "Brep", contour.id, "G")
+    result = graph.solve(scene)[contour.id]
+    curves = result.outputs["C"].branches[(0,)]
+    assert result.status == "ok" and len(curves) == 9
+    heights = sorted(round(geo.bbox(c)[0][2], 6) for c in curves)
+    assert heights == [-4, -3, -2, -1, 0, 1, 2, 3, 4]
+
+
+def test_contour_takes_the_distance_and_direction_it_is_given():
+    scene = Scene()
+    box = scene.add(geo.make_box((0, 0, 0), 10, 2, 2))
+    graph = Graph()
+    brep = graph.add_node("brep", params={"refs": [box.id]})
+    contour = graph.add_node("contour")
+    graph.connect(brep.id, "Brep", contour.id, "G")
+    graph.connect(_slider_at(graph, 2.5).id, "Number", contour.id, "D")
+    unit = graph.add_node("unit_x")
+    graph.connect(unit.id, "V", contour.id, "N")
+    curves = graph.solve(scene)[contour.id].outputs["C"].branches[(0,)]
+    xs = sorted(round(geo.bbox(c)[0][0], 6) for c in curves)
+    assert xs == [2.5, 5, 7.5]
+
+
+def test_contour_says_what_is_wrong_with_its_distance():
+    scene = Scene()
+    box = scene.add(geo.make_box((0, 0, 0), 1, 1, 1))
+    graph = Graph()
+    brep = graph.add_node("brep", params={"refs": [box.id]})
+    contour = graph.add_node("contour")
+    graph.connect(brep.id, "Brep", contour.id, "G")
+    for distance, said in ((0, "more than 0"), (0.0001, "larger distance"),
+                           (5, "larger than the geometry")):
+        slider = _slider_at(graph, distance)
+        hydra.set_decimals(slider.params, 4)
+        hydra.set_slider(slider.params, distance)
+        graph.connect(slider.id, "Number", contour.id, "D")
+        result = graph.solve(scene)[contour.id]
+        assert result.status == "error" and said in result.message
+        graph.remove_node(slider.id)
+
+
+def test_contours_input_names_are_all_different():
+    from serpentine3d.core.hydra import COMPONENTS
+    names = [p.name for p in COMPONENTS["contour"].inputs]
+    assert names == ["G", "D", "N", "S"]
+    assert COMPONENTS["contour"].inputs[2].default.components == (0, 0, 1)
+
+
+def _hill_mesh():
+    from serpentine3d.core.delaunay import triangulate
+    from serpentine3d.core.mesh import MeshShape
+    rng = np.random.default_rng(1)
+    xy = rng.uniform(-10, 10, (400, 2))
+    z = 8 * np.exp(-(xy ** 2).sum(axis=1) / 40)
+    return MeshShape(np.c_[xy, z], triangulate(xy))
+
+
+def test_contour_cuts_a_mesh_into_rings_round_a_hill():
+    from serpentine3d.core.hydra.components.curve import _contour
+    from serpentine3d.core.hydra.kinds import Vector
+    curves = _contour(_hill_mesh(), 1.0, Vector((0, 0, 0), (0, 0, 1)))
+    assert len(curves) == 7
+    assert all(geo.is_closed_curve(c) for c in curves)
+    heights = sorted(round(geo.bbox(c)[0][2], 6) for c in curves)
+    assert heights == [1, 2, 3, 4, 5, 6, 7]
+
+
+def test_contour_leaves_a_cut_open_where_it_runs_off_the_mesh():
+    from serpentine3d.core.hydra.components.curve import _contour
+    from serpentine3d.core.hydra.kinds import Vector
+    from serpentine3d.core.mesh import MeshShape
+    # a slope rising along X: every cut runs across it, edge to edge
+    xs, ys = np.meshgrid(np.linspace(0, 10, 11), np.linspace(0, 4, 5))
+    points = np.c_[xs.ravel(), ys.ravel(), xs.ravel() * 0.5]
+    from serpentine3d.core.delaunay import triangulate
+    slope = MeshShape(points, triangulate(points[:, :2]))
+    curves = _contour(slope, 1.0, Vector((0, 0, 0), (0, 0, 1)))
+    assert len(curves) == 4
+    assert not any(geo.is_closed_curve(c) for c in curves)
+    for curve in curves:
+        low, high = geo.bbox(curve)
+        assert low[1] == pytest.approx(0, abs=1e-6)
+        assert high[1] == pytest.approx(4, abs=1e-6)
+
+
+def test_a_delaunay_mesh_wires_into_contour():
+    graph = Graph()
+    delaunay = graph.add_node("delaunay")
+    contour = graph.add_node("contour")
+    graph.connect(delaunay.id, "M", contour.id, "G")       # no HydraError
+    assert graph.wire_between(delaunay.id, "M", contour.id, "G")
+
+
+def test_contour_turns_a_curve_away_with_the_reason():
+    from serpentine3d.core.hydra.components.curve import _contour
+    from serpentine3d.core.hydra.kinds import Vector
+    with pytest.raises(HydraError, match="surfaces, solids and meshes"):
+        _contour(geo.make_line((0, 0, 0), (0, 0, 5)), 1.0,
+                 Vector((0, 0, 0), (0, 0, 1)))
+
+
+def test_contours_lie_at_whole_steps_from_the_origin():
+    from serpentine3d.core.hydra.components.curve import _contour
+    from serpentine3d.core.hydra.kinds import Vector
+    box = geo.make_box((0, 0, 0.3), 2, 2, 2.4)        # from 0.3 to 2.7 high
+    curves = _contour(box, 1.0, Vector((0, 0, 0), (0, 0, 1)))
+    heights = sorted(round(geo.bbox(c)[0][2], 6) for c in curves)
+    assert heights == [1, 2]
+
+
+def test_a_faceted_mesh_is_drawn_flat_with_every_edge():
+    from serpentine3d.core.mesh import mesh_to_display
+    mesh = _hill_mesh()
+    flat = hydra.faceted(mesh)
+    assert flat.faceted and not mesh.faceted
+    assert np.array_equal(flat.triangles, mesh.triangles)   # still welded
+    shown = mesh_to_display(flat)
+    assert len(shown.vertices) == 3 * len(mesh.triangles)
+    corners = shown.vertices[shown.triangles]
+    normals = np.cross(corners[:, 1] - corners[:, 0],
+                       corners[:, 2] - corners[:, 0])
+    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+    assert np.allclose(shown.normals[shown.triangles[:, 0]], normals,
+                       atol=1e-4)
+    # every edge once: E = V + F - 1 for a disc of triangles
+    assert len(shown.edge_segments) == (len(mesh.vertices)
+                                        + len(mesh.triangles) - 1)
+    smooth = mesh_to_display(mesh)
+    assert len(smooth.edge_segments) < len(shown.edge_segments)
+
+
+def test_a_faceted_mesh_stays_faceted_moved_copied_and_saved():
+    from serpentine3d.fileio.native import _mesh_from_json, _mesh_to_json
+    flat = hydra.faceted(_hill_mesh())
+    assert flat.translated((1, 2, 3)).faceted and flat.copy().faceted
+    assert flat.transformed(np.eye(4)).faceted
+    again = _mesh_from_json(_mesh_to_json(flat))
+    assert again.faceted
+    assert not _mesh_from_json(_mesh_to_json(_hill_mesh())).faceted
+
+
+
+# -- several outputs, and labelling contours -----------------------------------
+
+def test_a_component_with_several_outputs_hands_on_each():
+    graph = Graph()
+    point = graph.add_node("construct_point")
+    for name, value in (("X", 1), ("Y", 2), ("Z", 3)):
+        graph.connect(_slider_at(graph, value).id, "Number", point.id, name)
+    parts = graph.add_node("deconstruct_point")
+    graph.connect(point.id, "Point", parts.id, "P")
+    outputs = graph.solve(None)[parts.id].outputs
+    assert {name: tree.branches[(0,)] for name, tree in outputs.items()} == {
+        "X": [1], "Y": [2], "Z": [3]}
+
+
+def test_a_number_is_written_as_a_label_writes_it():
+    assert hydra.number_text(5.0) == "5"
+    assert hydra.number_text(0.1 + 0.2) == "0.3"
+    assert hydra.number_text(12.50) == "12.5"
+    assert hydra.number_text(-1e-9) == "0"
+    assert hydra.as_text(4.0) + " m" == "4 m"
+
+
+def test_round_rounds_to_its_decimals():
+    assert _values("round", N=12.345) == [12]
+    assert _values("round", N=12.345, D=2) == [12.35]
+
+
+def test_concatenate_joins_text_and_numbers_without_trailing_zeros():
+    assert _values("concatenate", A=245) == ["245"]
+    graph = Graph()
+    join = graph.add_node("concatenate", params={"internal": {
+        "B": hydra.pack_tree(hydra.Tree.of([" müNN"]))}})
+    graph.connect(_slider_at(graph, 245).id, "Number", join.id, "A")
+    [text] = graph.solve(None)[join.id].outputs["T"].branches[(0,)]
+    assert text == "245 müNN"
+
+
+def test_point_on_curve_finds_the_middle_and_the_way_it_runs():
+    from serpentine3d.core.hydra.components.curve import _point_on_curve
+    line = geo.make_line((0, 0, 0), (10, 0, 0))
+    point, direction = _point_on_curve(line, 0.5)
+    assert hydra.coordinates(point) == pytest.approx((5, 0, 0))
+    assert direction.components == pytest.approx((1, 0, 0))
+    bent = geo.make_polyline([(0, 0, 0), (10, 0, 0), (10, 30, 0)])
+    point, direction = _point_on_curve(bent, 0.5)       # by length
+    assert hydra.coordinates(point) == pytest.approx((10, 10, 0))
+    assert direction.components == pytest.approx((0, 1, 0))
+    with pytest.raises(HydraError, match="from 0"):
+        _point_on_curve(line, 1.5)
+
+
+def test_a_text_tag_lies_flat_centred_and_never_upside_down():
+    from serpentine3d.core.hydra.components.text import _text_tag
+    from serpentine3d.core.hydra.kinds import Vector
+    from serpentine3d.core.text_object import TextShape
+    point = geo.make_point((100, 50, 7))
+    tag = _text_tag(point, 245.0, 2.0, Vector((0, 0, 0), (1, 0, 0)))
+    assert isinstance(tag, TextShape) and tag.text == "245"
+    low, high = geo.bbox(tag)
+    assert low[2] == pytest.approx(7) and high[2] == pytest.approx(7)
+    middle = [(a + b) / 2 for a, b in zip(low, high)]
+    assert middle[0] == pytest.approx(100, abs=0.5)
+    assert middle[1] == pytest.approx(50, abs=0.6)
+    # pointing left, it turns round, so it still reads left to right
+    back = _text_tag(point, "x", 2.0, Vector((0, 0, 0), (-1, 0, 0)))
+    assert back.frame[0, 0] == pytest.approx(1)
+    with pytest.raises(HydraError, match="no text"):
+        _text_tag(point, "  ", 2.0, Vector((0, 0, 0), (1, 0, 0)))
+
+
+def test_contours_are_labelled_with_their_heights_and_a_unit():
+    scene = Scene()
+    sphere = scene.add(geo.make_sphere((0, 0, 0), 12))
+    graph = Graph()
+    brep = graph.add_node("brep", params={"refs": [sphere.id]})
+    contour = graph.add_node("contour")
+    graph.connect(brep.id, "Brep", contour.id, "G")
+    graph.connect(_slider_at(graph, 5).id, "Number", contour.id, "D")
+    on = graph.add_node("point_on_curve")
+    graph.connect(contour.id, "C", on.id, "C")
+    parts = graph.add_node("deconstruct_point")
+    graph.connect(on.id, "P", parts.id, "P")
+    join = graph.add_node("concatenate", params={"internal": {
+        "B": hydra.pack_tree(hydra.Tree.of([" müNN"]))}})
+    graph.connect(parts.id, "Z", join.id, "A")
+    tag = graph.add_node("text_tag")
+    graph.connect(on.id, "P", tag.id, "P")
+    graph.connect(join.id, "T", tag.id, "T")
+    graph.connect(on.id, "D", tag.id, "D")
+    results = graph.solve(scene)
+    texts = [t.text for t in results[tag.id].outputs["Tag"].branches[(0,)]]
+    assert texts == ["-10 müNN", "-5 müNN", "0 müNN", "5 müNN", "10 müNN"]
+    assert len(graph.preview_shapes(results)) > 0
+
+
+
+def test_skip_every_leaves_out_the_heights_another_contour_draws():
+    from serpentine3d.core.hydra.components.curve import _contour
+    from serpentine3d.core.hydra.kinds import Vector
+    up = Vector((0, 0, 0), (0, 0, 1))
+    box = geo.make_box((0, 0, 0.5), 2, 2, 11)          # 0.5 to 11.5 high
+
+    def heights(curves):
+        return sorted({round(geo.bbox(c)[0][2], 6) for c in curves})
+    minor = heights(_contour(box, 1.0, up, 5.0))
+    major = heights(_contour(box, 5.0, up))
+    assert minor == [1, 2, 3, 4, 6, 7, 8, 9, 11]
+    assert major == [5, 10]
+    assert not set(minor) & set(major)             # nothing twice
+    assert heights(_contour(box, 1.0, up)) == list(range(1, 12))
+
+
+
+def test_components_added_to_a_group_join_it_and_leave_their_own():
+    graph = Graph()
+    a, b, c, d = (graph.add_node("curve") for _ in range(4))
+    first = graph.group([a.id, b.id])
+    graph.name_group(first, "Terrain")
+    other = graph.group([c.id])
+    assert graph.add_to_group(first, [c.id, a.id, d.id]) == [c.id, d.id]
+    assert graph.groups[first] == [a.id, b.id, c.id, d.id]
+    assert graph.group_names[first] == "Terrain"
+    assert other not in graph.groups                 # empty, so gone
+
+
+# -- grouping geometry ------------------------------------------------------------
+
+def test_a_group_of_geometry_moves_as_one_and_comes_apart_again():
+    scene = Scene()
+    box = scene.add(geo.make_box((0, 0, 0), 1, 1, 1))
+    line = scene.add(geo.make_line((0, 0, 0), (5, 0, 0)))
+    graph = Graph()
+    brep = graph.add_node("brep", params={"refs": [box.id]})
+    curve = graph.add_node("curve", params={"refs": [line.id]})
+    group = graph.add_node("group")
+    graph.connect(brep.id, "Brep", group.id, "G")
+    graph.connect(curve.id, "Curve", group.id, "G", add=True)
+    unit = graph.add_node("unit_z")
+    move = graph.add_node("move")
+    graph.connect(group.id, "G", move.id, "G")
+    graph.connect(unit.id, "V", move.id, "V")
+    apart = graph.add_node("ungroup")
+    graph.connect(move.id, "G", apart.id, "G")
+    results = graph.solve(scene)
+    [moved] = results[move.id].outputs["G"].branches[(0,)]
+    assert isinstance(moved, hydra.GeometryGroup) and len(moved.shapes) == 2
+    pieces = results[apart.id].outputs["G"].branches[(0,)]
+    assert [round(geo.bbox(p)[0][2], 6) for p in pieces] == [1, 1]
+    assert len(graph.preview_shapes(results, only=[move.id])) == 2
+
+
+def test_a_group_of_geometry_is_kept_when_internalized():
+    from serpentine3d.core.hydra.tree import pack, unpack
+    group = hydra.GeometryGroup((geo.make_line((0, 0, 0), (1, 0, 0)),
+                                 geo.make_point((2, 0, 0))))
+    again = unpack(pack(group))
+    assert isinstance(again, hydra.GeometryGroup) and len(again.shapes) == 2
+
+
+def test_contour_asks_for_a_group_to_be_taken_apart():
+    from serpentine3d.core.hydra.components.curve import _contour
+    from serpentine3d.core.hydra.kinds import Vector
+    group = hydra.GeometryGroup((geo.make_box((0, 0, 0), 1, 1, 3),))
+    with pytest.raises(HydraError, match="ungroup"):
+        _contour(group, 1.0, Vector((0, 0, 0), (0, 0, 1)))

@@ -19,7 +19,8 @@ category.
 """
 
 from .kinds import (
-    GEOMETRY_KINDS, HydraError, Port, Vector, arrow, coerce, coordinates,
+    GEOMETRY_KINDS, GeometryGroup, HydraError, Port, Vector, arrow, as_text,
+    coerce, coordinates, number_text, shapes_in,
     describe, describe_item, fits, format_number, is_shape, kind_said,
     said_of, takes,
 )
@@ -33,6 +34,7 @@ from .components import (
 )
 from .components.geometry import COMPONENTS_PLURAL
 from .components.maths import MOST_NUMBERS, operation_from_text
+from .components.mesh import faceted
 from .components.inputs import (
     MAX_DECIMALS, PIPE_TYPES, panel_from_text, panel_lines, parse_number,
     piped, set_decimals, set_range, set_slider, slider_from_text,

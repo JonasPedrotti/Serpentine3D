@@ -1,10 +1,11 @@
-"""Delaunay."""
+"""Delaunay, and a mesh made into flat triangles for the model."""
 
 from __future__ import annotations
 
 import numpy as np
 
 from ... import geometry as g
+from ...mesh import MeshShape
 from . import COMPONENTS, Component
 from ..kinds import HydraError, Port, coordinates
 
@@ -12,7 +13,6 @@ from ..kinds import HydraError, Port, coordinates
 def _delaunay(P, Outline=None):
     from ...delaunay import (DelaunayError, inside_outline, triangulate,
                            unique_points)
-    from ...mesh import MeshShape
     points = unique_points([coordinates(p) for p in P])
     try:
         faces = triangulate(points[:, :2])
@@ -46,3 +46,10 @@ COMPONENTS["delaunay"] = Component(
                 "Delaunay, as Grasshopper's, in the XY plane, the points "
                 "keeping their heights; with an Outline, only the faces "
                 "inside it")
+
+
+def faceted(mesh):
+    """The mesh to be drawn in the model as flat triangles with every edge
+    shown, as a terrain is, and as the graph's preview shows it."""
+    return MeshShape(mesh.vertices.copy(), mesh.triangles.copy(),
+                     faceted=True)

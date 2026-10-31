@@ -68,6 +68,32 @@ _SHAPE_KINDS = {"point": ("point",), "curve": ("curve",),
                 "brep": ("surface", "solid"), "mesh": ("mesh",)}
 
 
+@dataclass(frozen=True)
+class GeometryGroup:
+    """Geometry kept together, as Grasshopper's Group makes it: moved and
+    turned as one, and cast as one of the model's groups."""
+    shapes: tuple
+
+    def flat(self) -> list:
+        """Its shapes, those of groups inside it among them."""
+        out = []
+        for shape in self.shapes:
+            out.extend(shape.flat() if isinstance(shape, GeometryGroup)
+                       else [shape])
+        return out
+
+
+def shapes_in(values) -> list:
+    """The shapes among the values, a group's opened out."""
+    out = []
+    for value in values:
+        if isinstance(value, GeometryGroup):
+            out.extend(value.flat())
+        elif is_shape(value):
+            out.append(value)
+    return out
+
+
 def is_shape(value) -> bool:
     from ..mesh import MeshShape
     return isinstance(value, (TopoDS_Shape, MeshShape))
@@ -89,7 +115,7 @@ def fits(kind: str, value) -> bool:
             isinstance(value, TopoDS_Shape) and g.shape_kind(value) == "point")
     if kind in _SHAPE_KINDS:
         return is_shape(value) and g.shape_kind(value) in _SHAPE_KINDS[kind]
-    return is_shape(value)
+    return is_shape(value) or isinstance(value, GeometryGroup)
 
 
 def _as_number(value):
@@ -119,6 +145,8 @@ def said_of(value) -> str:
         return "a vector"
     if isinstance(value, tuple):
         return "a point"
+    if isinstance(value, GeometryGroup):
+        return "a group"
     if is_shape(value):
         return {"point": "a point", "curve": "a curve", "surface": "a brep",
                 "solid": "a brep", "mesh": "a mesh"}.get(
@@ -179,6 +207,24 @@ def format_number(value: float, decimals: int) -> str:
     return f"{value:.{decimals}f}"
 
 
+def number_text(value: float) -> str:
+    """A number as a label writes it: no trailing zeros, no float noise,
+    5 and not 5.0, 0.3 and not 0.30000000000000004."""
+    text = f"{float(value):.6f}".rstrip("0").rstrip(".")
+    return "0" if text in ("-0", "") else text
+
+
+def as_text(value) -> str:
+    """Anything as text: a number as number_text writes it."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        return number_text(value)
+    return describe_item(value)
+
+
 def describe_item(value) -> str:
     """One item, as a tooltip lists it."""
     if isinstance(value, str):
@@ -191,6 +237,8 @@ def describe_item(value) -> str:
         return "Vector " + ", ".join(f"{c:g}" for c in value.components)
     if isinstance(value, tuple):
         return "Point " + ", ".join(f"{c:g}" for c in value)
+    if isinstance(value, GeometryGroup):
+        return f"Group of {len(value.shapes)}"
     if isinstance(value, TopoDS_Shape) and g.shape_kind(value) == "point":
         return "Point " + ", ".join(f"{c:g}" for c in coordinates(value))
     kind = g.shape_kind(value) if is_shape(value) else type(value).__name__

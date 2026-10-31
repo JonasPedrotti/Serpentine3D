@@ -1,4 +1,4 @@
-"""Construct Point and Vector."""
+"""Construct Point, Vector, and Unit X, Y and Z."""
 
 from __future__ import annotations
 
@@ -34,3 +34,31 @@ COMPONENTS["vector"] = Component(
     icon="vector", solve=_vector,
     sets="Set Vector",
     description="The vector from point A to point B, shown as an arrow")
+
+
+def _unit(key, axis, along):
+    def solve(F):
+        return Vector((0.0, 0.0, 0.0), tuple(F * a for a in along))
+    COMPONENTS[key] = Component(
+        key, f"Unit {axis}", "Vector",
+        inputs=(Port("F", "number", 1.0, label="Factor",
+                     description="How long it is; negative turns it round"),),
+        outputs=(Port("V", "vector", description=f"Along {axis}, F long"),),
+        icon=key.replace("_", ""), solve=solve,
+        description=f"The vector along the {axis} axis, F long: 1 unless set")
+
+
+_unit("unit_x", "X", (1.0, 0.0, 0.0))
+_unit("unit_y", "Y", (0.0, 1.0, 0.0))
+_unit("unit_z", "Z", (0.0, 0.0, 1.0))
+
+
+COMPONENTS["deconstruct_point"] = Component(
+    "deconstruct_point", "Deconstruct Point", "Vector",
+    inputs=(Port("P", "point", label="Point",
+                 description="The point to take apart"),),
+    outputs=(Port("X", "number", description="The point's X"),
+             Port("Y", "number", description="The point's Y"),
+             Port("Z", "number", description="The point's Z, its height")),
+    icon="deconstructpoint", solve=lambda P: tuple(coordinates(P)),
+    description="A point's X, Y and Z")

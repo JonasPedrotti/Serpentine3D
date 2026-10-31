@@ -1,4 +1,4 @@
-"""Move and Rotate."""
+"""Move and Rotate, and Group and Ungroup."""
 
 from __future__ import annotations
 
@@ -10,10 +10,13 @@ from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
 
 from ... import geometry as g
 from . import COMPONENTS, Component
-from ..kinds import Port, Vector, coordinates
+from ..kinds import GeometryGroup, HydraError, Port, Vector, coordinates
 
 
 def _rotate(Origin, Geometry, Angle):
+    if isinstance(Geometry, GeometryGroup):
+        return GeometryGroup(tuple(_rotate(Origin, shape, Angle)
+                                   for shape in Geometry.shapes))
     center = Origin if isinstance(Origin, tuple) else coordinates(Origin)
     if not isinstance(Geometry, TopoDS_Shape):
         return g.rotate(Geometry, center, (0.0, 0.0, 1.0), Angle)
@@ -27,6 +30,8 @@ def _rotate(Origin, Geometry, Angle):
 
 
 def _move(G, V):
+    if isinstance(G, GeometryGroup):
+        return GeometryGroup(tuple(_move(shape, V) for shape in G.shapes))
     if not isinstance(G, TopoDS_Shape):
         return g.translate(G, V.components)
     # Moved, not copied, for the reason Rotate is
@@ -57,3 +62,32 @@ COMPONENTS["rotate"] = Component(
     icon="rotate", solve=_rotate,
     description="Rotate geometry about a vertical axis through Origin, by "
                 "Angle in degrees")
+
+
+def _group(G):
+    if not G:
+        raise HydraError("There is nothing to group")
+    return GeometryGroup(tuple(G))
+
+
+COMPONENTS["group"] = Component(
+    "group", "Group", "Transform",
+    inputs=(Port("G", "geometry", access="list", label="Geometry",
+                 description="What to keep together"),),
+    outputs=(Port("G", "geometry", label="Group",
+                  description="One group: moved as one, and cast as one of "
+                              "the model's groups"),),
+    icon="group", solve=_group,
+    description="Keeps geometry together, as a contour with its label: "
+                "moved and turned as one, cast as one of the model's groups")
+
+
+COMPONENTS["ungroup"] = Component(
+    "ungroup", "Ungroup", "Transform",
+    inputs=(Port("G", "geometry", label="Group",
+                 description="The group to take apart"),),
+    outputs=(Port("G", "geometry", access="list", label="Geometry",
+                  description="What it kept together, one by one"),),
+    icon="ungroup",
+    solve=lambda G: list(G.shapes) if isinstance(G, GeometryGroup) else [G],
+    description="Takes a group apart into what it kept together")

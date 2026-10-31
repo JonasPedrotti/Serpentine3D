@@ -65,8 +65,10 @@ def test_the_add_menu_offers_the_geometries_with_their_icons(win):
         "Point", "Curve", "Brep", "Mesh", "Boolean Toggle",
         "Geometry Pipeline", "Panel", "Number Slider", "Addition",
         "Subtraction", "Multiplication", "Division", "Series", "Range",
-        "Random", "List Item", "Remove Item", "Construct Point", "Vector",
-        "Move", "Rotate", "Delaunay Mesh"]
+        "Random", "Round", "List Item", "Remove Item", "Concatenate",
+        "Text Tag", "Construct Point", "Vector", "Unit X", "Unit Y", "Unit Z",
+        "Deconstruct Point", "Contour", "Point On Curve", "Move", "Rotate",
+        "Group", "Ungroup", "Delaunay Mesh"]
     assert all(not a.icon().isNull() for a in actions)
 
 
@@ -1032,7 +1034,8 @@ def test_typing_hides_the_components_that_do_not_fit(win):
     assert _listed(search) == ["Rotate"]
     search.field.clear()
     QTest.keyClicks(search.field, "point")
-    assert _listed(search) == ["Point", "Construct Point"]
+    assert _listed(search) == ["Point", "Point On Curve", "Construct Point",
+                               "Deconstruct Point"]
     search.field.clear()
     QTest.keyClicks(search.field, "crv")
     assert _listed(search) == ["Curve"]
@@ -1046,7 +1049,7 @@ def test_enter_adds_the_chosen_component_where_the_canvas_was_clicked(win):
     QTest.keyClick(search.field, Qt.Key.Key_Down)
     QTest.keyClick(search.field, Qt.Key.Key_Return)
     [node] = editor.graph.nodes.values()
-    assert node.key == "construct_point"
+    assert node.key == "point_on_curve"
     assert (node.x, node.y) == (120, 80)
     assert not search.isVisible()
 
@@ -1487,9 +1490,15 @@ def _save_graphs(win, dialogs, tmp_path, names):
 
 
 def _reopen(win):
+    """Hydra closed and opened again, then on its start page, as File >
+    Start Page shows it."""
     win._hydra_dock.close()
     QApplication.processEvents()
-    return win.show_hydra()
+    editor = win.show_hydra()
+    [start] = [a for a in _menu(editor, "File").actions()
+               if a.text().startswith("Start Page")]
+    start.trigger()
+    return editor
 
 
 def test_opening_hydra_shows_the_recent_graphs_as_cards(
@@ -1645,12 +1654,17 @@ def test_a_graph_whose_file_is_still_there_is_offered_with_it(
         again.close()
 
 
-def test_reopening_hydra_in_the_same_session_starts_on_the_cards(win):
+def test_hydra_closed_with_its_x_comes_back_as_it_was_left(win):
     editor = win.show_hydra()
-    editor.add_component("brep", (0, 0))
-    editor = _reopen(win)
-    assert editor.starting()
-    assert [c.title for c in editor.start.cards] == ["New Graph", "Continue"]
+    editor.show_canvas()
+    brep = editor.add_component("brep", (0, 0))
+    editor.canvas.node_items[brep.id].setSelected(True)
+    win._hydra_dock.titleBarWidget().close_btn.click()
+    assert win._hydra_dock.isHidden()
+    again = win.show_hydra()
+    assert again is editor and not again.starting()
+    assert list(again.graph.nodes) == [brep.id]
+    assert again.selected_ids() == [brep.id]
 
 
 def test_the_search_has_no_scroll_bar_and_shows_every_entry_whole(win):
@@ -2454,10 +2468,13 @@ def test_the_node_bar_shows_every_component_by_category(win):
         "Geometry": ["point", "curve", "brep", "mesh"],
         "Input": ["toggle", "pipeline", "panel", "slider"],
         "Math": ["addition", "subtraction", "multiplication", "division",
-                 "series", "range", "random"],
+                 "series", "range", "random", "round"],
         "List": ["list_item", "remove_item"],
-        "Vector": ["construct_point", "vector"],
-        "Transform": ["move", "rotate"],
+        "Text": ["concatenate", "text_tag"],
+        "Vector": ["construct_point", "vector", "unit_x", "unit_y",
+                   "unit_z", "deconstruct_point"],
+        "Curve": ["contour", "point_on_curve"],
+        "Transform": ["move", "rotate", "group", "ungroup"],
         "Mesh": ["delaunay"]}
     for key, button in bar.buttons.items():
         assert button.text() == hydra.COMPONENTS[key].title
@@ -2470,7 +2487,8 @@ def test_the_node_bar_has_a_tab_for_each_category(win):
     editor = win.show_hydra()
     tabs = editor.nodes_bar.tabs
     assert [tabs.tabText(i) for i in range(tabs.count())] == [
-        "Geometry", "Input", "Math", "List", "Vector", "Transform", "Mesh"]
+        "Geometry", "Input", "Math", "List", "Text", "Vector", "Curve",
+        "Transform", "Mesh"]
 
 
 def test_a_tab_shows_its_own_components_and_only_those(win):
@@ -2481,7 +2499,7 @@ def test_a_tab_shows_its_own_components_and_only_those(win):
     QApplication.processEvents()
     shown = {key for key, button in bar.buttons.items()
              if button.isVisibleTo(bar)}
-    assert shown == {"move", "rotate"}
+    assert shown == {"move", "rotate", "group", "ungroup"}
     bar.show_category("List")
     QApplication.processEvents()
     shown = {key for key, button in bar.buttons.items()
@@ -2550,7 +2568,7 @@ def test_the_node_bar_keeps_its_height_whichever_tab_is_shown(win):
 def test_file_and_edit_hold_the_commands_with_their_keys_shown(win):
     editor = win.show_hydra()
     assert _entries(_menu(editor, "File")) == [
-        "New", "Open…", "Save", "Save As…"]
+        "New", "Open…", "Start Page", "Save", "Save As…"]
     assert _entries(_menu(editor, "Edit")) == [
         "Undo", "Redo", "Copy", "Paste", "Delete", "Group", "Ungroup", "Hide",
         "Show"]
@@ -3617,3 +3635,97 @@ def test_a_groups_background_lies_behind_its_wires(win):
     [group] = editor.canvas.group_items.values()
     [wire] = editor.canvas.wire_items
     assert group.zValue() < wire.zValue()
+
+
+def test_hydras_title_shows_a_close_button_and_no_float_button(win):
+    from serpentine3d.ui.dock_title import DockTitleBar
+    win.show()
+    editor = win.show_hydra()
+    QApplication.processEvents()
+    title = win._hydra_dock.titleBarWidget()
+    assert isinstance(title, DockTitleBar)
+    assert title.close_btn.isVisible() and not title.float_btn.isVisible()
+    editor.set_path("C:/graphs/roof.hydra")
+    assert title.title.text() == "Hydra · roof.hydra"
+    title.close_btn.click()
+    assert win._hydra_dock.isHidden()
+
+
+def test_a_mesh_is_cast_faceted(win):
+    from serpentine3d.core.delaunay import triangulate
+    from serpentine3d.core.mesh import MeshShape
+    editor = win.show_hydra()
+    xy = np.array([[0, 0], [10, 0], [0, 10], [10, 10], [5, 5]], float)
+    mesh = MeshShape(np.c_[xy, [0, 0, 0, 0, 4]], triangulate(xy))
+    node = editor.add_component("panel", (0, 0))
+    editor.solve()
+    editor.results[node.id].outputs["Out"] = hydra.Tree.of([mesh])
+    [obj] = editor.cast_into([node.id], win.scene.layers.current_id)
+    assert obj.shape.faceted
+    assert np.array_equal(obj.shape.triangles, mesh.triangles)
+
+
+
+def test_a_component_with_several_outputs_names_them_down_its_right(win):
+    editor = win.show_hydra()
+    node = editor.add_component("deconstruct_point", (0, 0))
+    item = editor.canvas.node_items[node.id]
+    assert [p.port.name for p in item.outputs] == ["X", "Y", "Z"]
+    assert item.out_labels > 0
+    # each output found by its name as well as its dot
+    for port in item.outputs:
+        at = QPointF(item.width - 12, port.y())
+        assert item.port_at(at) is port
+    # and no names for a component with one output
+    move = editor.canvas.node_items[editor.add_component("move", (0, 90)).id]
+    assert move.out_labels == 0
+
+
+def test_a_text_tag_is_cast_as_text_to_edit(win):
+    from serpentine3d.core.hydra.components.text import _text_tag
+    from serpentine3d.core.hydra.kinds import Vector
+    from serpentine3d.core.text_object import TextShape
+    editor = win.show_hydra()
+    node = editor.add_component("text_tag", (0, 0))
+    editor.solve()
+    tag = _text_tag(geo.make_point((0, 0, 0)), "245 m", 2.0,
+                    Vector((0, 0, 0), (1, 0, 0)))
+    editor.results[node.id].outputs["Tag"] = hydra.Tree.of([tag])
+    [obj] = editor.cast_into([node.id], win.scene.layers.current_id)
+    assert isinstance(obj.shape, TextShape) and obj.shape.text == "245 m"
+
+
+
+def test_the_groups_menu_adds_the_chosen_components_to_it(win):
+    editor = _shown(win)
+    _a, _b, group = _grouped(editor)
+    c = editor.add_component("point", (500, 300))
+    view = editor.canvas
+    view.scene().clearSelection()
+    menu = editor.group_menu(group)
+    [add] = [a for a in menu.actions() if a.text() == "Add to Group"]
+    assert not add.isEnabled()                   # nothing chosen to add
+    view.node_items[c.id].setSelected(True)
+    menu = editor.group_menu(group)
+    [add] = [a for a in menu.actions() if a.text() == "Add to Group"]
+    assert add.isEnabled()
+    add.trigger()
+    assert c.id in editor.graph.groups[group.group_id]
+    assert group.boundingRect().contains(
+        view.node_items[c.id].sceneBoundingRect())
+    editor.undo()
+    assert c.id not in editor.graph.groups[group.group_id]
+
+
+def test_a_group_of_geometry_is_cast_as_one_of_the_models_groups(win):
+    editor = win.show_hydra()
+    node = editor.add_component("group", (0, 0))
+    editor.solve()
+    kept = hydra.GeometryGroup((geo.make_line((0, 0, 0), (1, 0, 0)),
+                                geo.make_line((0, 1, 0), (1, 1, 0))))
+    loose = geo.make_line((0, 5, 0), (1, 5, 0))
+    editor.results[node.id].outputs["G"] = hydra.Tree.of([kept, loose])
+    objects = editor.cast_into([node.id], win.scene.layers.current_id)
+    assert len(objects) == 3
+    groups = [win.scene.get(obj.id).group_id for obj in objects]
+    assert groups[0] and groups[0] == groups[1] and not groups[2]

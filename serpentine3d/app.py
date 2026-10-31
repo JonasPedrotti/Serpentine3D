@@ -555,16 +555,24 @@ class MainWindow(QMainWindow):
 
     def show_hydra(self):
         """Hydra's graph editor, floating beside the model like a viewport
-        torn off. Made on first use, then shown and hidden. Opening it
-        starts on the recent graphs; raising it when open does not."""
-        opening = self._hydra_dock is None or self._hydra_dock.isHidden()
+        torn off. Made on first use, then shown and hidden. The first
+        opening starts on the recent graphs; closed with its X it is only
+        hidden, and comes back as it was left."""
+        opening = self._hydra_dock is None
         if self._hydra_dock is None:
             from .ui.hydra import HydraEditor
             self.hydra = HydraEditor(self)
             from .ui.icons import hydra_icon
+            from .ui.dock_title import DockTitleBar
             dock = QDockWidget("Hydra", self)
             dock.setObjectName("hydraDock")
             dock.setWindowIcon(hydra_icon())
+            # the side panels' own title, its close button plain to see; no
+            # float button, it floats by a drag or a double-click
+            title = DockTitleBar(hydra_icon().pixmap(16, 16), "Hydra", dock,
+                                 float_button=False)
+            dock.windowTitleChanged.connect(title.title.setText)
+            dock.setTitleBarWidget(title)
             dock.setWidget(self.hydra)
             self.hydra.set_path(self.hydra.path)    # its file in the title
             # Where it was last time, docked or floating: made after the
