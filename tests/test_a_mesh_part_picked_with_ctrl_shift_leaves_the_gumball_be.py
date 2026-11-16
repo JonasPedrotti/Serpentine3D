@@ -27,6 +27,9 @@ def win(tmp_path, monkeypatch):
     win.show()
     QApplication.processEvents()
     yield win
+    # Qt keeps the last synthetic modifiers; leave no Ctrl+Shift held
+    QTest.mouseRelease(win, Qt.MouseButton.LeftButton,
+                       Qt.KeyboardModifier.NoModifier)
     win.processor.cancel()
     win.mark_saved()
     win.close()
