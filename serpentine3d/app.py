@@ -271,6 +271,8 @@ class MainWindow(QMainWindow):
         self._wire_viewport(self.viewport)
         self.scene.add_listener(self._update_status)
         self.selection.add_listener(self._update_status)
+        self._points_wanted: set[str] = set()
+        self.selection.add_listener(self._show_selected_points)
         self.scene.add_listener(self._refresh_space_tabs)
         self._refresh_space_tabs()
         # A plane added, paused or switched off in a view starts or stops
@@ -1273,7 +1275,9 @@ class MainWindow(QMainWindow):
         self._pending_import_paths.clear()
         if self.processor.busy:
             self.processor.cancel()
-        elif self.scene.cv_enabled:
+        elif self.scene.cv_enabled - self.scene.cv_auto:
+            # Points shown only because their curve is picked go with the
+            # selection below, in one Escape.
             # Escape gives up one thing at a time, most recent first, and
             # points on is the state you got into last. The object stays
             # selected: you asked to stop editing points, not to lose what
@@ -3154,6 +3158,43 @@ class MainWindow(QMainWindow):
             url = rel.get("url")
         if url:
             QDesktopServices.openUrl(QUrl(url))
+
+    # Past this many picked curves, a select-all on a big import would
+    # cover the screen in markers nobody asked for.
+    AUTO_POINTS_UP_TO = 50
+
+    def _show_selected_points(self):
+        """A picked curve shows its control points, ready to pick, and they
+        go again when the selection lets go of it. A curve with one of its
+        points held stays on, since picking a point lets go of the curve.
+
+        Only what the selection itself changed is acted on: Escape hiding
+        the points of a curve still picked is not undone by the next notify.
+        Curves a running command picks show nothing, or the points would
+        catch the clicks meant for the next curve.
+        """
+        sel, scene = self.selection, self.scene
+        curves = [o.id for o in sel.objects() if o.kind == "curve"]
+        wanted = set(curves) if len(curves) <= self.AUTO_POINTS_UP_TO \
+            else set()
+        wanted.update(oid for oid, kind, _i in sel.subobjects
+                      if kind == "cv" and oid in scene.objects)
+        gained = set() if self.processor.busy \
+            else wanted - self._points_wanted
+        lost = self._points_wanted - wanted
+        self._points_wanted = wanted
+        changed = False
+        for oid in lost & scene.cv_auto:
+            scene.cv_auto.discard(oid)
+            scene.cv_enabled.discard(oid)
+            changed = True
+        for oid in gained - scene.cv_enabled:
+            scene.cv_enabled.add(oid)
+            scene.cv_auto.add(oid)
+            changed = True
+        if changed:
+            for vp in self.all_viewports():
+                vp.update()
 
     def _update_status(self):
         n = len(self.scene.all())

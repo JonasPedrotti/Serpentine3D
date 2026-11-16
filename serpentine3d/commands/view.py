@@ -690,6 +690,7 @@ def cmd_pointson(ctx):
             else:
                 gm.get_control_points(o.shape)
             vp.cv_enabled.add(o.id)
+            ctx.scene.cv_auto.discard(o.id)     # kept once the curve is let go
             shown += 1
         except gm.GeometryError as exc:
             ctx.echo(f"{o.name}: {exc}")
@@ -704,6 +705,7 @@ def cmd_pointsoff(ctx):
     vp = _vp(ctx)
     n = len(vp.cv_enabled)
     vp.cv_enabled.clear()
+    ctx.scene.cv_auto.clear()
     # Let go of the points it just hid. A held point is what the transform
     # commands work on and what the gumball stands on, and neither should be
     # holding a marker nobody can see.
