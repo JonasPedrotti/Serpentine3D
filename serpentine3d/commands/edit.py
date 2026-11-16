@@ -609,6 +609,7 @@ def _show_points(ctx, ids):
     if vp is None:
         return
     vp.cv_enabled.update(ids)
+    vp.scene.cv_auto.difference_update(ids)
     from .view import _redraw_all
     _redraw_all(ctx)
 
