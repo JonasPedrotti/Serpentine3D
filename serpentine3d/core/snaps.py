@@ -116,6 +116,12 @@ def _plane_crossings(obj, eq) -> list:
     return [tuple(p) for p in a + (b - a) * t[:, None]]
 
 
+# A mesh offers its corners and the middles of the edges it draws while it
+# is small enough for that to stay quick; a scan of millions keeps only the
+# nearest point on its outline.
+MESH_SNAPS_UP_TO = 200_000
+
+
 def _static_snap_points(shape) -> list[tuple[tuple, str]]:
     """point / end / mid / center / quad candidates for one shape."""
     # Cloud samples are queried spatially, never expanded into CAD features.
@@ -144,11 +150,17 @@ def _static_snap_points(shape) -> list[tuple[tuple, str]]:
     from .dimension import DimensionShape
     if isinstance(shape, (TextShape, HatchShape, DimensionShape)):
         return shape.snap_points()
-    # Any other mesh (an OBJ, an STL) has triangles, not CAD edges: no end,
-    # mid or centre of its own. The nearest point on its outline still snaps.
-    from .mesh import MeshShape
+    # Any other mesh (an OBJ, an STL, a terrain) snaps at its corners, as
+    # ends, and at the middles of the edges it draws.
+    from .mesh import MeshShape, _weld
     if isinstance(shape, MeshShape):
-        return []
+        if len(shape.vertices) > MESH_SNAPS_UP_TO:
+            return []
+        points, pairs = shape.edge_pairs(welding=_weld(shape.vertices))
+        out = [(tuple(float(c) for c in p), "end") for p in points]
+        out += [(tuple(float(c) for c in (points[a] + points[b]) / 2), "mid")
+                for a, b in pairs]
+        return out
 
     if shape.ShapeType() == occ.VERTEX:
         x, y, z = geometry.point_coords(shape)
@@ -519,14 +531,19 @@ class SnapIndex:
 
     def find(self, camera, px: float, py: float, width: int, height: int,
              radius_px: float = 12.0, base_point=None, pending_points=None,
-             picked_points=None, clip=()):
+             picked_points=None, clip=(), exclude_ids=None, extra_points=None):
         """Best snap near the pixel. Returns (point, kind) or None.
 
         `clip` holds the clip equations of the planes cutting the view:
-        what they take away is out of sight, so nothing on it snaps."""
+        what they take away is out of sight, so nothing on it snaps.
+        `exclude_ids` leaves objects out, and `extra_points` puts (point,
+        kind) candidates in: what a drag is moving cannot be snapped to where
+        it is going, but the rest of the shape it was can."""
         if not self.enabled:
             return None
         objects = self.scene.visible_objects()
+        if exclude_ids:
+            objects = [obj for obj in objects if obj.id not in exclude_ids]
         visible_ids = {obj.id for obj in objects}
         self._cloud_cache = {key: value for key, value in self._cloud_cache.items()
                              if key in visible_ids}
@@ -539,6 +556,10 @@ class SnapIndex:
                 pts.append(p)
                 kinds.append(kind)
         pending = len(pts)
+        for p, kind in extra_points or ():
+            if self.types.get(kind):
+                pts.append(p)
+                kinds.append(kind)
 
         for obj in objects:
             if isinstance(obj.shape, PointCloudShape):
