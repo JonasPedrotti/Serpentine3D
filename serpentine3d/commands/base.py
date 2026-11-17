@@ -61,6 +61,9 @@ class PointReq(Req):
     # The point just picked is a snap target too, which it normally is not
     # since it sits under the cursor and would glue the next leg to nothing.
     newest_snaps: bool = False
+    # A curve the point lies on: its crossings with the drawing are the
+    # intersections to snap to, as the end of an arc is on its circle.
+    snap_on: object = None
 
 
 # The keyword a steps_back prompt answers with to give up its last point.

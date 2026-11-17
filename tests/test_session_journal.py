@@ -97,14 +97,14 @@ def test_a_click_and_typed_text_record_the_same_value(rig):
 
 def test_a_keyword_answer_is_recorded_as_itself(rig):
     scene, sel, hist, ctx, proc, journal = rig
-    proc.run("arc center")
-    proc.provide_text("0,0,0")
+    proc.run("arc endsfirst")
     proc.provide_text("10,0,0")
-    proc.provide_text("90")
+    proc.provide_text("-10,0,0")
+    proc.provide_text("0,10,0")
     ev = _events(journal)
     vals = [e["v"] for e in ev if e["ev"] == "val"]
-    assert vals[0] == {"s": "Center"}
-    assert vals[-1] == {"n": 90.0}
+    assert vals[0] == {"s": "EndsFirst"}
+    assert vals[-1] == {"p": [0.0, 10.0, 0.0]}
 
 
 def test_an_unknown_command_writes_nothing(rig):

@@ -78,7 +78,6 @@ NOTHING_TO_SHOW = {
     ("line", "Middle of line"): _FIRST_OF_ITS_FLOW,
     ("circle", "Start of diameter"): _FIRST_OF_ITS_FLOW,
     ("circle", "First point on circle"): _FIRST_OF_ITS_FLOW,
-    ("arc", "Center of arc"): _FIRST_OF_ITS_FLOW,
     ("arc", "Start of arc"): _FIRST_OF_ITS_FLOW,
     ("ellipse", "Start of first axis"): _FIRST_OF_ITS_FLOW,
     ("sphere", "Start of diameter"): _FIRST_OF_ITS_FLOW,

@@ -99,10 +99,9 @@ def test_the_first_axis_keeps_its_direction_when_it_is_the_short_one():
 
 # -- arc --
 
-def test_arc_by_center_start_end(env):
+def test_arc_by_center_start_end_is_the_default(env):
     scene, sel, hist, ctx, proc = env
     proc.run("arc")
-    proc.provide_text("center")
     proc.provide_text("0,0,0")
     proc.provide_text("10,0,0")
     proc.provide_text("0,10,0")
@@ -113,7 +112,7 @@ def test_arc_by_center_start_end(env):
 
 def test_arc_by_center_takes_a_typed_angle(env):
     scene, sel, hist, ctx, proc = env
-    proc.run("arc center")            # macro form works too
+    proc.run("arc")
     proc.provide_text("0,0,0")
     proc.provide_text("10,0,0")
     proc.provide_text("90")
@@ -125,7 +124,7 @@ def test_arc_by_center_takes_a_typed_angle(env):
 
 def test_arc_by_center_takes_a_negative_angle(env):
     scene, sel, hist, ctx, proc = env
-    proc.run("arc center")
+    proc.run("arc")
     proc.provide_text("0,0,0")
     proc.provide_text("10,0,0")
     proc.provide_text("-90")
@@ -136,7 +135,7 @@ def test_arc_by_center_takes_a_negative_angle(env):
 
 def test_arc_by_center_pulls_the_end_onto_the_circle(env):
     scene, sel, hist, ctx, proc = env
-    proc.run("arc center")
+    proc.run("arc")
     proc.provide_text("0,0,0")
     proc.provide_text("10,0,0")
     proc.provide_text("0,25,0")       # off the circle: direction, not radius
@@ -147,7 +146,7 @@ def test_arc_by_center_pulls_the_end_onto_the_circle(env):
 def test_arc_by_start_end_and_a_point_on_it(env):
     scene, sel, hist, ctx, proc = env
     proc.run("arc")
-    proc.provide_text("startend")
+    proc.provide_text("endsfirst")
     proc.provide_text("10,0,0")
     proc.provide_text("-10,0,0")
     proc.provide_text("0,10,0")
@@ -155,9 +154,51 @@ def test_arc_by_start_end_and_a_point_on_it(env):
     assert g.curve_length(arc.shape) == pytest.approx(math.pi * 10, rel=1e-6)
 
 
-def test_arc_three_points_still_the_default(env):
-    scene, sel, hist, ctx, proc = env
+def _arc_drawn_through(proc, *moves):
     proc.run("arc")
+    proc.provide_text("0,0,0")
+    assert proc.request.preview_fn is None, "no circle while picking the start"
+    proc.provide_text("10,0,0")
+    for p in moves:
+        proc.request.preview_fn(p)          # the cursor going round
+    proc.provide_text(",".join(str(c) for c in moves[-1]))
+
+
+def test_an_arc_drawn_clockwise_grows_clockwise_from_the_start(env):
+    scene, sel, hist, ctx, proc = env
+    _arc_drawn_through(proc, (9, -4, 0), (7, -7, 0), (0, -10, 0))
+    arc = _only(scene)
+    assert g.curve_length(arc.shape) == pytest.approx(math.pi * 5, rel=1e-6)
+    mn, mx = g.bbox(arc.shape)
+    assert mn[1] == pytest.approx(-10, abs=1e-6)
+    assert mx[1] == pytest.approx(0, abs=1e-6)
+
+
+def test_an_arc_drawn_on_past_half_way_keeps_going(env):
+    scene, sel, hist, ctx, proc = env
+    _arc_drawn_through(proc, (7, 7, 0), (0, 10, 0), (-10, 0, 0),
+                       (-7, -7, 0), (0, -10, 0))
+    arc = _only(scene)
+    assert g.curve_length(arc.shape) == pytest.approx(math.pi * 15, rel=1e-6)
+
+
+def test_the_toolbar_right_click_starts_at_the_start_of_the_arc(env):
+    scene, sel, hist, ctx, proc = env
+    proc.run("arc endsfirst")
+    assert "Start of arc" in proc.prompt_text()
+    proc.provide_text("10,0,0")
+    assert "End of arc" in proc.prompt_text()
+    proc.provide_text("-10,0,0")
+    assert "Point on arc" in proc.prompt_text()
+    assert not proc.request.rubber_band, "no straight line once the ends are in"
+    proc.provide_text("0,10,0")
+    arc = _only(scene)
+    assert g.curve_length(arc.shape) == pytest.approx(math.pi * 10, rel=1e-6)
+
+
+def test_arc_through_three_points(env):
+    scene, sel, hist, ctx, proc = env
+    proc.run("arc through")     # macro form works too
     proc.provide_text("10,0,0")
     proc.provide_text("0,10,0")
     proc.provide_text("-10,0,0")
@@ -357,8 +398,8 @@ def test_ellipse_axis_ends_need_not_lie_on_an_axis(env):
 def test_the_prompt_names_the_other_ways(env):
     scene, sel, hist, ctx, proc = env
     proc.run("arc")
-    assert "Center" in proc.prompt_text()
-    assert "StartEnd" in proc.prompt_text()
+    assert "EndsFirst" in proc.prompt_text()
+    assert "Through" in proc.prompt_text()
     proc.cancel()
     proc.run("circle")
     assert "2Point" in proc.prompt_text()
@@ -367,7 +408,7 @@ def test_the_prompt_names_the_other_ways(env):
 def test_the_keywords_come_as_chips(env):
     scene, sel, hist, ctx, proc = env
     proc.run("arc")
-    assert proc.keyword_chips() == ["Center", "StartEnd"]
+    assert proc.keyword_chips() == ["EndsFirst", "Through"]
     proc.cancel()
     proc.run("polyline")
     proc.provide_text("0,0")
@@ -381,9 +422,9 @@ def test_the_keywords_come_as_chips(env):
 def test_a_prefix_of_a_keyword_is_enough(env):
     scene, sel, hist, ctx, proc = env
     proc.run("arc")
-    proc.provide_text("cen")
+    proc.provide_text("ends")
     assert isinstance(proc.request, PointReq)
-    assert "Center of arc" in proc.prompt_text()
+    assert "Start of arc" in proc.prompt_text()
 
 
 def test_format_prompt_shows_extra_options():
