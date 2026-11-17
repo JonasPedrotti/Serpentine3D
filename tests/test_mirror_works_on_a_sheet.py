@@ -81,7 +81,7 @@ def test_mirror_moves_a_paper_polyline_across_the_line(sheet):
     rule = lay.objects[0]
     lv.selected = [("object", rule)]
 
-    _run(w, "mirror", *UP_X50, "No")
+    _run(w, "mirror", *UP_X50)
 
     assert not w.processor.busy
     assert len(lay.objects) == 1
@@ -94,7 +94,7 @@ def test_keeping_the_original_leaves_it_and_adds_the_mirror(sheet):
     rule = lay.objects[0]
     lv.selected = [("object", rule)]
 
-    _run(w, "mirror", *UP_X50, "Yes")
+    _run(w, "mirror", "copy", *UP_X50)
 
     assert len(lay.objects) == 2
     assert sorted(_box(o) for o in lay.objects) == [
@@ -106,7 +106,7 @@ def test_a_mixed_pick_all_mirrors(sheet):
     lv.selected = [("detail", lay.details[0]), ("object", lay.objects[0]),
                    ("dim", lay.dims[0]), ("note", lay.notes[0])]
 
-    _run(w, "mirror", *UP_X50, "No")
+    _run(w, "mirror", *UP_X50)
 
     assert "Mirrored 4" in said[-1], said
     det = lay.details[0]
@@ -120,14 +120,14 @@ def test_a_locked_detail_is_mirrored_like_any_frame(sheet):
     det.locked = True
     lv.selected = [("detail", det)]
 
-    _run(w, "mirror", *UP_X50, "No")
+    _run(w, "mirror", *UP_X50)
 
     assert (det.x, det.y) == pytest.approx((-20.0, 30.0))
     assert det.scale_denom == 50.0 and det.locked
     assert "Mirrored 1" in said[-1] and "locked" not in said[-1].lower(), said
 
     lv.selected = [("detail", det)]
-    _run(w, "mirror", *UP_X50, "Yes")
+    _run(w, "mirror", "copy", *UP_X50)
 
     assert len(lay.details) == 2
     copy = next(d for d in lay.details if d is not det)
@@ -148,7 +148,7 @@ def test_nothing_picked_says_so_and_does_not_wait(sheet):
 def test_one_undo_puts_the_sheet_back(sheet):
     w, lv, lay, _said = sheet
     lv.selected = [("object", lay.objects[0]), ("dim", lay.dims[0])]
-    _run(w, "mirror", *UP_X50, "No")
+    _run(w, "mirror", *UP_X50)
 
     w.history.undo()
 
@@ -263,7 +263,7 @@ def test_mirror_in_the_model_is_unchanged(sheet):
     line = w.scene.add(g.make_line((10, 0, 0), (20, 0, 0)), name="L")
     w.selection.set([line.id])
 
-    _run(w, "mirror", *UP_X50, "No")
+    _run(w, "mirror", *UP_X50)
 
     lo, hi = g.bbox(w.scene.get(line.id).shape)
     assert (lo[0], hi[0]) == pytest.approx((80.0, 90.0))
@@ -306,30 +306,22 @@ def test_the_second_point_ghosts_a_mixed_pick_without_moving_it(sheet):
     assert (det.x, dim.x1, note.x) == (20.0, 10.0, 40.0)
 
 
-def test_the_ghost_stays_up_while_it_asks_about_the_original(sheet):
+def test_the_second_point_finishes_with_no_question_after(sheet):
     w, lv, lay, _said = sheet
     lv.selected = [("object", lay.objects[0])]
     _run(w, "mirror", *UP_X50)
 
-    assert w.processor.busy, "it should be asking whether to keep the original"
-    assert w.viewport._ghost is not None
-
-    w.processor.provide_text("No")
-
-    assert not w.processor.busy
+    assert not w.processor.busy, "nothing left to ask once the line is in"
     assert w.viewport._ghost is None
 
 
-def test_the_model_mirror_keeps_its_ghost_up_while_it_asks_too(sheet):
+def test_the_model_mirror_finishes_on_the_second_point_too(sheet):
     w, _lv, _lay, _said = sheet
     w.switch_space("model")
     line = w.scene.add(g.make_line((10, 0, 0), (20, 0, 0)), name="L")
     w.selection.set([line.id])
     _run(w, "mirror", *UP_X50)
 
-    assert w.processor.busy
-    assert w.viewport._ghost is not None
-
-    w.processor.provide_text("Yes")
-
+    assert not w.processor.busy
     assert w.viewport._ghost is None
+    assert len(w.scene.objects) == 1, "Copy is off until asked for"

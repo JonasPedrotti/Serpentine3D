@@ -201,13 +201,16 @@ def test_rotate_scale_mirror(env):
     proc.provide_text("2")
     assert g.volume(scene.all()[0].shape) == pytest.approx(8, rel=1e-5)
 
+    before_lo, before_hi = g.bbox(scene.all()[0].shape)
     proc.run("mirror")
     proc.click_object(obj.id)
     proc.finish_selection()
     proc.provide_text("0,0,0")
     proc.provide_text("0,10,0")     # mirror across YZ-ish plane (x -> -x)
-    proc.provide_text("")           # keep original: Yes
-    assert len(scene.all()) == 2
+    assert len(scene.all()) == 1, "Copy is off, so the box itself is mirrored"
+    lo, hi = g.bbox(scene.all()[0].shape)
+    assert lo[0] == pytest.approx(-before_hi[0], abs=1e-6)
+    assert hi[0] == pytest.approx(-before_lo[0], abs=1e-6)
 
 
 def test_boolean_union_difference(env):

@@ -644,6 +644,9 @@ def cmd_scale_nu(ctx):
         " by " + " × ".join(f"{f:g}" for f in factors))
 
 
+_COPY = {"Copy": ["No", "Yes"]}
+
+
 def _mirror_on_paper(ctx, lv):
     """Mirror what is picked on a sheet across a line on the paper (#36).
 
@@ -659,7 +662,7 @@ def _mirror_on_paper(ctx, lv):
         ctx.echo("Nothing picked on the sheet: click geometry, a detail "
                  "frame or an annotation first.")
         return
-    p1 = yield PointReq("Start of mirror line")
+    p1 = yield PointReq("Start of mirror line", choices=_COPY)
     a = np.array([float(p1[0]), float(p1[1])])
 
     def _reflection(p):
@@ -679,18 +682,15 @@ def _mirror_on_paper(ctx, lv):
         return None if matrix is None else _sheet_ghost(ctx, picks, matrix)
 
     p2 = yield PointReq("End of mirror line", rubber_from=p1,
-                        preview_fn=_preview)
+                        preview_fn=_preview, choices=_COPY)
     matrix = _reflection(p2)
     if matrix is None:
         ctx.echo("The mirror line has no length — cancelled.")
         return
-    keep = yield OptionReq("Keep original?", options=["Yes", "No"],
-                           default="Yes",
-                           preview_fn=lambda _keep: _preview(p2))
     lay = lv.layout
     done = 0
     for kind, obj in picks:
-        if keep == "Yes":
+        if ctx.opt("Copy", "No") == "Yes":
             obj = copy_sheet_item(lay, kind, obj)
             if obj is None:
                 continue
@@ -707,7 +707,7 @@ def cmd_mirror(ctx):
         yield from _mirror_on_paper(ctx, lv)
         return
     held, objs = yield from _what_to_transform(ctx, "Select objects to mirror")
-    p1 = yield PointReq("Start of mirror line")
+    p1 = yield PointReq("Start of mirror line", choices=_COPY)
 
     def _mirror_normal(p):
         import numpy as np
@@ -722,7 +722,7 @@ def cmd_mirror(ctx):
         return _preview_of(ctx, held, objs, lambda s: g.mirror(s, p1, n))
 
     p2 = yield PointReq("End of mirror line", rubber_from=p1,
-                        preview_fn=_preview)
+                        preview_fn=_preview, choices=_COPY)
     # mirror across the plane through the picked line, perpendicular to
     # the construction plane
     normal = _mirror_normal(p2)
@@ -732,12 +732,9 @@ def cmd_mirror(ctx):
         # something a curve can have.
         _do(ctx, held, objs, lambda s: g.mirror(s, p1, normal), "Mirrored")
         return
-    keep = yield OptionReq("Keep original?", options=["Yes", "No"],
-                           default="Yes",
-                           preview_fn=lambda _keep: _preview(p2))
     for o in objs:
         mirrored = g.mirror(o.shape, p1, normal)
-        if keep == "Yes":
+        if ctx.opt("Copy", "No") == "Yes":
             ctx.scene.add_from(mirrored, o)
         else:
             ctx.scene.replace_shape(o.id, mirrored)
