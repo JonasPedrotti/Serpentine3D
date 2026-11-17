@@ -242,9 +242,9 @@ def test_mirror_copy_preserves_attributes(env):
     proc.run("mirror")
     proc.click_object(obj.id)
     proc.finish_selection()
+    proc.provide_text("copy")
     proc.provide_text("0,0,0")
     proc.provide_text("0,1,0")
-    proc.provide_text("Yes")   # keep original
     copies = [o for o in scene.all() if o.id != obj.id]
     assert len(copies) == 1
     assert copies[0].color == (0.0, 1.0, 0.0)

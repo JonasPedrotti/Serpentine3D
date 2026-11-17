@@ -1,6 +1,6 @@
 """A question with a few answers can be answered with a click.
 
-Mirror's "Keep original? (Yes/No) <Yes>" could only be answered by typing
+A question like "Keep original? (Yes/No) <Yes>" could only be answered by typing
 or by Enter, which a hand on the mouse has to leave it for. Rhino puts a
 prompt's answers on its command line to click, so the answers show as
 chips beside the prompt, the default marked, clicking one the same as
@@ -32,13 +32,11 @@ def window():
         w.close()
 
 
-def _at_keep_original(w):
+def _at_which_end(w):
     line = w.scene.add(g.make_line((10, 0, 0), (20, 0, 0)), name="L")
     w.selection.set([line.id])
-    w.run_command("mirror")
-    for text in ("50,0", "50,10"):
-        w.processor.provide_text(text)
-    assert w.processor.busy
+    w.run_command("extend")
+    assert isinstance(w.processor.request, OptionReq)
     return line
 
 
@@ -47,42 +45,37 @@ def _chips(w):
 
 
 def test_the_answers_show_as_chips_with_the_default_marked(window):
-    _at_keep_original(window)
+    _at_which_end(window)
 
     chips = _chips(window)
 
-    assert list(chips) == ["Yes", "No"]
-    assert chips["Yes"].property("default") is True
-    assert chips["No"].property("default") is not True
+    assert list(chips) == ["End", "Start", "Both"]
+    assert chips["End"].property("default") is True
+    assert chips["Start"].property("default") is not True
 
 
 def test_clicking_an_answer_answers(window):
-    line = _at_keep_original(window)
-    before = len(window.scene.objects)
+    _at_which_end(window)
 
-    _chips(window)["No"].click()
+    _chips(window)["Start"].click()
 
-    assert not window.processor.busy
-    assert len(window.scene.objects) == before
-    lo, hi = g.bbox(window.scene.get(line.id).shape)
-    assert (lo[0], hi[0]) == pytest.approx((80.0, 90.0))
+    assert not isinstance(window.processor.request, OptionReq)
+    assert "Start" not in _chips(window)
 
 
-def test_clicking_the_default_keeps_the_original(window):
-    _at_keep_original(window)
-    before = len(window.scene.objects)
+def test_clicking_the_default_answers_with_it(window):
+    _at_which_end(window)
 
-    _chips(window)["Yes"].click()
+    _chips(window)["End"].click()
 
-    assert not window.processor.busy
-    assert len(window.scene.objects) == before + 1
+    assert not isinstance(window.processor.request, OptionReq)
 
 
 def test_the_chips_go_when_the_question_is_answered(window):
-    _at_keep_original(window)
-    _chips(window)["Yes"].click()
+    _at_which_end(window)
+    _chips(window)["Both"].click()
 
-    assert _chips(window) == {}
+    assert not {"End", "Start", "Both"} & set(_chips(window))
 
 
 def test_a_long_list_of_answers_gets_no_chips(window):
