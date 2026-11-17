@@ -1046,8 +1046,11 @@ class MainWindow(QMainWindow):
             [("Line", "line"), ("Polyline", "polyline"), ("Curve", "curve"),
              ("Circle", "circle"), ("Arc", "arc"), ("Rectangle", "rectangle")],
             [("Extrude", "extrude"), ("Revolve", "revolve"),
-             ("Loft", "loft"), ("Planar surface", "planarsrf"),
+             ("Loft", "loft"),
              ("Sweep 1 rail", "sweep1"), ("Sweep 2 rails", "sweep2")],
+            [("Plane, corner to corner", "plane"),
+             ("Plane from 3 points", "plane3pt"),
+             ("Surface from 3 or 4 corners", "srfpt")],
             [("Box", "box"), ("Sphere", "sphere"), ("Cylinder", "cylinder"),
              ("Torus", "torus")],
             [("Move", "move"), ("Copy", "copy"), ("Rotate", "rotate"),
@@ -1424,6 +1427,8 @@ class MainWindow(QMainWindow):
                 base = req.rubber_pts[-1]
             pending = list(req.rubber_pts or [])
             picked = list(self.processor.picked_points)
+            if req.newest_snaps and picked:
+                picked.append(picked[-1])   # the snaps leave out the last one
             # On a sheet the same pixel is both paper millimetres and a model
             # point seen through a detail; which one it is depends on what the
             # command asked for, so the registry's answer travels with it.

@@ -163,6 +163,38 @@ def _planar(p):
     p.drawPath(path)
 
 
+_CORNER = 2.2   # corners picked to make a surface
+
+
+def _filled(p, *corners):
+    path = QPainterPath(QPointF(*corners[0]))
+    for c in corners[1:]:
+        path.lineTo(*c)
+    path.closeSubpath()
+    p.fillPath(path, _FILL)
+    p.drawPath(path)
+
+
+def _plane(p):
+    _filled(p, (3, 4), (19, 4), (19, 18), (3, 18))
+    _dot(p, 3, 18, r=_CORNER)
+    _dot(p, 19, 4, r=_CORNER)
+
+
+def _plane3pt(p):
+    _filled(p, (3, 4), (19, 4), (19, 18), (3, 18))
+    _dot(p, 3, 18, r=_CORNER)
+    _dot(p, 19, 18, r=_CORNER)
+    _dot(p, 19, 4, r=_CORNER)
+
+
+def _srfpt(p):
+    corners = ((11, 3), (19, 11), (11, 19), (3, 11))
+    _filled(p, *corners)
+    for x, y in corners:
+        _dot(p, x, y, r=_CORNER)
+
+
 def _sweep1(p):
     path = QPainterPath(QPointF(4, 17))
     path.cubicTo(8, 17, 12, 8, 18, 6)
@@ -798,6 +830,7 @@ _DRAWERS = {
     "point": _point, "points": _point, "line": _line, "polyline": _polyline, "curve": _curve, "circle": _circle,
     "arc": _arc, "rectangle": _rect, "text": _text, "extrude": _extrude, "revolve": _revolve,
     "loft": _loft, "planarsrf": _planar, "sweep1": _sweep1, "sweep2": _sweep2,
+    "plane": _plane, "plane3pt": _plane3pt, "srfpt": _srfpt,
     "box": _box, "sphere": _sphere, "cylinder": _cylinder, "torus": _torus,
     "move": _move, "copy": _copy, "rotate": _rotate, "scale": _scale,
     "mirror": _mirror, "booleanunion": _union,

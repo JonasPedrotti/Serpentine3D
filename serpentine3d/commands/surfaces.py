@@ -1,7 +1,108 @@
 """Surface creation commands."""
 
+import numpy as np
+
 from ..core import geometry as g
-from .base import NumberReq, PointReq, SelectReq, command
+from .base import NumberReq, PointReq, SelectReq, command, frame_sides
+
+
+def _corner_surface(pts):
+    """The surface the corners make, or None while they make none."""
+    try:
+        return g.corner_surface(pts)
+    except g.GeometryError:
+        return None
+
+
+@command("plane", aliases=("rectsrf",))
+def cmd_plane(ctx):
+    """A rectangular plane corner to corner; or 3Points to stand it up."""
+    c1 = yield PointReq("First corner", extra_options=("3Points",))
+    if c1 == "3Points":
+        yield from _plane_from_edge(ctx)
+        return
+    cp = ctx.cplane
+
+    def _plane_to(p):
+        u1, v1, w1 = cp.from_world(c1)
+        u2, v2, _w = cp.from_world(p)
+        return _corner_surface([cp.to_world(u1, v1, w1),
+                                cp.to_world(u2, v1, w1),
+                                cp.to_world(u2, v2, w1),
+                                cp.to_world(u1, v2, w1)])
+
+    c2 = yield PointReq("Other corner", rubber_from=c1, preview_fn=_plane_to,
+                        rubber_sides=frame_sides(c1, cp))
+    shape = _plane_to(c2)
+    if shape is None:
+        ctx.echo("Zero width, no plane created.")
+        return
+    obj = ctx.add(shape)
+    ctx.echo(f"Created {obj.name}.")
+
+
+@command("plane3pt", aliases=("3ptplane", "plane3points"))
+def cmd_plane3pt(ctx):
+    """A rectangular plane from one edge and a width, standing at any angle."""
+    yield from _plane_from_edge(ctx)
+
+
+def _plane_from_edge(ctx):
+    """One edge, then how far the plane reaches square off it.
+
+    The third point is taken in space, not on the CPlane, so Ctrl+click on
+    one of the edge's ends and the height picked above it stands the plane
+    upright.
+    """
+    a = yield PointReq("Start of edge")
+    b = yield PointReq("End of edge", rubber_from=a)
+    pa, pb = np.asarray(a, float), np.asarray(b, float)
+    edge = pb - pa
+    length2 = float(edge @ edge)
+    if length2 < 1e-18:
+        ctx.echo("Zero edge, no plane created.")
+        return
+
+    def _plane_to(p):
+        off = np.asarray(p, float) - pa
+        off -= edge * float(off @ edge) / length2
+        return _corner_surface([pa, pb, pb + off, pa + off])
+
+    c = yield PointReq("Width (Ctrl+click an end to stand it up)",
+                       rubber_pts=[a, b], preview_fn=_plane_to,
+                       newest_snaps=True)
+    shape = _plane_to(c)
+    if shape is None:
+        ctx.echo("Zero width, no plane created.")
+        return
+    obj = ctx.add(shape)
+    ctx.echo(f"Created {obj.name}.")
+
+
+@command("srfpt", aliases=("cornersrf", "surfacefrompoints"))
+def cmd_srfpt(ctx):
+    """A surface from 3 or 4 corners; Enter after the third makes a triangle."""
+    prompts = ("First corner", "Second corner", "Third corner",
+               "Fourth corner (Enter or right-click for three)")
+    pts = []
+    while len(pts) < 4:
+        n = len(pts)
+        p = yield PointReq(
+            prompts[n],
+            rubber_from=pts[0] if n == 1 else None,
+            rubber_pts=list(pts) if n >= 2 else None,
+            allow_empty=n == 3,
+            preview_fn=((lambda q, done=list(pts): _corner_surface(done + [q]))
+                        if n >= 2 else None))
+        if p is None:
+            break
+        pts.append(p)
+    shape = _corner_surface(pts)
+    if shape is None:
+        ctx.echo("The corners make no surface, none created.")
+        return
+    obj = ctx.add(shape)
+    ctx.echo(f"Created {obj.name}.")
 
 
 @command("extrude", aliases=("ext", "extrudecrv"))

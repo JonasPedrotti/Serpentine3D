@@ -748,6 +748,38 @@ def planar_face(shape) -> TopoDS_Shape:
     return mk.Face()
 
 
+def corner_surface(points) -> TopoDS_Shape:
+    """A surface spanned by 3 or 4 corners, taken in order round its edge.
+
+    Three make a flat triangle. Four make a bilinear patch, untrimmed, so
+    four corners that do not lie in one plane still give a surface and its
+    control points are the corners themselves.
+    """
+    pts = [_pnt(p) for p in points]
+    if len(pts) not in (3, 4):
+        raise GeometryError("A corner surface needs 3 or 4 points")
+    for i in range(len(pts)):
+        if pts[i].Distance(pts[i - 1]) < tight():
+            raise GeometryError("Two corners are in the same place")
+    span = gp_Vec(pts[0], pts[1]).Crossed(gp_Vec(pts[0], pts[2]))
+    if span.Magnitude() < tight() ** 2:
+        raise GeometryError("The corners lie on one line")
+    if len(pts) == 3:
+        return planar_face(make_polyline(
+            [(p.X(), p.Y(), p.Z()) for p in pts], closed=True))
+    from OCP.Geom import Geom_BezierSurface
+    from OCP.TColgp import TColgp_Array2OfPnt
+    poles = TColgp_Array2OfPnt(1, 2, 1, 2)
+    poles.SetValue(1, 1, pts[0])
+    poles.SetValue(2, 1, pts[1])
+    poles.SetValue(2, 2, pts[2])
+    poles.SetValue(1, 2, pts[3])
+    mk = BRepBuilderAPI_MakeFace(Geom_BezierSurface(poles), tight())
+    if not mk.IsDone():
+        raise GeometryError("Corner surface failed")
+    return mk.Face()
+
+
 def offset_curve(shape, distance: float) -> TopoDS_Shape:
     """Offset a planar curve by a distance (sign picks the side).
 
