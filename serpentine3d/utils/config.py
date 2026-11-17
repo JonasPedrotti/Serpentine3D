@@ -221,6 +221,7 @@ RHINO_COMMAND_MAP = {
     "extrudecrv": "extrude", "extrudesrf": "extrude", "extrude": "extrude",
     "revolve": "revolve", "loft": "loft", "sweep1": "sweep1",
     "sweep2": "sweep2", "planarsrf": "planarsrf", "box": "box",
+    "plane": "plane", "srfpt": "srfpt",
     "sphere": "sphere", "cylinder": "cylinder", "cone": "cone",
     "torus": "torus", "move": "move", "copy": "copy", "rotate": "rotate",
     "rotate3d": "rotate", "scale": "scale", "scalenu": "scalenu",

@@ -58,6 +58,9 @@ class PointReq(Req):
     # time rather than ending the command. The command offers the UNDO_POINT
     # keyword whenever it has a point to give up, and takes it off its list.
     steps_back: bool = False
+    # The point just picked is a snap target too, which it normally is not
+    # since it sits under the cursor and would glue the next leg to nothing.
+    newest_snaps: bool = False
 
 
 # The keyword a steps_back prompt answers with to give up its last point.
