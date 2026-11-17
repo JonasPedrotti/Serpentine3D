@@ -1346,6 +1346,7 @@ class Viewport(QOpenGLWidget):
     objectClicked = Signal(str, object)     # object id, modifiers
     emptyClicked = Signal(object)           # modifiers
     boxSelected = Signal(list, object)      # picked ids, modifiers
+    alignRequested = Signal(str)            # an align bar button: how
     pointPicked = Signal(object)            # (x, y, z) in point-input mode
     mouseWorldMoved = Signal(object)        # (x, y, z) while in point-input mode
     cvEditBegan = Signal()                  # control-point drag started
@@ -1533,6 +1534,13 @@ class Viewport(QOpenGLWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         scene.add_listener(self.update)
         selection.add_listener(self.update)
+        from .align_bars import AlignBars
+        self.align_bars = AlignBars(self)
+        selection.add_listener(self.align_bars.follow)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self.align_bars.follow()
 
     # ---------------------------------------------------------------- GL setup
 

@@ -342,6 +342,13 @@ class MainWindow(QMainWindow):
                                else alive[0] if alive else self.viewport)
         return self._active_vp
 
+    def _align_in(self, vp, how: str):
+        """An align bar button: line the pick up on that pane's plane."""
+        if self.processor.busy:
+            return
+        self._set_active_viewport(vp)
+        self.run_command(f"align {how}")
+
     def _set_active_viewport(self, vp):
         if vp is self._active_vp:
             return
@@ -805,6 +812,8 @@ class MainWindow(QMainWindow):
                 obj_id, mods, pane))
         vp.emptyClicked.connect(self._on_empty_clicked)
         vp.boxSelected.connect(self._on_box_selected)
+        vp.alignRequested.connect(
+            lambda how, pane=vp: self._align_in(pane, how))
         vp.pointPicked.connect(self._on_point_picked)
         vp.detailEntered.connect(self._on_detail_entered)
         vp.textEditRequested.connect(

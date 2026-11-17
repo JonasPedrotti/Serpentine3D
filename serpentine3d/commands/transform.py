@@ -742,6 +742,57 @@ def cmd_mirror(ctx):
     ctx.echo(f"Mirrored {len(objs)} object(s).")
 
 
+ALIGNS = ("left", "center", "right", "across",
+          "top", "middle", "bottom", "down")
+
+
+def _extent_on(obj, cp):
+    """(u0, v0, u1, v1): the object's bounds measured on the plane."""
+    import numpy as np
+    mesh = obj.mesh
+    parts = [np.asarray(a, float).reshape(-1, 3)
+             for a in (mesh.vertices, mesh.edge_segments, mesh.points)
+             if a is not None and len(a)]
+    if parts:
+        pts = np.concatenate(parts)
+    else:
+        lo, hi = g.bbox(obj.shape)
+        pts = np.array([(x, y, z) for x in (lo[0], hi[0])
+                        for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+    d = pts - np.asarray(cp.origin, float)
+    u, v = d @ np.asarray(cp.xdir, float), d @ np.asarray(cp.ydir, float)
+    return float(u.min()), float(v.min()), float(u.max()), float(v.max())
+
+
+@command("align")
+def cmd_align(ctx):
+    """Line up the picked objects on the view's plane, as a layout program
+    does: their edges or middles to the bounds of the pick, or spaced evenly
+    with the first and the last left where they are."""
+    import numpy as np
+
+    from ..ui.hydra.align import arranged
+    objs = yield SelectReq("Select objects to align", min_count=2)
+    how = yield OptionReq("Align", options=list(ALIGNS), default="left")
+    if how in ("across", "down") and len(objs) < 3:
+        ctx.echo("Spacing evenly needs three objects or more.")
+        return
+    cp = ctx.cplane
+    xdir, ydir = np.asarray(cp.xdir, float), np.asarray(cp.ydir, float)
+    # as boxes on a page, which runs downwards: the plane's v turned over
+    boxes = []
+    for o in objs:
+        u0, v0, u1, v1 = _extent_on(o, cp)
+        boxes.append((u0, -v1, u1 - u0, v1 - v0))
+    for o, box, (x, y) in zip(objs, boxes, arranged(boxes, how)):
+        shift = (x - box[0]) * xdir - (y - box[1]) * ydir
+        if float(np.linalg.norm(shift)) < 1e-12:
+            continue
+        ctx.scene.replace_shape(o.id, g.translate(o.shape, tuple(shift)))
+    ctx.select_result(objs)
+    ctx.echo(f"Aligned {len(objs)} object(s) ({how}).")
+
+
 @command("arraypolar")
 def cmd_array_polar(ctx):
     objs = yield SelectReq("Select objects to array")
