@@ -280,6 +280,13 @@ QSlider::handle:horizontal:hover { background: #e6e7e9; border-color: #d9a441; }
 QMenuBar { background: #2b2c30; }
 QMenuBar::item { padding: 5px 10px; background: transparent; }
 QMenuBar::item:selected { background: #3a3b41; }
+QToolTip {
+    background-color: #1f2023;
+    color: #cfd0d2;
+    border: 1px solid #3d3e44;
+    padding: 4px 6px;
+}
+
 QMenu {
     background: #2e2f34;
     border: 1px solid #1b1c1f;

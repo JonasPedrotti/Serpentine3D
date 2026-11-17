@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import math
 
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt
@@ -1099,3 +1100,34 @@ def swatch(rgb) -> QIcon:
         p.setBrush(QColor.fromRgbF(*rgb[:3]))
         p.drawRoundedRect(QRectF(2.5, 2.5, 11, 11), 2.5, 2.5)
     return QIcon(_mark_pixmap(draw))
+
+
+_MOUSE_PX = 16
+
+
+@functools.cache
+def mouse_button_img(side: str) -> str:
+    """An <img> of a mouse with its left or right button lit, for a tooltip
+    to say which click does what. Embedded, so no file has to be found."""
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    pix = QPixmap(_MOUSE_PX * 4, _MOUSE_PX * 4)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.scale(4, 4)
+    _ready(p, 1.1)
+    body = QPainterPath()
+    body.addRoundedRect(QRectF(3, 1, 10, 14), 5, 5)
+    half = QPainterPath()
+    half.addRect(QRectF(3, 1, 5, 6) if side == "left" else QRectF(8, 1, 5, 6))
+    p.fillPath(body.intersected(half), _ACCENT)
+    p.drawPath(body)
+    p.drawLine(QPointF(3, 7), QPointF(13, 7))
+    p.drawLine(QPointF(8, 1), QPointF(8, 7))
+    p.end()
+    data = QByteArray()
+    buf = QBuffer(data)
+    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    pix.save(buf, "PNG")
+    uri = "data:image/png;base64," + bytes(data.toBase64()).decode()
+    return (f'<img src="{uri}" width="{_MOUSE_PX}" height="{_MOUSE_PX}" '
+            f'style="vertical-align: middle">')
