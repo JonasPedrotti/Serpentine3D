@@ -198,6 +198,9 @@ def cmd_planar(ctx):
     made = []
     for c in curves:
         made.append(ctx.scene.add(g.planar_face(c.shape)))
+    # the curves stay picked: they are still the outline, and the next step
+    # is as often done to them as to the surface
+    ctx.select_result(curves)
     ctx.echo(f"Created {len(made)} planar surface(s).")
 
 
