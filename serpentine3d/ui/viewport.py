@@ -6120,19 +6120,15 @@ class Viewport(QOpenGLWidget):
         selectable = [obj for obj in self._shown_here()
                       if self.scene.is_selectable(obj.id)
                       and self.selection.filter_allows(obj.kind)]
+        faces_shown = self._pick_mode() != "wireframe"
         for obj in self._pick_candidates(selectable, *rect, w, h):
             mesh = obj.mesh
+            if crossing and (len(mesh.local_edges) or len(mesh.triangles)):
+                if self._band_touches(mesh, rect, eye, w, h, faces_shown):
+                    picked.append(obj.id)
+                continue
             if len(mesh.local_edges):
-                segs = mesh.edge_segments
-                if crossing:
-                    # a crossing box asks whether *any* point falls inside,
-                    # so the ones nowhere near it change no answer. A window
-                    # box asks whether *every* point does, and a narrowed set
-                    # would answer yes for a mesh hanging out of the box.
-                    segs, _ = self._near_segments(mesh, *rect, w, h)
-                    if not len(segs):
-                        continue
-                pts = segs.reshape(-1, 3)
+                pts = mesh.edge_segments.reshape(-1, 3)
             elif len(mesh.points):
                 # A point has no edge to cross and no triangle to fall
                 # inside. All of it is where it is, which answers both
@@ -6158,6 +6154,33 @@ class Viewport(QOpenGLWidget):
                 if valid.all() and inside.all():
                     picked.append(obj.id)
         return picked
+
+    def _band_touches(self, mesh, rect, eye, w, h, faces_shown) -> bool:
+        """Whether a crossing band touches the object anywhere.
+
+        Its ends inside are not enough: a long line passes through a small
+        band with neither end in it, and a band dropped onto the middle of
+        a shaded surface has no edge inside at all.
+        """
+        if len(mesh.local_edges):
+            segs, _ = self._near_segments(mesh, *rect, w, h)
+            if len(segs):
+                scr = eye.project(segs.reshape(-1, 3).astype(float),
+                                  w, h).reshape(-1, 2, 3)
+                ok = (scr[:, :, 2] > 0).all(axis=1)
+                if (ok & _segments_touch_rect(scr[:, 0, :2], scr[:, 1, :2],
+                                              rect)).any():
+                    return True
+        if not (faces_shown and len(mesh.triangles)):
+            return False
+        tris, sub = self._near_triangles(mesh, *rect, w, h)
+        if not len(tris):
+            return False
+        vid, inv = np.unique(tris, return_inverse=True)
+        scr = eye.project(mesh.vertices[vid].astype(float), w, h)
+        tri = scr[inv.reshape(tris.shape)]
+        ok = (tri[:, :, 2] > 0).all(axis=1)
+        return bool((ok & _triangles_touch_rect(tri[:, :, :2], rect)).any())
 
     def _band_pick(self, x0, y0, x1, y1, crossing, modifiers):
         """What a rubber band caught: object ids, or None if it took points.
