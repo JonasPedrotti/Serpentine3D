@@ -121,8 +121,9 @@ def test_a_right_click_runs_the_alternative_and_the_tooltip_says_so(_qapp):
                  "points"))]]
     p = ToolPalette(groups, ran.append)
     button = _buttons(p)[0]
-    assert "Right-click" in button.toolTip()
-    assert "Enter" in button.toolTip()
+    tip = button.toolTip()
+    assert tip.count("<img") == 2, "a mouse for each click, left and right"
+    assert tip.index("(point)") < tip.index("Enter"), "left click comes first"
     button.click()
     button.customContextMenuRequested.emit(QPoint(1, 1))
     assert ran == ["point", "points"]

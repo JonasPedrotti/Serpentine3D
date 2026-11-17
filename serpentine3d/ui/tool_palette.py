@@ -73,7 +73,7 @@ class ToolPalette(QWidget):
         if alt is not None:
             # A right-click runs the alternative instead of a context menu.
             alt_label, alt_command = alt
-            tip += f"\nRight-click: {alt_label}"
+            tip = _two_click_tip(tip, alt_label)
             button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             button.customContextMenuRequested.connect(
                 lambda _pos, c=alt_command: invoke(c))
@@ -161,3 +161,14 @@ def tool_strip(groups, invoke, parent=None) -> QScrollArea:
     # tools scroll in a window with room to spare.
     area.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
     return area
+
+
+def _two_click_tip(left: str, right: str) -> str:
+    """One line per mouse button, each led by a picture of its click."""
+    from html import escape
+    from .icons import mouse_button_img
+    rows = "".join(
+        f"<tr><td>{mouse_button_img(side)}</td>"
+        f'<td style="padding-left: 6px">{escape(text)}</td></tr>'
+        for side, text in (("left", left), ("right", right)))
+    return f'<table cellspacing="0" cellpadding="1">{rows}</table>'

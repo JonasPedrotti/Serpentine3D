@@ -3548,6 +3548,8 @@ def run_app(app, splash=None):
     # by this name — must equal the installed serpentine3d.desktop
     app.setDesktopFileName("serpentine3d")
     app.setStyleSheet(theme.QSS)
+    from .ui import tooltips
+    tooltips.install(app)
 
     # The saved interface font, on before any window is built.
     theme.apply_saved_interface_font(app)
