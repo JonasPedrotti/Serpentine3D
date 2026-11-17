@@ -344,7 +344,8 @@ def _arc_3pt(ctx):
 
 @command("ellipse", aliases=("el",), space="any")
 def cmd_ellipse(ctx):
-    """Ellipse from center and two radii; Diameter takes an axis whole."""
+    """Ellipse from its center and the ends of its two axes; Diameter takes
+    the first axis whole."""
     import math
     center = yield PointReq("Center of ellipse",
                             extra_options=("Diameter",))
@@ -355,83 +356,63 @@ def cmd_ellipse(ctx):
         # detail and settled on its plane
         normal = tuple(ctx.cplane.normal)
         b = yield PointReq("End of first axis", rubber_from=a)
-        r1 = math.dist(a, b) / 2
-        if r1 < 1e-9:
-            ctx.echo("Zero first axis — no ellipse created.")
-            return
         mid = tuple((x + y) / 2 for x, y in zip(a, b))
-        n = np.asarray(normal, float)
-        n = n / np.linalg.norm(n)
-        x = np.asarray(b, float) - np.asarray(mid, float)
-        x -= n * (x @ n)
-        if np.linalg.norm(x) < 1e-9:
-            ctx.echo("The axis stands square to the plane — "
-                     "no ellipse created.")
-            return
-        x /= np.linalg.norm(x)
-        y = np.cross(n, x)
-
-        def _half_width(p):
-            w = np.asarray(p, float) - np.asarray(mid, float)
-            return abs(float(w @ y))
-
-        def _axis_to(p):
-            r2 = _half_width(p)
-            if r2 < 1e-9:
-                return None
-            try:
-                return g.make_ellipse_axis(mid, tuple(x), r1, r2, normal)
-            except g.GeometryError:
-                return None
-
-        tp = yield PointReq(
-            "End of second axis (click, or type a number)",
-            number_from=lambda v: tuple(np.asarray(mid, float) + v * y),
-            rubber_from=mid, preview_fn=_axis_to)
-        shape = _axis_to(tp)
-        if shape is None:
-            ctx.echo("Zero second axis — no ellipse created.")
-            return
-        obj = ctx.add(shape)
-        ctx.echo(f"Created {obj.name} ({ctx.as_typed(r1):g} x "
-                 f"{ctx.as_typed(_half_width(tp)):g}).")
+        yield from _second_axis(ctx, mid, b, math.dist(a, b) / 2, normal,
+                                drawn=[a, b, mid])
         return
 
     normal = tuple(ctx.cplane.normal)
-
-    def _round_to(p):
-        # nothing describes an ellipse until both radii are in, so the first
-        # drag shows the circle it would be if you stopped here
-        r = math.dist(center, p)
-        return g.make_circle(center, r, normal=normal) if r > 1e-9 else None
-
-    rp = yield PointReq("Major radius (click, or type a number)",
+    rp = yield PointReq("End of first axis (click, or type a number)",
                         number_from=(center, tuple(ctx.cplane.xdir)),
-                        rubber_from=center, preview_fn=_round_to)
-    r1 = math.dist(center, rp)
-    if r1 < 1e-9:
-        ctx.echo("Zero major radius — no ellipse created.")
-        return
+                        rubber_from=center)
+    yield from _second_axis(ctx, center, rp, math.dist(center, rp), normal,
+                            drawn=[rp, center])
 
-    def _ellipse_to(p):
-        r2 = math.dist(center, p)
+
+def _second_axis(ctx, mid, end, r1, normal, drawn):
+    """The second axis, square to the first and through `mid`.
+
+    The first axis ends where it was clicked, so the ellipse runs through
+    that point. The pick is held to the line square to it, and the band
+    runs out along that line from the center to the axis end.
+    """
+    if r1 < 1e-9:
+        ctx.echo("Zero first axis, no ellipse created.")
+        return
+    n = np.asarray(normal, float)
+    n = n / np.linalg.norm(n)
+    x = np.asarray(end, float) - np.asarray(mid, float)
+    x -= n * (x @ n)
+    if np.linalg.norm(x) < 1e-9:
+        ctx.echo("The axis stands square to the plane, no ellipse created.")
+        return
+    x /= np.linalg.norm(x)
+    y = np.cross(n, x)
+    m = np.asarray(mid, float)
+
+    def _half_width(p):
+        return abs(float((np.asarray(p, float) - m) @ y))
+
+    def _axis_to(p):
+        r2 = _half_width(p)
         if r2 < 1e-9:
             return None
         try:
-            return g.make_ellipse(center, r1, r2, normal=normal)
+            return g.make_ellipse_axis(mid, tuple(x), r1, r2, normal)
         except g.GeometryError:
             return None
 
-    tp = yield PointReq("Minor radius (click, or type a number)",
-                        number_from=(center, tuple(ctx.cplane.ydir)),
-                        rubber_from=center, preview_fn=_ellipse_to)
-    shape = _ellipse_to(tp)
+    tp = yield PointReq(
+        "End of second axis (click, or type a number)",
+        axis_lock=(tuple(m), tuple(y)), number_from=(tuple(m), tuple(y)),
+        rubber_pts=list(drawn), preview_fn=_axis_to)
+    shape = _axis_to(tp)
     if shape is None:
-        ctx.echo("Zero minor radius — no ellipse created.")
+        ctx.echo("Zero second axis, no ellipse created.")
         return
     obj = ctx.add(shape)
     ctx.echo(f"Created {obj.name} ({ctx.as_typed(r1):g} x "
-             f"{ctx.as_typed(math.dist(center, tp)):g}).")
+             f"{ctx.as_typed(_half_width(tp)):g}).")
 
 
 def _rect_from_center(ctx):
@@ -486,38 +467,38 @@ def _rect_from_edge(ctx):
 
     The corner-to-corner rectangle stands square to the plane's axes; this
     one takes the first side as drawn and hangs the width off whichever
-    side of it you point.
+    side of it you point. The width is taken in space, square off the
+    edge, so Ctrl+click on one of its ends and a height picked above it
+    stands the rectangle upright. A typed width lies on the plane.
     """
-    import math
     a = yield PointReq("Start of edge")
     cp = ctx.cplane          # after the pick: it may have entered a detail
     b = yield PointReq("End of edge", rubber_from=a)
-    ua, va, wa = cp.from_world(a)
-    ub, vb, _w = cp.from_world(b)
-    eu, ev = ub - ua, vb - va
-    elen = math.hypot(eu, ev)
-    if elen < 1e-9:
+    pa, pb = np.asarray(a, float), np.asarray(b, float)
+    edge = pb - pa
+    length2 = float(edge @ edge)
+    if length2 < 1e-18:
         ctx.echo("Zero edge — no rectangle created.")
         return
-    pu, pv = -ev / elen, eu / elen        # square to the edge, on the plane
+    side = np.cross(np.asarray(cp.normal, float), edge)
+    if np.linalg.norm(side) < 1e-12:        # an edge standing up off the plane
+        side = np.asarray(cp.xdir, float)
+    side /= np.linalg.norm(side)
 
-    def _lean(s):
-        if abs(s) < 1e-9:
+    def _lean_to(p):
+        off = np.asarray(p, float) - pa
+        off -= edge * float(off @ edge) / length2
+        if np.linalg.norm(off) < 1e-9:
             return None
         return g.make_polyline(
-            [cp.to_world(ua, va, wa), cp.to_world(ub, vb, wa),
-             cp.to_world(ub + s * pu, vb + s * pv, wa),
-             cp.to_world(ua + s * pu, va + s * pv, wa)], closed=True)
-
-    def _side_of(p):
-        u, v, _ = cp.from_world(p)
-        return (u - ua) * pu + (v - va) * pv
+            [tuple(pa), tuple(pb), tuple(pb + off), tuple(pa + off)],
+            closed=True)
 
     wp = yield PointReq(
-        "Width (click, or type a number)",
-        number_from=lambda v: cp.to_world(ub + v * pu, vb + v * pv, wa),
-        rubber_from=b, preview_fn=lambda p: _lean(_side_of(p)))
-    shape = _lean(_side_of(wp))
+        "Width (click, or type a number; Ctrl+click an end to stand it up)",
+        number_from=lambda v: tuple(pb + v * side),
+        rubber_pts=[a, b], newest_snaps=True, preview_fn=_lean_to)
+    shape = _lean_to(wp)
     if shape is None:
         ctx.echo("Zero width — no rectangle created.")
         return

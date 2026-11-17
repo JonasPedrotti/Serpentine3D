@@ -1433,6 +1433,7 @@ class Viewport(QOpenGLWidget):
         self._active_snap = None            # (point, kind) under cursor
         self.snap_base = None               # reference point for perp snap
         self.point_axis = None              # (base, axis) while axis-locked
+        self.point_plane = None             # (origin, normal) to pick on
         self.snap_on = None                 # curve the pick lies on
         self.point_frame = False            # the pick drags out a frame
         self.dir_lock = None                # (base, dir) frozen by Tab/Ctrl
@@ -1496,6 +1497,7 @@ class Viewport(QOpenGLWidget):
         self._inline_text_editor = None
         self._inline_text_id = None
         self._marker_points: list = []
+        self._marker_labels: list = []
         self._last_mouse = None
         self._hover_px = None           # the cursor, for a drawn crosshair
         self._hover_world = None        # and the point it picks
@@ -1799,6 +1801,42 @@ class Viewport(QOpenGLWidget):
         self._update_gumball_readout()
         self._update_draw_readout()
         self._paint_dots(w, h)
+        self._paint_marker_labels(w, h)
+
+    def _paint_marker_labels(self, w, h):
+        """The numbers by picked points that a command names, as Orient
+        numbers its reference points so the targets can be matched."""
+        labelled = [(m, t) for m, t in zip(self._marker_points,
+                                           self._marker_labels) if t]
+        if not labelled:
+            return
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QColor, QFont, QPainter, QPen
+        GL.glBindVertexArray(0)
+        self._use(0)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        font = QFont(self.font())
+        font.setPointSizeF(9.0)
+        font.setBold(True)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        for m, text in labelled:
+            scr = self.camera.project(np.asarray([m], float), w, h)[0]
+            if scr[2] <= 0:
+                continue
+            side = max(fm.horizontalAdvance(text) + 8, fm.height() + 2)
+            rect = QRectF(scr[0] + 6, scr[1] - 6 - fm.height(), side,
+                          fm.height() + 2)
+            painter.setPen(QPen(QColor(theme.ACCENT), 1.2))
+            painter.setBrush(QColor(31, 32, 35, 230))
+            painter.drawRoundedRect(rect, 4, 4)
+            painter.setPen(QColor(theme.ACCENT))
+            painter.drawText(rect, 0x84, text)  # AlignHCenter | AlignVCenter
+        painter.end()
+        GL.glEnable(GL.GL_DEPTH_TEST)
+        self._reset_gl_state()      # QPainter bound its own program
 
     def _paint_dots(self, w, h):
         """Annotation dots: screen-space label bubbles over their anchors."""
@@ -4337,8 +4375,9 @@ class Viewport(QOpenGLWidget):
             GL.glDrawArrays(GL.GL_POINTS, 0, len(points))
 
     def set_preview(self, segments: np.ndarray | None,
-                    markers: list | None = None):
-        """Segments: (K,2,3) rubber-band lines; markers: picked points."""
+                    markers: list | None = None, labels: list | None = None):
+        """Segments: (K,2,3) rubber-band lines; markers: picked points;
+        labels: text by each marker, "" for none."""
         if segments is None or len(segments) == 0:
             self._preview_data = np.zeros((0, 3))
             self._draw_span = None
@@ -4351,6 +4390,7 @@ class Viewport(QOpenGLWidget):
             self._draw_span = (arr[-1][0].copy(), arr[-1][1].copy())
             self._preview_data = arr.reshape(-1, 3)
         self._marker_points = list(markers or [])
+        self._marker_labels = list(labels or [])
         # A leg and a frame are two answers to the same question, so setting
         # either one puts the other away. This is the one every command comes
         # through, and it runs first.
@@ -4850,6 +4890,8 @@ class Viewport(QOpenGLWidget):
             return False
         if (self._locked_axis() or self.point_axis) is not None:
             return False
+        if self.point_plane is not None:
+            return False
         return self.space == "model" or self._drawing_through() is not None
 
     def _point_at(self, px: float, py: float):
@@ -4945,6 +4987,11 @@ class Viewport(QOpenGLWidget):
         self._active_snap = None
         origin, direction = self.camera.ray_through(px, py, self.width(),
                                                     self.height())
+        if self.point_plane is not None:
+            # the command holds the pick to a plane of its own, which the
+            # grid and ortho, both about the CPlane, have nothing to say on
+            hit = ray_plane(origin, direction, *self.point_plane)
+            return None if hit is None else tuple(float(c) for c in hit)
         hit = ray_plane(origin, direction, self.cplane.origin,
                         self.cplane.normal)
         if hit is None:

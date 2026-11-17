@@ -1043,28 +1043,34 @@ class MainWindow(QMainWindow):
         groups = [
             [("Point", "point",
               ("Multiple points, finish with Enter or right-click", "points"))],
+            [("Move", "move", ("Copy", "copy")), ("Rotate", "rotate",
+              ("Rotate 3D, about an axis", "rotate3d")),
+             ("Scale", "scale"), ("Mirror", "mirror"),
+             ("Orient: from 2 points", "orient",
+              ("from 3 points", "orient3pt"))],
             [("Line", "line"), ("Polyline", "polyline"), ("Curve", "curve"),
-             ("Circle", "circle"),
+             ("Circle: center, radius", "circle",
+              ("through 3 points", "circle 3point")),
+             ("Ellipse from center", "ellipse",
+              ("from a diameter", "ellipse diameter")),
              ("Arc: center, start, end", "arc",
               ("ends first, point on arc", "arc endsfirst")),
-             ("Rectangle", "rectangle")],
-            [("Extrude", "extrude"), ("Revolve", "revolve"),
-             ("Loft", "loft"),
-             ("Sweep 1 rail", "sweep1"), ("Sweep 2 rails", "sweep2")],
+             ("Rectangle: corner to corner", "rectangle",
+              ("from 3 points", "rectangle 3point"))],
+            [("Trim", "trim"), ("Split", "split"), ("Offset", "offset"),
+             ("Fillet", "fillet")],
             [("Plane, corner to corner", "plane"),
              ("Plane from 3 points", "plane3pt"),
              ("Surface from 3 or 4 corners", "srfpt")],
+            [("Extrude", "extrude"), ("Revolve", "revolve"),
+             ("Loft", "loft"),
+             ("Sweep 1 rail", "sweep1"), ("Sweep 2 rails", "sweep2")],
             [("Box", "box"), ("Sphere", "sphere"), ("Cylinder", "cylinder"),
              ("Torus", "torus")],
-            [("Move", "move"), ("Copy", "copy"), ("Rotate", "rotate"),
-             ("Scale", "scale"), ("Mirror", "mirror")],
             [("Boolean union", "booleanunion"),
              ("Boolean difference", "booleandifference"),
              ("Boolean intersection", "booleanintersection")],
-            [("Trim", "trim"), ("Split", "split"), ("Offset", "offset"),
-             ("Fillet", "fillet")],
-            [("Join", "join"), ("Explode", "explode"),
-             ("Control points", "pointson"), ("Delete", "delete")],
+            [("Join", "join"), ("Explode", "explode")],
         ]
         # One widget rather than thirty-two actions: a toolbar hides the
         # actions it has no room for behind a chevron, where the palette
@@ -1441,6 +1447,7 @@ class MainWindow(QMainWindow):
                 vp.set_point_mode(True)
                 vp.snap_base = base
                 vp.point_axis = req.axis_lock
+                vp.point_plane = req.pick_plane
                 # a prompt that drags out sides is a frame, which ortho
                 # squares rather than flattening onto an axis
                 vp.point_frame = req.rubber_sides is not None
@@ -1454,6 +1461,7 @@ class MainWindow(QMainWindow):
                 vp.set_point_mode(False)
                 vp.snap_base = None
                 vp.point_axis = None
+                vp.point_plane = None
                 vp.point_frame = False
                 vp.pending_points = []
                 vp.picked_points = []
@@ -1926,8 +1934,10 @@ class MainWindow(QMainWindow):
         if req.rubber_from is not None:
             pts = [req.rubber_from]
         sides = req.rubber_sides
+        labels = []
         if pts:
             markers = list(pts)
+            labels = [""] * len(pts)
             chain = pts + ([cursor] if cursor is not None else [])
             # A band is a line drawn to say where the next one goes. When what
             # is being dragged out is a frame, the ghost has already drawn it
@@ -1937,6 +1947,17 @@ class MainWindow(QMainWindow):
             if len(chain) >= 2 and sides is None and req.rubber_band:
                 arr = np.asarray(chain, float)
                 segs = np.stack([arr[:-1], arr[1:]], axis=1)
+        guides = (req.guide_fn(cursor)
+                  if req.guide_fn is not None and cursor is not None else ())
+        for line in guides or ():
+            if len(line) < 2:
+                continue
+            arr = np.asarray(line, float)
+            more = np.stack([arr[:-1], arr[1:]], axis=1)
+            segs = np.concatenate([segs, more]) if len(segs) else more
+        for at, text in req.marks or ():
+            markers.append(at)
+            labels.append(text)
         # in every pane, for the same reason the picked points already are:
         # world points with a line between them, and each pane knows how to
         # look at those from where it stands. Named on the primary alone, the
@@ -1944,7 +1965,7 @@ class MainWindow(QMainWindow):
         reading = source if source in self.all_viewports() else self._active_vp
         for vp in self.all_viewports():
             vp.set_readout_visible(vp is reading)
-            vp.set_preview(segs if len(segs) else None, markers)
+            vp.set_preview(segs if len(segs) else None, markers, labels)
             if sides is not None:
                 vp.set_frame_readout(
                     sides(cursor) if cursor is not None else None, cursor)

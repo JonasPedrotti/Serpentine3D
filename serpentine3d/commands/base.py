@@ -64,6 +64,15 @@ class PointReq(Req):
     # A curve the point lies on: its crossings with the drawing are the
     # intersections to snap to, as the end of an arc is on its circle.
     snap_on: object = None
+    # (origin, normal): a pick that hits nothing to snap to lands on this
+    # plane rather than the CPlane, as a point turned round an axis does.
+    pick_plane: tuple | None = None
+    # point -> [[points], ...]: construction lines drawn with the cursor,
+    # like the band but of the command's own shape.
+    guide_fn: object = None
+    # [(point, label), ...]: points picked earlier, shown with their label
+    # whatever the band is doing, as Orient numbers its references.
+    marks: list | None = None
 
 
 # The keyword a steps_back prompt answers with to give up its last point.
