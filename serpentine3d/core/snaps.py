@@ -216,7 +216,6 @@ def _static_snap_points(shape) -> list[tuple[tuple, str]]:
 
 def _intersections(objects) -> list[tuple]:
     """Pairwise curve-curve intersection points (bbox-filtered)."""
-    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
     curves = [(o, geometry.bbox(o.shape)) for o in objects
               if o.kind == "curve"]
     pts = []
@@ -230,15 +229,35 @@ def _intersections(objects) -> list[tuple]:
                    for k in range(3)):
                 continue
             checked += 1
-            try:
-                dist = BRepExtrema_DistShapeShape(oa.shape, ob.shape)
-                if not dist.IsDone() or dist.Value() > 1e-6:
-                    continue
-                for s in range(1, dist.NbSolution() + 1):
-                    p = dist.PointOnShape1(s)
-                    pts.append((p.X(), p.Y(), p.Z()))
-            except Exception:
-                continue
+            pts.extend(_meeting_points(oa.shape, ob.shape))
+    return pts
+
+
+def _meeting_points(a, b) -> list[tuple]:
+    """Where two shapes touch, if they do."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    try:
+        dist = BRepExtrema_DistShapeShape(a, b)
+        if not dist.IsDone() or dist.Value() > 1e-6:
+            return []
+        return [(p.X(), p.Y(), p.Z()) for p in
+                (dist.PointOnShape1(s) for s in range(1, dist.NbSolution() + 1))]
+    except Exception:
+        return []
+
+
+def _crossings_of(shape, objects) -> list[tuple]:
+    """Where `shape` crosses the curves of the drawing (bbox-filtered)."""
+    mn, mx = geometry.bbox(shape)
+    pts = []
+    for o in objects:
+        if o.kind != "curve":
+            continue
+        omn, omx = geometry.bbox(o.shape)
+        if any(mn[k] > omx[k] + 1e-6 or omn[k] > mx[k] + 1e-6
+               for k in range(3)):
+            continue
+        pts.extend(_meeting_points(shape, o.shape))
     return pts
 
 
@@ -393,6 +412,7 @@ class SnapIndex:
         self.scene = scene
         self._cache: dict[str, tuple[int, list]] = {}
         self._int_cache: tuple[int, list] | None = None
+        self._on_cache: tuple | None = None
         self._cloud_cache = {}
         self._cut_cache = {}
         self.enabled = True
@@ -431,6 +451,13 @@ class SnapIndex:
         if self._int_cache is None or self._int_cache[0] != rev:
             self._int_cache = (rev, _intersections(objects))
         return self._int_cache[1]
+
+    def _crossings_of(self, curve, objects) -> list:
+        rev = self.scene.revision
+        cached = self._on_cache
+        if cached is None or cached[0] is not curve or cached[1] != rev:
+            self._on_cache = cached = (curve, rev, _crossings_of(curve, objects))
+        return cached[2]
 
     def _cut_points(self, objects, clip) -> list:
         """Where the clipping planes cut through the objects, kept per
@@ -542,8 +569,13 @@ class SnapIndex:
 
     def find(self, camera, px: float, py: float, width: int, height: int,
              radius_px: float = 12.0, base_point=None, pending_points=None,
-             picked_points=None, clip=(), exclude_ids=None, extra_points=None):
+             picked_points=None, clip=(), exclude_ids=None, extra_points=None,
+             on_curve=None):
         """Best snap near the pixel. Returns (point, kind) or None.
+
+        `on_curve` is a curve the point being picked has to lie on, as the
+        end of an arc lies on its circle. Its own crossings with the drawing
+        are then the intersections that count, not those of the drawing.
 
         `clip` holds the clip equations of the planes cutting the view:
         what they take away is out of sight, so nothing on it snaps.
@@ -586,7 +618,8 @@ class SnapIndex:
                     pts.append(p)
                     kinds.append(kind)
         if self.types.get("int"):
-            for p in self._intersection_points(objects):
+            for p in (self._intersection_points(objects) if on_curve is None
+                      else self._crossings_of(on_curve, objects)):
                 pts.append(p)
                 kinds.append("int")
             # a clipping plane is a surface too, and where it cuts through

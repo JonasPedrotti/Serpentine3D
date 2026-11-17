@@ -245,84 +245,98 @@ def cmd_circle(ctx):
 
 @command("arc", aliases=("a",), space="any")
 def cmd_arc(ctx):
-    """Arc through three points; or Center and a sweep, or StartEnd."""
+    """Arc from its center, start and end; or EndsFirst (both ends, then a
+    point on the arc), or Through (start, a point on the arc, end)."""
+    first = yield PointReq("Center of arc",
+                           extra_options=("EndsFirst", "Through"))
+    if first == "EndsFirst":
+        yield from _arc_start_end(ctx)
+    elif first == "Through":
+        yield from _arc_3pt(ctx)
+    else:
+        yield from _arc_from_center(ctx, first)
+
+
+def _arc_from_center(ctx, center):
     import math
-    p1 = yield PointReq("Start of arc",
-                        extra_options=("Center", "StartEnd"))
-
-    if p1 == "Center":
-        center = yield PointReq("Center of arc")
-        normal = tuple(ctx.cplane.normal)
-
-        def _ring_to(p):
-            r = math.dist(center, p)
-            return (g.make_circle(center, r, normal=normal)
-                    if r > 1e-9 else None)
-
-        start = yield PointReq("Start of arc (click, or type the radius)",
-                               number_from=(center, tuple(ctx.cplane.xdir)),
-                               rubber_from=center, preview_fn=_ring_to)
-        if math.dist(center, start) < 1e-9:
-            ctx.echo("Zero radius — no arc created.")
-            return
-        n = np.asarray(normal, float)
-        n = n / np.linalg.norm(n)
-        u = np.asarray(start, float) - np.asarray(center, float)
-        u -= n * (u @ n)
-
-        def _sweep_of(val):
-            """Radians swept: a typed number is degrees, signed; a picked
-            point is a direction, always the counterclockwise way round."""
-            if isinstance(val, float):
-                return math.radians(val)
-            w = np.asarray(val, float) - np.asarray(center, float)
-            w -= n * (w @ n)
-            ang = math.atan2(float(n @ np.cross(u, w)), float(u @ w))
-            if ang <= 1e-12:
-                ang += 2 * math.pi
-            return ang
-
-        def _arc_to(val):
-            try:
-                return g.make_arc_center(center, start, _sweep_of(val),
-                                         normal)
-            except g.GeometryError:
-                return None
-
-        end = yield PointReq("End of arc (click, or type an angle)",
-                             allow_number=True, rubber_from=center,
-                             preview_fn=_arc_to)
-        shape = _arc_to(end)
-        if shape is None:
-            ctx.echo("Zero sweep — no arc created.")
-            return
-        obj = ctx.add(shape)
-        ctx.echo(f"Created {obj.name} "
-                 f"({math.degrees(_sweep_of(end)):g}\N{DEGREE SIGN}).")
+    normal = tuple(ctx.cplane.normal)
+    start = yield PointReq("Start of arc (click, or type the radius)",
+                           number_from=(center, tuple(ctx.cplane.xdir)),
+                           rubber_from=center)
+    if math.dist(center, start) < 1e-9:
+        ctx.echo("Zero radius — no arc created.")
         return
+    n = np.asarray(normal, float)
+    n = n / np.linalg.norm(n)
+    u = np.asarray(start, float) - np.asarray(center, float)
+    u -= n * (u @ n)
 
-    if p1 == "StartEnd":
-        p1 = yield PointReq("Start of arc")
-        p3 = yield PointReq("End of arc", rubber_from=p1)
+    # how far the cursor has turned round the center since the start, either
+    # way: the arc grows from the start the way it is drawn out, rather than
+    # always counterclockwise and so most of a circle when going the other way
+    turned = {"angle": 0.0, "sweep": 0.0}
 
-        def _bulge_to(p):
-            try:
-                return g.make_arc_3pt(p1, p, p3)
-            except g.GeometryError:
-                return None
+    def _sweep_of(val):
+        """Radians swept: a typed number is degrees, signed; a picked point
+        adds its turn since the last one to the sweep so far."""
+        if isinstance(val, float):
+            return math.radians(val)
+        w = np.asarray(val, float) - np.asarray(center, float)
+        w -= n * (w @ n)
+        ang = math.atan2(float(n @ np.cross(u, w)), float(u @ w))
+        step = (ang - turned["angle"] + math.pi) % (2 * math.pi) - math.pi
+        sweep = turned["sweep"] + step
+        if abs(sweep) >= 2 * math.pi:
+            sweep -= math.copysign(2 * math.pi, sweep)
+        turned.update(angle=ang, sweep=sweep)
+        return sweep
 
-        p2 = yield PointReq("Point on arc", rubber_from=p1,
-                            preview_fn=_bulge_to)
-        shape = _bulge_to(p2)
-        if shape is None:
-            ctx.echo("Points are in a line — no arc created.")
-            return
-        obj = ctx.add(shape)
-        ctx.echo(f"Created {obj.name}.")
+    def _arc_to(val):
+        try:
+            return g.make_arc_center(center, start, _sweep_of(val),
+                                     normal)
+        except g.GeometryError:
+            return None
+
+    # the circle the start turns on, which is where the end can only be
+    level = np.asarray(start, float) - u
+    ring = g.make_circle(tuple(level), float(np.linalg.norm(u)), normal=normal)
+    end = yield PointReq("End of arc (click, or type an angle)",
+                         allow_number=True, rubber_from=center,
+                         preview_fn=_arc_to, snap_on=ring)
+    shape = _arc_to(end)
+    if shape is None:
+        ctx.echo("Zero sweep — no arc created.")
         return
+    obj = ctx.add(shape)
+    ctx.echo(f"Created {obj.name} "
+             f"({math.degrees(_sweep_of(end)):g}\N{DEGREE SIGN}).")
 
+
+def _arc_start_end(ctx):
+    p1 = yield PointReq("Start of arc")
+    p3 = yield PointReq("End of arc", rubber_from=p1)
+
+    def _bulge_to(p):
+        try:
+            return g.make_arc_3pt(p1, p, p3)
+        except g.GeometryError:
+            return None
+
+    p2 = yield PointReq("Point on arc", rubber_pts=[p1, p3],
+                        rubber_band=False, preview_fn=_bulge_to)
+    shape = _bulge_to(p2)
+    if shape is None:
+        ctx.echo("Points are in a line — no arc created.")
+        return
+    obj = ctx.add(shape)
+    ctx.echo(f"Created {obj.name}.")
+
+
+def _arc_3pt(ctx):
+    p1 = yield PointReq("Start of arc")
     p2 = yield PointReq("Point on arc", rubber_from=p1)
-    p3 = yield PointReq("End of arc", rubber_from=p2,
+    p3 = yield PointReq("End of arc", rubber_pts=[p1, p2], rubber_band=False,
                         preview_fn=lambda p: g.make_arc_3pt(p1, p2, p))
     obj = ctx.add(g.make_arc_3pt(p1, p2, p3))
     ctx.echo(f"Created {obj.name}.")

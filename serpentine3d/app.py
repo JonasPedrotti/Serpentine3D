@@ -1044,7 +1044,10 @@ class MainWindow(QMainWindow):
             [("Point", "point",
               ("Multiple points, finish with Enter or right-click", "points"))],
             [("Line", "line"), ("Polyline", "polyline"), ("Curve", "curve"),
-             ("Circle", "circle"), ("Arc", "arc"), ("Rectangle", "rectangle")],
+             ("Circle", "circle"),
+             ("Arc: center, start, end", "arc",
+              ("ends first, point on arc", "arc endsfirst")),
+             ("Rectangle", "rectangle")],
             [("Extrude", "extrude"), ("Revolve", "revolve"),
              ("Loft", "loft"),
              ("Sweep 1 rail", "sweep1"), ("Sweep 2 rails", "sweep2")],
@@ -1443,6 +1446,7 @@ class MainWindow(QMainWindow):
                 vp.point_frame = req.rubber_sides is not None
                 vp.pending_points = pending
                 vp.picked_points = picked
+                vp.snap_on = req.snap_on
                 vp.point_space = space
             self._refresh_rubber(None)
         else:
@@ -1453,6 +1457,7 @@ class MainWindow(QMainWindow):
                 vp.point_frame = False
                 vp.pending_points = []
                 vp.picked_points = []
+                vp.snap_on = None
                 vp.point_space = "model"
                 vp.set_preview(None)
         self.osnap_bar.refresh()

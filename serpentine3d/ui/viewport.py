@@ -1433,6 +1433,7 @@ class Viewport(QOpenGLWidget):
         self._active_snap = None            # (point, kind) under cursor
         self.snap_base = None               # reference point for perp snap
         self.point_axis = None              # (base, axis) while axis-locked
+        self.snap_on = None                 # curve the pick lies on
         self.point_frame = False            # the pick drags out a frame
         self.dir_lock = None                # (base, dir) frozen by Tab/Ctrl
         # which point the lock was taken for. Tab's base *is* that point, but
@@ -4867,7 +4868,8 @@ class Viewport(QOpenGLWidget):
                     base_point=self.snap_base,
                     pending_points=self.pending_points,
                     picked_points=self.picked_points,
-                    clip=self._clip_vectors(entered.id))
+                    clip=self._clip_vectors(entered.id),
+                    on_curve=self.snap_on)
                 if snap is not None:
                     self._active_snap = snap
                     return snap[0]
@@ -4916,7 +4918,8 @@ class Viewport(QOpenGLWidget):
                                    self.height(), base_point=self.snap_base,
                                    pending_points=self.pending_points,
                                    picked_points=self.picked_points,
-                                   clip=self._clip_vectors(self.view_key))
+                                   clip=self._clip_vectors(self.view_key),
+                                   on_curve=self.snap_on)
             if snap is not None:
                 self._active_snap = snap
                 t = float(np.dot(np.asarray(snap[0], float) - base, unit))
@@ -4934,7 +4937,8 @@ class Viewport(QOpenGLWidget):
                                self.height(), base_point=self.snap_base,
                                pending_points=self.pending_points,
                                picked_points=self.picked_points,
-                               clip=self._clip_vectors(self.view_key))
+                               clip=self._clip_vectors(self.view_key),
+                               on_curve=self.snap_on)
         if snap is not None:
             self._active_snap = snap
             return snap[0]

@@ -73,7 +73,7 @@ class ToolPalette(QWidget):
         if alt is not None:
             # A right-click runs the alternative instead of a context menu.
             alt_label, alt_command = alt
-            tip += f"\nRight-click: {alt_label}  ({alt_command})"
+            tip += f"\nRight-click: {alt_label}"
             button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             button.customContextMenuRequested.connect(
                 lambda _pos, c=alt_command: invoke(c))
