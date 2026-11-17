@@ -1040,39 +1040,47 @@ def _bars(p, rects):
 
 
 def _align_drawer(how):
-    """Bars lined up on the accent line, or spaced evenly between two."""
+    """Bars lined up on the accent line, drawn over them; or three bars
+    spaced evenly, the equal gaps between them tinted."""
+    across = how in ("left", "center", "right", "across")
+
+    def turn(r):
+        x, y, w, h = r
+        return r if across else (y, x, h, w)
+
     def draw(p):
-        p.save()
-        p.setPen(QPen(_ACCENT, 1.7, Qt.PenStyle.SolidLine,
-                      Qt.PenCapStyle.RoundCap))
-        if how in ("left", "center", "right"):
-            x = {"left": 4, "center": 11, "right": 18}[how]
-            p.drawLine(QPointF(x, 2.5), QPointF(x, 19.5))
-        elif how in ("top", "middle", "bottom"):
-            y = {"top": 4, "middle": 11, "bottom": 18}[how]
-            p.drawLine(QPointF(2.5, y), QPointF(19.5, y))
-        elif how == "across":
-            p.drawLine(QPointF(2.5, 3), QPointF(2.5, 19))
-            p.drawLine(QPointF(19.5, 3), QPointF(19.5, 19))
-        else:
-            p.drawLine(QPointF(3, 2.5), QPointF(19, 2.5))
-            p.drawLine(QPointF(3, 19.5), QPointF(19, 19.5))
-        p.restore()
+        if how in ("across", "down"):
+            tint = QColor(_ACCENT)
+            tint.setAlpha(140)
+            p.save()
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(tint)
+            for a, b in ((6, 9.25), (12.75, 16)):
+                p.drawRect(QRectF(*turn((a + 0.6, 8, b - a - 1.2, 6))))
+            p.restore()
+            _bars(p, [turn((2.5, 6, 3.5, 10)), turn((9.25, 4, 3.5, 14)),
+                      turn((16, 6, 3.5, 10))])
+            return
         long, short = 13, 8
-        if how in ("left", "center", "right"):
+        if across:
             start = {"left": lambda w: 4, "center": lambda w: 11 - w / 2,
                      "right": lambda w: 18 - w}[how]
             _bars(p, [(start(long), 5, long, 4.5),
                       (start(short), 12.5, short, 4.5)])
-        elif how in ("top", "middle", "bottom"):
+            x = {"left": 4, "center": 11, "right": 18}[how]
+            line = (QPointF(x, 2.5), QPointF(x, 19.5))
+        else:
             start = {"top": lambda h: 4, "middle": lambda h: 11 - h / 2,
                      "bottom": lambda h: 18 - h}[how]
             _bars(p, [(5, start(long), 4.5, long),
                       (12.5, start(short), 4.5, short)])
-        elif how == "across":
-            _bars(p, [(5, 7, 3, 8), (9.5, 5, 3, 12), (14, 8, 3, 6)])
-        else:
-            _bars(p, [(7, 5, 8, 3), (5, 9.5, 12, 3), (8, 14, 6, 3)])
+            y = {"top": 4, "middle": 11, "bottom": 18}[how]
+            line = (QPointF(2.5, y), QPointF(19.5, y))
+        p.save()
+        p.setPen(QPen(_ACCENT, 1.7, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap))
+        p.drawLine(*line)
+        p.restore()
     return draw
 
 
