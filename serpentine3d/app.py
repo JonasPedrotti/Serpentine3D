@@ -1073,12 +1073,12 @@ class MainWindow(QMainWindow):
              ("Surface from 3 or 4 corners", "srfpt")],
             [("Extrude", "extrude"), ("Revolve", "revolve"),
              ("Loft", "loft"),
-             ("Sweep 1 rail", "sweep1"), ("Sweep 2 rails", "sweep2")],
-            [("Box", "box"), ("Sphere", "sphere"), ("Cylinder", "cylinder"),
-             ("Torus", "torus")],
+             ("Sweep along 1 rail", "sweep1", ("along 2 rails", "sweep2"))],
+            [("Box", "box"), ("Sphere", "sphere"), ("Cylinder", "cylinder")],
             [("Boolean union", "booleanunion"),
              ("Boolean difference", "booleandifference"),
-             ("Boolean intersection", "booleanintersection")],
+             ("Boolean intersection", "booleanintersection"),
+             ("Boolean split", "booleansplit")],
             [("Join", "join"), ("Explode", "explode")],
         ]
         # One widget rather than thirty-two actions: a toolbar hides the

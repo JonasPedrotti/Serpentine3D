@@ -7,13 +7,14 @@ import math
 
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import (
-    QBrush, QColor, QIcon, QIconEngine, QPainter, QPainterPath, QPen,
-    QPixmap,
+    QBrush, QColor, QIcon, QIconEngine, QPainter, QPainterPath,
+    QPainterPathStroker, QPen, QPixmap,
 )
 
 _STROKE = QColor("#c8c9cc")
 _FILL = QColor(200, 201, 204, 70)
 _ACCENT = QColor("#d9a441")
+_FADED = QColor(200, 201, 204, 75)   # what a command takes away
 
 SIZE = 22
 _SCALE = 2  # draw at 2x for crisp hidpi
@@ -118,9 +119,21 @@ def _circle(p):
 
 
 def _arc(p):
-    p.drawArc(QRectF(3, 6, 16, 22), 30 * 16, 120 * 16)
-    _dot(p, 4.6, 14.5)
-    _dot(p, 17.4, 14.5)
+    """An arc with its center, and the three picks that make it: center,
+    start, end. The radii to its ends faded."""
+    c, r = QPointF(5, 17), 13.0
+    ends = [QPointF(c.x() + r * math.cos(math.radians(a)),
+                    c.y() - r * math.sin(math.radians(a))) for a in (0, 75)]
+    p.save()
+    pen = QPen(p.pen())
+    pen.setColor(_FADED)
+    p.setPen(pen)
+    for end in ends:
+        p.drawLine(c, end)
+    p.restore()
+    p.drawArc(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r), 0, 75 * 16)
+    for q in (c, *ends):
+        _dot(p, q.x(), q.y())
 
 
 def _rect(p):
@@ -140,24 +153,80 @@ def _extrude(p):
     p.drawLine(14, 6, 11, 3)
 
 
-def _revolve(p):
-    p.drawLine(11, 3, 11, 19)
-    p.drawEllipse(QRectF(4, 12, 14, 5))
-    path = QPainterPath(QPointF(15, 6))
-    path.quadTo(18, 8, 16, 11)
+def _faded_path(p, path):
+    p.save()
+    pen = QPen(p.pen())
+    pen.setColor(_FADED)
+    p.setPen(pen)
     p.drawPath(path)
-    p.drawLine(16, 11, 14.4, 9.4)
+    p.restore()
+
+
+def _ellipse_path(rect):
+    path = QPainterPath()
+    path.addEllipse(rect)
+    return path
+
+
+def _accent_path(p, path):
+    p.save()
+    pen = QPen(p.pen())
+    pen.setColor(_ACCENT)
+    p.setPen(pen)
+    p.drawPath(path)
+    p.restore()
+
+
+def _wave(y, amp=2.5):
+    path = QPainterPath(QPointF(3, y))
+    path.cubicTo(8, y - amp, 14, y + amp, 19, y)
+    return path
+
+
+def _rail(y):
+    path = QPainterPath(QPointF(3, y))
+    path.cubicTo(9, y, 12, y - 8, 19, y - 8)
+    return path
+
+
+def _band(top, bottom):
+    """The surface between two curves running the same way."""
+    skin = QPainterPath(top)
+    skin.lineTo(bottom.pointAtPercent(1.0))
+    skin.connectPath(bottom.toReversed())
+    skin.closeSubpath()
+    return skin
+
+
+def _revolve(p):
+    """A turned body, its profile in accent: what goes round to make it."""
+    right = QPainterPath(QPointF(17, 5.5))
+    right.cubicTo(14, 11, 18.5, 14, 15, 18.5)
+    left = QPainterPath(QPointF(5, 5.5))
+    left.cubicTo(8, 11, 3.5, 14, 7, 18.5)
+    top, bottom = QRectF(5, 3.5, 12, 4), QRectF(7, 17, 8, 3)
+    body = QPainterPath(right)
+    body.lineTo(7, 18.5)
+    body.connectPath(left.toReversed())
+    body.closeSubpath()
+    # filled down to the round of its base, open at the top
+    p.fillPath(body.united(_ellipse_path(bottom))
+               .subtracted(_ellipse_path(top)), _FILL)
+    p.drawPath(left)
+    p.drawArc(bottom, 180 * 16, 180 * 16)
+    p.drawEllipse(top)
+    _accent_path(p, right)
 
 
 def _loft(p):
-    path1 = QPainterPath(QPointF(4, 6))
-    path1.quadTo(11, 3, 18, 6)
-    path2 = QPainterPath(QPointF(4, 16))
-    path2.quadTo(11, 13, 18, 16)
-    p.drawPath(path1)
-    p.drawPath(path2)
-    p.drawLine(4, 6, 4, 16)
-    p.drawLine(18, 6, 18, 16)
+    """A surface through curves laid one above the other."""
+    skin = QPainterPath(_wave(5))
+    skin.lineTo(19, 17)
+    skin.cubicTo(14, 19.5, 8, 14.5, 3, 17)
+    skin.closeSubpath()
+    p.fillPath(skin, _FILL)
+    for y in (5, 11, 17):
+        p.drawPath(_wave(y))
 
 
 def _planar(p):
@@ -173,6 +242,23 @@ def _planar(p):
 _CORNER = 2.2   # corners picked to make a surface
 
 
+def _thin(p, dashed=False):
+    """A lighter line for what was there before, or for a guide."""
+    pen = QPen(p.pen())
+    pen.setWidthF(pen.widthF() * 0.55)
+    if dashed:
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+        pen.setDashPattern([3.0, 2.5])
+    p.setPen(pen)
+
+
+def _two_rings():
+    a, b = QPainterPath(), QPainterPath()
+    a.addEllipse(QPointF(8.5, 13.5), 6, 6)        # lower left
+    b.addEllipse(QPointF(13.5, 8.5), 6, 6)        # upper right
+    return a, b
+
+
 def _filled(p, *corners):
     path = QPainterPath(QPointF(*corners[0]))
     for c in corners[1:]:
@@ -183,16 +269,16 @@ def _filled(p, *corners):
 
 
 def _plane(p):
-    _filled(p, (3, 4), (19, 4), (19, 18), (3, 18))
-    _dot(p, 3, 18, r=_CORNER)
-    _dot(p, 19, 4, r=_CORNER)
+    _filled(p, (3, 5.5), (19, 5.5), (19, 16.5), (3, 16.5))
+    _dot(p, 3, 16.5, r=_CORNER)
+    _dot(p, 19, 5.5, r=_CORNER)
 
 
 def _plane3pt(p):
-    _filled(p, (3, 4), (19, 4), (19, 18), (3, 18))
-    _dot(p, 3, 18, r=_CORNER)
-    _dot(p, 19, 18, r=_CORNER)
-    _dot(p, 19, 4, r=_CORNER)
+    _filled(p, (3, 5.5), (19, 5.5), (19, 16.5), (3, 16.5))
+    _dot(p, 3, 16.5, r=_CORNER)
+    _dot(p, 19, 16.5, r=_CORNER)
+    _dot(p, 19, 5.5, r=_CORNER)
 
 
 def _srfpt(p):
@@ -203,23 +289,26 @@ def _srfpt(p):
 
 
 def _sweep1(p):
-    path = QPainterPath(QPointF(4, 17))
-    path.cubicTo(8, 17, 12, 8, 18, 6)
-    p.drawPath(path)
-    p.drawEllipse(QRectF(2, 14.5, 5, 5))
+    """A profile carried along a rail into a surface."""
+    p.fillPath(_band(_rail(11), _rail(19)), _FILL)
+    p.drawPath(_rail(19))
+    _stroke_in(p, _ACCENT, QPointF(3, 11), QPointF(3, 19))
 
 
 def _sweep2(p):
-    path1 = QPainterPath(QPointF(4, 19))
-    path1.cubicTo(8, 19, 12, 10, 18, 8)
-    path2 = QPainterPath(QPointF(4, 13))
-    path2.cubicTo(8, 13, 12, 4, 18, 2.5)
-    p.drawPath(path1)
-    p.drawPath(path2)
-    p.drawEllipse(QRectF(2.2, 13.4, 4.2, 6.5))
+    """A profile carried along two rails into a surface."""
+    p.fillPath(_band(_rail(11), _rail(19)), _FILL)
+    p.drawPath(_rail(11))
+    p.drawPath(_rail(19))
+    _stroke_in(p, _ACCENT, QPointF(3, 11), QPointF(3, 19))
 
 
 def _box(p):
+    outline = QPainterPath(QPointF(4, 8))
+    for c in ((8, 4), (18, 4), (18, 14), (14, 18), (4, 18)):
+        outline.lineTo(*c)
+    outline.closeSubpath()
+    p.fillPath(outline, _FILL)
     p.drawRect(QRectF(4, 8, 10, 10))
     p.drawLine(4, 8, 8, 4)
     p.drawLine(14, 8, 18, 4)
@@ -229,15 +318,29 @@ def _box(p):
 
 
 def _sphere(p):
-    p.drawEllipse(QRectF(4, 4, 14, 14))
-    p.drawArc(QRectF(4, 8.5, 14, 5), 180 * 16, 180 * 16)
+    """A ball and the near half of its equator."""
+    p.fillPath(_ellipse_path(QRectF(3, 3, 16, 16)), _FILL)
+    p.drawEllipse(QRectF(3, 3, 16, 16))
+    p.save()
+    pen = QPen(p.pen())
+    pen.setColor(_FADED)
+    p.setPen(pen)
+    p.drawArc(QRectF(3, 8.5, 16, 5), 180 * 16, 180 * 16)
+    p.restore()
 
 
 def _cylinder(p):
-    p.drawEllipse(QRectF(6, 3, 10, 4))
-    p.drawLine(6, 5, 6, 17)
-    p.drawLine(16, 5, 16, 17)
-    p.drawArc(QRectF(6, 15, 10, 4), 180 * 16, 180 * 16)
+    top, bottom = QRectF(6, 3, 10, 5.5), QRectF(6, 13.5, 10, 5.5)
+    outline = QPainterPath(QPointF(6, 5.75))
+    outline.arcTo(top, 180, -180)
+    outline.lineTo(16, 16.25)
+    outline.arcTo(bottom, 0, -180)
+    outline.closeSubpath()
+    p.fillPath(outline, _FILL)
+    p.drawEllipse(top)
+    p.drawLine(QPointF(6, 5.75), QPointF(6, 16.25))
+    p.drawLine(QPointF(16, 5.75), QPointF(16, 16.25))
+    p.drawArc(bottom, 180 * 16, 180 * 16)
 
 
 def _torus(p):
@@ -264,16 +367,32 @@ def _copy(p):
 
 
 def _rotate(p):
-    p.drawArc(QRectF(4.5, 4.5, 13, 13), 40 * 16, 250 * 16)
-    p.drawLine(15.5, 3.5, 15.8, 7.4)
-    p.drawLine(15.8, 7.4, 12.0, 6.4)
+    """A turn round the center, the head where the turn ends."""
+    c, r, end = QPointF(11, 11), 6.5, math.radians(40)
+    p.drawArc(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r), 40 * 16, 250 * 16)
+    tip = QPointF(c.x() + r * math.cos(end), c.y() - r * math.sin(end))
+    # the arc is drawn the other way round, so it arrives here clockwise;
+    # the head leans back against the turn by as much as leaves both of its
+    # ends the same distance off the circle
+    back = math.atan2(-math.cos(end), -math.sin(end)) - 0.237
+    for side in (-0.6, 0.6):
+        p.drawLine(tip, QPointF(tip.x() + 3.6 * math.cos(back + side),
+                                tip.y() + 3.6 * math.sin(back + side)))
     _dot(p, 11, 11, 1.4)
 
 
 def _scale(p):
+    front = QPainterPath()
+    front.addRect(QRectF(8, 4, 10, 10))
+    # the small square behind: drawn only where the large one is not
+    behind = QPainterPath()
+    behind.addRect(QRectF(0, 0, SIZE, SIZE))
+    p.save()
+    p.setClipPath(behind.subtracted(front))
     p.drawRect(QRectF(4, 12, 6, 6))
-    p.drawRect(QRectF(8, 4, 10, 10))
-    p.drawLine(6, 16, 15, 7)
+    p.restore()
+    p.fillPath(front, _FILL)
+    p.drawPath(front)
 
 
 def _orient(p):
@@ -317,66 +436,63 @@ def _orient(p):
 
 
 def _mirror(p):
+    """A shape, and its mirror image across the dashed line."""
     p.save()
-    pen = QPen(_STROKE, 1.2, Qt.PenStyle.DashLine)
-    p.setPen(pen)
-    p.drawLine(11, 3, 11, 19)
+    _thin(p, dashed=True)
+    p.drawLine(QPointF(11, 2), QPointF(11, 20))
     p.restore()
-    path1 = QPainterPath(QPointF(8, 6))
-    path1.lineTo(8, 16)
-    path1.lineTo(3, 16)
-    path1.closeSubpath()
-    p.fillPath(path1, _FILL)
-    p.drawPath(path1)
-    path2 = QPainterPath(QPointF(14, 6))
-    path2.lineTo(14, 16)
-    path2.lineTo(19, 16)
-    path2.closeSubpath()
-    p.drawPath(path2)
+    p.save()
+    _thin(p)
+    p.drawPolygon([QPointF(8.5, 5), QPointF(8.5, 17), QPointF(2.5, 17)])
+    p.restore()
+    _filled(p, (13.5, 5), (13.5, 17), (19.5, 17))
+
+
+def _booleansplit(p):
+    """Every piece the two solids cut each other into, kept and apart."""
+    a, b = _two_rings()
+    lens = a.intersected(b)
+    # a band round the middle piece, taken off the outer two: the cut
+    # opened up so the pieces read as apart
+    stroker = QPainterPathStroker()
+    stroker.setWidth(4.2)
+    gap = stroker.createStroke(lens).united(lens)
+    whole = QPainterPath()
+    whole.addRect(QRectF(0, 0, SIZE, SIZE))
+    for ring, other in ((a, b), (b, a)):
+        p.fillPath(ring.subtracted(gap), _FILL)
+        p.save()
+        p.setClipPath(whole.subtracted(other.united(gap)))
+        p.drawPath(ring)            # its own rim only, no line along the cut
+        p.restore()
+    p.fillPath(lens, _FILL)
+    p.drawPath(lens)
 
 
 def _union(p):
-    path = QPainterPath()
-    path.addEllipse(QRectF(3, 6, 11, 11))
-    path2 = QPainterPath()
-    path2.addEllipse(QRectF(8, 5, 11, 11))
-    united = path.united(path2)
-    p.fillPath(united, _FILL)
-    p.drawPath(united)
+    """Two solids made one: the whole outline kept."""
+    a, b = _two_rings()
+    both = a.united(b)
+    p.fillPath(both, _FILL)
+    p.drawPath(both)
 
 
 def _difference(p):
-    path = QPainterPath()
-    path.addEllipse(QRectF(3, 6, 11, 11))
-    path2 = QPainterPath()
-    path2.addEllipse(QRectF(8, 5, 11, 11))
-    diff = path.subtracted(path2)
-    p.fillPath(diff, _FILL)
-    p.drawPath(diff)
-    p.save()
-    p.setPen(QPen(_STROKE, 1.1, Qt.PenStyle.DotLine))
-    p.drawPath(path2)
-    p.restore()
+    """The second solid taken out of the first, the part taken faded."""
+    a, b = _two_rings()
+    kept = a.subtracted(b)
+    _faded_path(p, b.subtracted(a))
+    p.fillPath(kept, _FILL)
+    p.drawPath(kept)
 
 
 def _intersection(p):
-    path = QPainterPath()
-    path.addEllipse(QRectF(3, 6, 11, 11))
-    path2 = QPainterPath()
-    path2.addEllipse(QRectF(8, 5, 11, 11))
-    inter = path.intersected(path2)
-    p.fillPath(inter, QBrush(QColor(217, 164, 65, 110)))
-    p.save()
-    p.setPen(QPen(_STROKE, 1.1, Qt.PenStyle.DotLine))
-    p.drawPath(path)
-    p.drawPath(path2)
-    p.restore()
-    p.drawPath(inter)
-
-
-# Join and Explode are the same four lines from the corners and a gold X in
-# the middle: the lines run into it, or are blown back from it.
-_SPOKES = ((-1, -1), (1, -1), (-1, 1), (1, 1))
+    """Only where the two solids overlap; the rest faded."""
+    a, b = _two_rings()
+    lens = a.intersected(b)
+    _faded_path(p, a.united(b))
+    p.fillPath(lens, _FILL)
+    p.drawPath(lens)
 
 
 def _gold_x(p, arm, width):
@@ -387,6 +503,11 @@ def _gold_x(p, arm, width):
     p.drawLine(QPointF(11 - arm, 11 - arm), QPointF(11 + arm, 11 + arm))
     p.drawLine(QPointF(11 + arm, 11 - arm), QPointF(11 - arm, 11 + arm))
     p.restore()
+
+
+# Join and Explode are the same four lines from the corners and a gold X in
+# the middle: the lines run into it, or are blown back from it.
+_SPOKES = ((-1, -1), (1, -1), (-1, 1), (1, 1))
 
 
 def _join(p):
@@ -405,35 +526,42 @@ def _delete(p):
     p.restore()
 
 
-def _trim(p):
-    path = QPainterPath(QPointF(3, 16))
-    path.quadTo(11, 12, 19, 14)
-    p.drawPath(path)
-    p.drawLine(13, 4, 9, 19)
+def _stroke_in(p, color, a, b):
     p.save()
-    p.setPen(QPen(QColor("#c95f5f"), 1.6, Qt.PenStyle.DotLine))
-    p.drawLine(15, 8, 19, 7)
+    pen = QPen(p.pen())
+    pen.setColor(color)
+    p.setPen(pen)
+    p.drawLine(a, b)
     p.restore()
+
+
+def _cutter(p):
+    """The edge Trim and Split cut along, in accent."""
+    _stroke_in(p, _ACCENT, QPointF(7, 20), QPointF(15, 3))
+
+
+def _trim(p):
+    """A line crossed by the edge that cuts it, the part cut off faded."""
+    p.drawLine(QPointF(2.5, 8), QPointF(11, 11.6))
+    _stroke_in(p, _FADED, QPointF(11, 11.6), QPointF(19.5, 15.2))
+    _cutter(p)
 
 
 def _split(p):
-    p.drawLine(3, 15, 9, 13)
-    p.drawLine(13, 12, 19, 10)
-    p.save()
-    p.setPen(QPen(_ACCENT, 1.5))
-    p.drawLine(11, 4, 11, 19)
-    p.restore()
+    """The same line parted where the edge crosses it: two pieces kept."""
+    p.drawLine(QPointF(2.5, 8), QPointF(6.86, 9.85))
+    p.drawLine(QPointF(15.14, 13.35), QPointF(19.5, 15.2))
+    _cutter(p)
 
 
 def _offset(p):
-    path = QPainterPath(QPointF(4, 17))
-    path.quadTo(11, 9, 18, 12)
-    p.drawPath(path)
+    """A curve and its copy set off at a distance, the copy in accent."""
+    p.drawArc(QRectF(8, 8, 24, 24), 90 * 16, 90 * 16)
     p.save()
-    p.setPen(QPen(_STROKE, 1.3, Qt.PenStyle.DashLine))
-    path2 = QPainterPath(QPointF(4, 12))
-    path2.quadTo(11, 4, 18, 7)
-    p.drawPath(path2)
+    pen = QPen(p.pen())
+    pen.setColor(_ACCENT)
+    p.setPen(pen)
+    p.drawArc(QRectF(2.5, 2.5, 35, 35), 90 * 16, 90 * 16)
     p.restore()
 
 
@@ -881,7 +1009,7 @@ _DRAWERS = {
     "box": _box, "sphere": _sphere, "cylinder": _cylinder, "torus": _torus,
     "move": _move, "copy": _copy, "rotate": _rotate, "scale": _scale,
     "mirror": _mirror, "orient": _orient, "booleanunion": _union,
-    "booleandifference": _difference, "booleanintersection": _intersection,
+    "booleandifference": _difference, "booleanintersection": _intersection, "booleansplit": _booleansplit,
     "join": _join, "delete": _delete, "trim": _trim, "split": _split,
     "offset": _offset, "fillet": _fillet, "explode": _explode,
     "pointson": _points,
