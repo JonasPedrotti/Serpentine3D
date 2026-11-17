@@ -338,7 +338,7 @@ def test_a_gathered_chain_that_is_not_the_shape_shows_the_shape():
         for rtype, prompt, kwargs, line in reqs:
             if rtype != "PointReq" or "rubber_pts" not in kwargs:
                 continue
-            if "preview_fn" in kwargs:
+            if "preview_fn" in kwargs or "guide_fn" in kwargs:
                 continue
             offenders.append(f"  {fname}:{line}  {cmd}: {prompt!r}")
     assert not offenders, (

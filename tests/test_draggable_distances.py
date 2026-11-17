@@ -94,7 +94,7 @@ def test_ellipse_radii_can_be_dragged(env):
     scene, _sel, _hist, _ctx, proc = env
     proc.run("ellipse")
     proc.provide_text("0,0,0")
-    assert proc.preview_for((10, 0, 0)) is not None
+    assert proc.preview_for((10, 0, 0)) is None, "a line to the axis end, no circle"
     proc.provide((10.0, 0.0, 0.0))
     ghost = proc.preview_for((0, 4, 0))
     assert ghost is not None and g.shape_kind(ghost) == "curve"

@@ -125,6 +125,12 @@ def _arc(p):
 
 def _rect(p):
     p.drawRect(QRectF(4, 6, 14, 10))
+    _dot(p, 4, 16)
+    _dot(p, 18, 6)
+
+
+def _ellipse(p):
+    p.drawEllipse(QRectF(2, 6, 18, 10))
 
 
 def _extrude(p):
@@ -268,6 +274,46 @@ def _scale(p):
     p.drawRect(QRectF(4, 12, 6, 6))
     p.drawRect(QRectF(8, 4, 10, 10))
     p.drawLine(6, 16, 15, 7)
+
+
+def _orient(p):
+    """A shape taken from where its two points were to where they go."""
+    # the same square twice: where it was, and turned a twelfth of the way
+    # round to where it goes, laid out in a unit square and fitted to the box
+    t = math.radians(-30)
+    u, v = (math.cos(t), math.sin(t)), (math.sin(t), -math.cos(t))
+    ref = [(0, 1), (1, 1), (1, 0), (0, 0)]
+    a = (0.7, 0.5)
+    target = [a, (a[0] + u[0], a[1] + u[1]),
+              (a[0] + u[0] + v[0], a[1] + u[1] + v[1]), (a[0] + v[0], a[1] + v[1])]
+    xs = [x for x, _ in ref + target]
+    ys = [y for _, y in ref + target]
+    k = 17.0 / max(max(xs) - min(xs), max(ys) - min(ys))
+    ox = 11 - k * (max(xs) + min(xs)) / 2
+    oy = 11 - k * (max(ys) + min(ys)) / 2
+
+    def at(pt):
+        return QPointF(ox + k * pt[0], oy + k * (pt[1] + 1) - k)
+
+    shape = QPainterPath(at(target[0]))
+    for c in target[1:]:
+        shape.lineTo(at(c))
+    shape.closeSubpath()
+    # behind it: drawn only where the turned square is not
+    behind = QPainterPath()
+    behind.addRect(QRectF(0, 0, SIZE, SIZE))
+    p.save()
+    p.setClipPath(behind.subtracted(shape))
+    pen = p.pen()
+    pen.setWidthF(pen.widthF() * 0.55)
+    p.setPen(pen)
+    p.drawPolygon([at(c) for c in ref])
+    p.restore()
+    p.fillPath(shape, _FILL)
+    p.drawPath(shape)
+    for c in (ref[0], ref[1], target[0], target[1]):
+        q = at(c)
+        _dot(p, q.x(), q.y())
 
 
 def _mirror(p):
@@ -828,13 +874,13 @@ def _contour(p):
     _dot(p, 11, 12, r=1.2)
 
 _DRAWERS = {
-    "point": _point, "points": _point, "line": _line, "polyline": _polyline, "curve": _curve, "circle": _circle,
+    "point": _point, "points": _point, "line": _line, "polyline": _polyline, "curve": _curve, "circle": _circle, "ellipse": _ellipse,
     "arc": _arc, "rectangle": _rect, "text": _text, "extrude": _extrude, "revolve": _revolve,
     "loft": _loft, "planarsrf": _planar, "sweep1": _sweep1, "sweep2": _sweep2,
     "plane": _plane, "plane3pt": _plane3pt, "srfpt": _srfpt,
     "box": _box, "sphere": _sphere, "cylinder": _cylinder, "torus": _torus,
     "move": _move, "copy": _copy, "rotate": _rotate, "scale": _scale,
-    "mirror": _mirror, "booleanunion": _union,
+    "mirror": _mirror, "orient": _orient, "booleanunion": _union,
     "booleandifference": _difference, "booleanintersection": _intersection,
     "join": _join, "delete": _delete, "trim": _trim, "split": _split,
     "offset": _offset, "fillet": _fillet, "explode": _explode,

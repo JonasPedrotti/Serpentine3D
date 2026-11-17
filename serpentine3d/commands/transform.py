@@ -999,19 +999,32 @@ def _place(ctx, objs, matrix, copy: bool):
     return made
 
 
+def _numbered(*pts):
+    return [(p, str(i)) for i, p in enumerate(pts, 1)]
+
+
+def _slide_ghost(objs, r1):
+    """The objects carried across with the first target: it settles where
+    they go, not how they turn, so the next picks show the turn."""
+    def _slide(p):
+        shift = tuple(a - b for a, b in zip(p, r1))
+        return _ghost(objs, lambda s: g.translate(s, shift))
+    return _slide
+
+
 @command("orient", aliases=("o2",))
 def cmd_orient(ctx):
     """Remap objects from two reference points to two target points
     (rotation + translation, Scale=Yes matches the point spacing)."""
-    import math
-
     import numpy as np
+    opts = {"Copy": ["No", "Yes"], "Scale": ["No", "Yes"]}
     objs = yield SelectReq("Select objects to orient", keep=True)
-    r1 = yield PointReq("First reference point")
-    r2 = yield PointReq("Second reference point", rubber_from=r1)
-    t1 = yield PointReq("First target point", rubber_from=r1,
-                        choices={"Copy": ["No", "Yes"],
-                                 "Scale": ["No", "Yes"]})
+    r1 = yield PointReq("First reference point", choices=opts)
+    r2 = yield PointReq("Second reference point", rubber_from=r1,
+                        marks=_numbered(r1), choices=opts)
+    refs = _numbered(r1, r2)
+    t1 = yield PointReq("First target point", marks=refs, choices=opts,
+                        preview_fn=_slide_ghost(objs, r1))
 
     def _matrix(t2):
         v1 = np.subtract(r2, r1)
@@ -1026,12 +1039,12 @@ def cmd_orient(ctx):
         m = _matrix(p)
         return _ghost(objs, lambda s: g.apply_matrix(s, m))
 
-    t2 = yield PointReq("Second target point", rubber_from=t1,
-                        preview_fn=_preview)
+    t2 = yield PointReq("Second target point", rubber_from=t1, marks=refs,
+                        choices=opts, preview_fn=_preview)
+    copy = ctx.opt("Copy", "No") == "Yes"
     ctx.select_result(objs)
-    made = _place(ctx, objs, _matrix(t2), ctx.opt("Copy", "No") == "Yes")
-    verb = "Oriented a copy of" if ctx.opt("Copy", "No") == "Yes" \
-        else "Oriented"
+    made = _place(ctx, objs, _matrix(t2), copy)
+    verb = "Oriented a copy of" if copy else "Oriented"
     ctx.echo(f"{verb} {len(made)} object(s)"
              + (" (scaled to fit)." if ctx.opt("Scale", "No") == "Yes"
                 else "."))
@@ -1041,21 +1054,18 @@ def cmd_orient(ctx):
 def cmd_orient3pt(ctx):
     """Remap objects from three reference points to three target points
     (full 3D reorientation)."""
+    opts = {"Copy": ["No", "Yes"]}
     objs = yield SelectReq("Select objects to orient", keep=True)
-    r1 = yield PointReq("First reference point")
-    r2 = yield PointReq("Second reference point", rubber_from=r1)
-    r3 = yield PointReq("Third reference point", rubber_from=r2)
-    def _slide(p):
-        # the first target only settles where the objects go, not how they
-        # turn — so show them sliding across, and let the next two pick up
-        # the rotation
-        shift = tuple(a - b for a, b in zip(p, r1))
-        return _ghost(objs, lambda s: g.translate(s, shift))
-
-    t1 = yield PointReq("First target point",
-                        choices={"Copy": ["No", "Yes"]},
-                        preview_fn=_slide)
-    t2 = yield PointReq("Second target point", rubber_from=t1)
+    r1 = yield PointReq("First reference point", choices=opts)
+    r2 = yield PointReq("Second reference point", rubber_from=r1,
+                        marks=_numbered(r1), choices=opts)
+    r3 = yield PointReq("Third reference point", rubber_from=r2,
+                        marks=_numbered(r1, r2), choices=opts)
+    refs = _numbered(r1, r2, r3)
+    t1 = yield PointReq("First target point", marks=refs, choices=opts,
+                        preview_fn=_slide_ghost(objs, r1))
+    t2 = yield PointReq("Second target point", rubber_from=t1, marks=refs,
+                        choices=opts)
 
     def _matrix(t3):
         rot = _frame(t1, t2, t3) @ _frame(r1, r2, r3).T
@@ -1065,11 +1075,13 @@ def cmd_orient3pt(ctx):
         m = _matrix(p)
         return _ghost(objs, lambda s: g.apply_matrix(s, m))
 
-    t3 = yield PointReq("Third target point", rubber_from=t2,
-                        preview_fn=_preview)
+    t3 = yield PointReq("Third target point", rubber_from=t2, marks=refs,
+                        choices=opts, preview_fn=_preview)
+    copy = ctx.opt("Copy", "No") == "Yes"
     ctx.select_result(objs)
-    made = _place(ctx, objs, _matrix(t3), ctx.opt("Copy", "No") == "Yes")
-    ctx.echo(f"Oriented {len(made)} object(s) onto the target frame.")
+    made = _place(ctx, objs, _matrix(t3), copy)
+    verb = "Oriented a copy of" if copy else "Oriented"
+    ctx.echo(f"{verb} {len(made)} object(s) onto the target frame.")
 
 
 @command("rotate3d", aliases=("ro3",))
@@ -1103,8 +1115,30 @@ def cmd_rotate3d(ctx):
         v = np.subtract(p, p1)
         return v - np.dot(v, unit) * unit
 
+    pa = np.asarray(p1, float)
+    axis_line = [tuple(pa), tuple(np.asarray(p2, float))]
+
+    def _foot(p):
+        """Where `p` turns about: its own point on the axis."""
+        return pa + unit * float(np.dot(np.subtract(p, pa), unit))
+
+    def _turn(center, start, by, steps=64):
+        """Points along the circle about the axis from `start`, `by` round."""
+        r = np.subtract(start, center)
+        side = np.cross(unit, r)
+        return [tuple(center + math.cos(t) * r + math.sin(t) * side)
+                for t in np.linspace(0.0, by, max(2, int(steps * abs(by)
+                                                         / (2 * math.pi)) + 2))]
+
+    def _circle_guide(p):
+        c = _foot(p)
+        if float(np.linalg.norm(np.subtract(p, c))) < 1e-9:
+            return [axis_line]
+        return [axis_line, _turn(c, p, 2 * math.pi)]
+
     ref = yield PointReq("Angle in degrees, or first reference point",
-                         rubber_from=p1, allow_number=True,
+                         rubber_pts=[p1, p2], rubber_band=False,
+                         guide_fn=_circle_guide, allow_number=True,
                          choices={"Copy": ["No", "Yes"]})
     if isinstance(ref, float):
         angle = ref
@@ -1124,8 +1158,25 @@ def cmd_rotate3d(ctx):
             return _preview_of(ctx, held, objs,
                                lambda s: g.rotate(s, p1, axis, a))
 
+        center = _foot(ref)
+
+        def _swept_guide(p):
+            """The part of the circle turned so far, between the radii to
+            where it started and to where it has got."""
+            if isinstance(p, float):
+                return [axis_line]
+            to = np.subtract(p, center)
+            to -= np.dot(to, unit) * unit
+            return [axis_line, [tuple(center), tuple(ref)],
+                    [tuple(center), tuple(center + to)],
+                    _turn(center, ref, math.radians(_angle(p)))]
+
+        # held to the plane the reference turns in, so the cursor swings it
+        # round freely wherever the axis points, snap or no snap
         p3 = yield PointReq("Angle, or second reference point",
-                            rubber_from=p1, allow_number=True,
+                            rubber_pts=[p1, p2, ref], rubber_band=False,
+                            pick_plane=(tuple(center), tuple(unit)),
+                            guide_fn=_swept_guide, allow_number=True,
                             preview_fn=_preview)
         angle = p3 if isinstance(p3, float) else _angle(p3)
     copy = ctx.opt("Copy", "No") == "Yes"

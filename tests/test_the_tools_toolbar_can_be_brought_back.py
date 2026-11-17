@@ -56,7 +56,7 @@ def _buttons(toolbar):
     assert palette is not None
     buttons = palette.findChildren(QToolButton)
     assert len(buttons) > 24, "the strip must still carry all its tools"
-    assert {"Line", "Fillet", "Delete"} <= {b.text() for b in buttons}
+    assert {"Line", "Fillet", "Explode"} <= {b.text() for b in buttons}
     return buttons
 
 
