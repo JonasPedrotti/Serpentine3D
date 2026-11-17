@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   build:
+    if: github.repository == 'chisomobanzi/Serpentine3D'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4

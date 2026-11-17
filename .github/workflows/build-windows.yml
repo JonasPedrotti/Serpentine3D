@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   build:
+    if: github.repository == 'chisomobanzi/Serpentine3D'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
