@@ -16,7 +16,7 @@ from __future__ import annotations
 from PySide6.QtCore import QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QHBoxLayout, QMenu, QPushButton, QStyle,
+    QAbstractItemView, QApplication, QMenu, QStyle,
     QStyledItemDelegate, QStyleOptionViewItem, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
@@ -25,6 +25,8 @@ from ..core.layout import (PAPER_SIZES, Layout, SheetGroup, sheet_label,
                            sheet_tree)
 from ..utils.units import format_paper_size
 from . import theme
+from .click_to_rename import ClickToRename
+from .list_buttons import button_row
 
 _KIND_ROLE = Qt.ItemDataRole.UserRole          # "sheet" or "group"
 _ID_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -53,6 +55,20 @@ class _RowDelegate(QStyledItemDelegate):
     def setModelData(self, editor, model, index):
         self._panel.rename(index.data(_KIND_ROLE), index.data(_ID_ROLE),
                            editor.text())
+
+    def createEditor(self, parent, option, index):
+        editor = super().createEditor(parent, option, index)
+        # as in the Layers list: the global input padding leaves only a
+        # narrow strip of a row to show the letters in
+        editor.setStyleSheet("QLineEdit { padding: 0px 8px; }")
+        return editor
+
+    def updateEditorGeometry(self, editor, option, index):
+        super().updateEditorGeometry(editor, option, index)
+        rect = editor.geometry()
+        rect.setTop(option.rect.top())
+        rect.setHeight(option.rect.height())
+        editor.setGeometry(rect)
 
     def sizeHint(self, option, index):
         size = super().sizeHint(option, index)
@@ -148,35 +164,22 @@ class SheetsPanel(QWidget):
             QAbstractItemView.EditTrigger.EditKeyPressed)
         self.tree.itemSelectionChanged.connect(self._picks_changed)
         self.tree.itemDoubleClicked.connect(self._double_clicked)
+        ClickToRename(self.tree, 0, self.edit_row)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._row_menu)
 
-        style = ("QPushButton { padding: 2px; font-weight: bold; "
-                 "min-width: 26px; max-width: 26px; }")
-        buttons = QHBoxLayout()
-        buttons.setContentsMargins(4, 4, 4, 4)
-        buttons.setSpacing(4)
-        for text, tip, slot in (
-                ("+", "New sheet, in the picked group", self.new_sheet),
-                ("▤", "New group, inside the picked one", self.new_group),
-                ("↑", "Move the picked rows up",
-                 lambda: self.move_picked(-1)),
-                ("↓", "Move the picked rows down",
-                 lambda: self.move_picked(1)),
-                ("−", "Delete the picked sheets or groups (a group's "
-                      "sheets stay)", self.delete_picked)):
-            button = QPushButton(text)
-            button.setStyleSheet(style)
-            button.setToolTip(tip)
-            button.clicked.connect(lambda _c=False, f=slot: f())
-            buttons.addWidget(button)
-            if text == "▤":
-                buttons.addSpacing(8)
-        buttons.addStretch(1)
+        buttons = button_row(
+            (("new", "New sheet, in the picked group", self.new_sheet),
+             ("group", "New group, inside the picked one", self.new_group)),
+            (("up", "Move the picked rows up", lambda: self.move_picked(-1)),
+             ("down", "Move the picked rows down",
+              lambda: self.move_picked(1))),
+            (("delete", "Delete the picked sheets or groups (a group's "
+                        "sheets stay)", self.delete_picked),))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setSpacing(2)
         layout.addWidget(self.tree, 1)
         layout.addLayout(buttons)
 

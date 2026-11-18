@@ -1236,8 +1236,8 @@ _switches: dict = {}
 
 def _eye(p, open_: bool):
     almond = QPainterPath(QPointF(2, 8))
-    almond.quadTo(QPointF(8, 1.8), QPointF(14, 8))
-    almond.quadTo(QPointF(8, 14.2), QPointF(2, 8))
+    almond.quadTo(QPointF(8, 0.3), QPointF(14, 8))
+    almond.quadTo(QPointF(8, 15.7), QPointF(2, 8))
     p.drawPath(almond)
     p.save()
     p.setBrush(QBrush(p.pen().color()))
@@ -1248,18 +1248,24 @@ def _eye(p, open_: bool):
 
 
 def _padlock(p, shut: bool):
-    p.drawRoundedRect(QRectF(4, 7.5, 8, 6.5), 1.3, 1.3)
-    shackle = QPainterPath(QPointF(5.6, 7.5))
-    if shut:
-        shackle.lineTo(5.6, 5.2)
-        shackle.arcTo(QRectF(5.6, 2.8, 4.8, 4.8), 180, -180)
-        shackle.lineTo(10.4, 7.5)
-    else:
-        # lifted clear of the body, its right leg hanging free
-        shackle.lineTo(5.6, 3.9)
-        shackle.arcTo(QRectF(5.6, 1.5, 4.8, 4.8), 180, -180)
-        shackle.lineTo(10.4, 5.4)
-    p.drawPath(shackle)
+    (_lock_shut if shut else _lock_open)(p)
+
+
+def _inked(drawer, ink: QColor):
+    """The drawer in `ink`, its strokes laid down opaque and the ink's
+    transparency put on the whole glyph after, so where strokes cross a
+    faint glyph does not come out darker."""
+    def draw(p):
+        pen = p.pen()
+        pen.setColor(QColor(ink.red(), ink.green(), ink.blue()))
+        p.setPen(pen)
+        drawer(p)
+        if ink.alpha() < 255:
+            p.setCompositionMode(
+                QPainter.CompositionMode.CompositionMode_DestinationIn)
+            p.fillRect(QRectF(0, 0, _MARK, _MARK),
+                       QColor(0, 0, 0, ink.alpha()))
+    return draw
 
 
 def switch_glyph(kind: str, state: str) -> QPixmap:
@@ -1275,11 +1281,7 @@ def switch_glyph(kind: str, state: str) -> QPixmap:
             ink = _SWITCH_INK["locked" if state == "on" else state]
             drawer = lambda p: _padlock(p, state != "off")  # noqa: E731
 
-        def inked(p, drawer=drawer, ink=ink):
-            pen = p.pen()
-            pen.setColor(ink)
-            p.setPen(pen)
-            drawer(p)
+        inked = _inked(drawer, ink)
         _switches[key] = _mark_pixmap(inked)
     return _switches[key]
 
@@ -1362,13 +1364,82 @@ def view_glyph(name: str, on: bool = True) -> QPixmap:
         ink = _SWITCH_INK["on" if on else "off"]
         drawer = _VIEW_GLYPHS[name]
 
-        def inked(p, drawer=drawer, ink=ink):
-            pen = p.pen()
-            pen.setColor(ink)
-            p.setPen(pen)
-            drawer(p)
+        inked = _inked(drawer, ink)
         _switches[key] = _mark_pixmap(inked)
     return _switches[key]
+
+
+# -- list buttons -----------------------------------------------------------
+# The row under the Layers and Sheets lists: one pen, one box, and the part
+# of a glyph that makes something new in the accent gold.
+
+def _accent_plus(p, cx, cy, arm):
+    p.save()
+    pen = p.pen()
+    pen.setColor(_ACCENT)
+    p.setPen(pen)
+    p.drawLine(QPointF(cx, cy - arm), QPointF(cx, cy + arm))
+    p.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy))
+    p.restore()
+
+
+def _btn_new(p):
+    _accent_plus(p, 8, 8, 4.5)
+
+
+def _btn_sublayer(p):
+    """The Layers mark two sheets deep, and a new one."""
+    p.save()
+    p.scale(0.72, 0.72)
+    p.drawPolyline([QPointF(2, 8.5), QPointF(8, 11.5), QPointF(14, 8.5)])
+    top = QPainterPath(QPointF(8, 2.5))
+    for x, y in ((14, 5.8), (8, 9.1), (2, 5.8)):
+        top.lineTo(x, y)
+    top.closeSubpath()
+    p.setBrush(QBrush(_FILL))
+    p.drawPath(top)
+    p.restore()
+    _accent_plus(p, 12, 12, 3)
+
+
+def _btn_group(p):
+    _folder(p)
+    _accent_plus(p, 8, 9.3, 2.2)
+
+
+def _btn_out(p):
+    p.drawPolyline([QPointF(12, 13.5), QPointF(12, 6), QPointF(4, 6)])
+    p.drawPolyline([QPointF(6.8, 3.2), QPointF(4, 6), QPointF(6.8, 8.8)])
+
+
+def _btn_up(p):
+    p.drawLine(QPointF(8, 13.5), QPointF(8, 2.5))
+    p.drawPolyline([QPointF(4.5, 6), QPointF(8, 2.5), QPointF(11.5, 6)])
+
+
+def _btn_down(p):
+    p.drawLine(QPointF(8, 2.5), QPointF(8, 13.5))
+    p.drawPolyline([QPointF(4.5, 10), QPointF(8, 13.5), QPointF(11.5, 10)])
+
+
+def _btn_delete(p):
+    p.drawLine(QPointF(2.5, 4.5), QPointF(13.5, 4.5))
+    p.drawPolyline([QPointF(6.3, 4.5), QPointF(6.3, 2.3), QPointF(9.7, 2.3),
+                    QPointF(9.7, 4.5)])
+    p.drawPolyline([QPointF(4, 4.5), QPointF(4.9, 14), QPointF(11.1, 14),
+                    QPointF(12, 4.5)])
+    p.drawLine(QPointF(6.9, 7), QPointF(6.9, 11.5))
+    p.drawLine(QPointF(9.1, 7), QPointF(9.1, 11.5))
+
+
+_LIST_GLYPHS = {"new": _btn_new, "sublayer": _btn_sublayer,
+                "group": _btn_group, "out": _btn_out, "up": _btn_up,
+                "down": _btn_down, "delete": _btn_delete}
+
+
+def list_icon(name: str) -> QIcon:
+    """A button glyph for the row under the Layers and Sheets lists."""
+    return QIcon(_Drawn(_LIST_GLYPHS[name], _MARK, 1.3))
 
 
 def swatch(rgb) -> QIcon:

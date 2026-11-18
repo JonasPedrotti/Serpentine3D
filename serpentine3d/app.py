@@ -414,6 +414,9 @@ class MainWindow(QMainWindow):
                 self._set_panel_width(kept)
             else:
                 self._panel_width = saved
+        self._set_lists_height(self.height() // 2)
+        # again once the opening window has its final size
+        self._lists_height_due = True
         self._repaint_panes()
 
     def _repaint_panes(self):
@@ -462,6 +465,27 @@ class MainWindow(QMainWindow):
             dock.setMaximumWidth(_UNLIMITED)
         self._panel_width = width
 
+    def _set_lists_height(self, height):
+        """Make the Layers and Sheets dock this tall when it sits under
+        Properties in the column, held the same way as the column's width.
+        The dock's minimum and the one Properties needs may win over it."""
+        dock = self._layer_dock
+        if (not height or dock.isFloating() or not dock.isVisibleTo(self)
+                or not self._prop_dock.isVisibleTo(self)
+                or self._prop_dock.isFloating()
+                or self.tabifiedDockWidgets(dock)
+                or self.dockWidgetArea(dock)
+                != self.dockWidgetArea(self._prop_dock)):
+            return
+        props = self._prop_dock
+        spare = props.height() - max(props.minimumHeight(),
+                                     props.minimumSizeHint().height())
+        lowest = dock.minimumHeight()
+        dock.setFixedHeight(max(min(height, dock.height() + spare), lowest))
+        self.layout().activate()
+        dock.setMinimumHeight(lowest)
+        dock.setMaximumHeight(_UNLIMITED)
+
     def resizeEvent(self, event):
         """Hand a resized window's new width to the viewports, not the panel.
 
@@ -483,6 +507,9 @@ class MainWindow(QMainWindow):
         self._settling = False
         self._settled_width = self.width()
         self._hold_panel_width()
+        if getattr(self, "_lists_height_due", False):
+            self._lists_height_due = False
+            self._set_lists_height(self.height() // 2)
 
     def _hold_panel_width(self):
         if self._panel_width:

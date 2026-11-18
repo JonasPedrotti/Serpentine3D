@@ -8,14 +8,16 @@ from PySide6.QtCore import (QEvent, QItemSelectionModel, QPointF, QRect,
                             QRectF, Qt, QTimer, Signal)
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QColorDialog, QHBoxLayout,
-    QHeaderView, QMenu, QPushButton, QStyle, QStyledItemDelegate,
+    QAbstractItemView, QApplication, QColorDialog,
+    QHeaderView, QMenu, QStyle, QStyledItemDelegate,
     QStyleOptionViewItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..core import clipping
 from ..core import layout as _layout
 from . import icons, theme
+from .click_to_rename import ClickToRename
+from .list_buttons import button_row
 
 # Tree columns: the name, then two switches and the colour. A layer's
 # linetype, widths and hatch are edited in Properties, on rows that say what
@@ -468,53 +470,23 @@ class LayersPanel(QWidget):
         self.tree.itemChanged.connect(self._item_changed)
         self.tree.itemClicked.connect(self._item_clicked)
         self.tree.itemDoubleClicked.connect(self._edit_item)
+        ClickToRename(self.tree, _NAME_COL,
+                      lambda item: self._rename(self._layer_id(item)))
         self.tree.itemSelectionChanged.connect(self._picks_changed)
 
-        btn_style = ("QPushButton { padding: 2px; font-weight: bold; "
-                     "min-width: 26px; max-width: 26px; }")
-        btn_add = QPushButton("+")
-        btn_add.setStyleSheet(btn_style)
-        btn_add.setToolTip("New layer")
-        btn_add.clicked.connect(self._new_layer)
-        btn_sub = QPushButton("↳")
-        btn_sub.setStyleSheet(btn_style)
-        btn_sub.setToolTip("New sublayer of the selected layer")
-        btn_sub.clicked.connect(self._new_sublayer)
-        btn_out = QPushButton("↰")
-        btn_out.setStyleSheet(btn_style)
-        btn_out.setToolTip("Move the selected layer out of its parent")
-        # A lambda, not the method: a clicked signal hands its checked
-        # state to any slot that will take an argument, and this one takes
-        # the layers to move.
-        btn_out.clicked.connect(lambda: self._move_out())
-        btn_up = QPushButton("↑")
-        btn_up.setStyleSheet(btn_style)
-        btn_up.setToolTip("Move the selected layer up the list")
-        btn_up.clicked.connect(lambda: self._move_in_list(-1))
-        btn_down = QPushButton("↓")
-        btn_down.setStyleSheet(btn_style)
-        btn_down.setToolTip("Move the selected layer down the list")
-        btn_down.clicked.connect(lambda: self._move_in_list(1))
-        btn_del = QPushButton("−")
-        btn_del.setStyleSheet(btn_style)
-        btn_del.setToolTip("Delete selected layer")
-        btn_del.clicked.connect(self._delete_layer)
-
-        btns = QHBoxLayout()
-        btns.setContentsMargins(4, 2, 4, 4)
-        btns.addWidget(btn_add)
-        btns.addWidget(btn_sub)
-        # Three jobs in this row, so three groups: two buttons that make a
-        # layer, one that moves one, one that throws one away. Without the
-        # gaps they read as four ways to make a layer, and the one that
-        # only moves the picked layer comes as a surprise.
-        btns.addSpacing(10)
-        btns.addWidget(btn_out)
-        btns.addWidget(btn_up)
-        btns.addWidget(btn_down)
-        btns.addSpacing(10)
-        btns.addWidget(btn_del)
-        btns.addStretch(1)
+        # Three jobs in this row, so three groups: make a layer, move the
+        # picked one, throw it away.
+        btns = button_row(
+            (("new", "New layer", self._new_layer),
+             ("sublayer", "New sublayer of the selected layer",
+              self._new_sublayer)),
+            (("out", "Move the selected layer out of its parent",
+              lambda: self._move_out()),
+             ("up", "Move the selected layer up the list",
+              lambda: self._move_in_list(-1)),
+             ("down", "Move the selected layer down the list",
+              lambda: self._move_in_list(1))),
+            (("delete", "Delete selected layer", self._delete_layer),))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
