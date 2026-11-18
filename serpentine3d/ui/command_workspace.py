@@ -5,8 +5,8 @@ from __future__ import annotations
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QButtonGroup, QFrame, QHBoxLayout, QMenu, QPushButton,
-    QSizePolicy, QSplitter, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QPushButton,
+    QSizePolicy, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from .workspace_icons import workspace_icon
@@ -22,9 +22,6 @@ class CommandWorkspace(QWidget):
         self.mode = "command"
         self.assistant = None
         self.console = None
-        self._order = "script-first"
-        self._collapsed = False
-        self._expanded_height = 360
         self._pane_widths = {}
         self.setObjectName("commandWorkspace")
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
@@ -65,46 +62,21 @@ class CommandWorkspace(QWidget):
         toolbar.setContentsMargins(0, 0, 2, 0)
         self.assistant_toggle = self._toggle("Assistant")
         self.script_toggle = self._toggle("Script")
+        self.history_toggle = self._toggle("History")
         self.assistant_toggle.setObjectName("workspaceAssistant")
         self.script_toggle.setObjectName("workspaceScript")
         self.assistant_toggle.setIcon(workspace_icon("assistant", active_color="#9bd3c3"))
         self.script_toggle.setIcon(workspace_icon("script", active_color="#bacbdf"))
-        self.assistant_toggle.toggled.connect(
-            lambda shown: self.set_pane_visible("assistant", shown))
-        self.script_toggle.toggled.connect(
-            lambda shown: self.set_pane_visible("script", shown))
-        toolbar.addWidget(self.assistant_toggle)
-        toolbar.addWidget(self.script_toggle)
-        arrange = QToolButton()
-        arrange.setIcon(workspace_icon("more"))
-        arrange.setAccessibleName("Arrange")
-        arrange.setToolTip("Arrange workspace")
-        arrange.setFixedWidth(28)
-        arrange.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        menu = QMenu(arrange)
-        menu.addAction("History → Script → Assistant",
-                       lambda: self.set_order("script-first"))
-        menu.addAction("History → Assistant → Script",
-                       lambda: self.set_order("assistant-first"))
-        menu.addSeparator()
-        menu.addAction("Reset pane widths", self.reset_widths)
-        arrange.setMenu(menu)
-        toolbar.addWidget(arrange)
-        self.expand_button = QToolButton()
-        self.expand_button.setIcon(workspace_icon("expand"))
-        self.expand_button.setAccessibleName("Expand")
-        self.expand_button.setFixedWidth(28)
-        self.expand_button.setToolTip("Expand workspace")
-        self.expand_button.clicked.connect(self.expand)
-        toolbar.addWidget(self.expand_button)
-        self.collapse_button = QToolButton()
-        self.collapse_button.setFixedWidth(28)
-        self.collapse_button.clicked.connect(
-            lambda: self.set_collapsed(not self._collapsed))
-        toolbar.addWidget(self.collapse_button)
-        for button in (arrange, self.expand_button, self.collapse_button):
-            button.setIconSize(QSize(16, 16))
-            button.setStyleSheet("padding: 3px 5px;")
+        self.history_toggle.setIcon(workspace_icon("history", active_color="#dbc087"))
+        self.history_toggle.setToolTip("Everything commands, the assistant and "
+                                       "scripts have said")
+        self._toggles = {"assistant": self.assistant_toggle,
+                         "script": self.script_toggle,
+                         "history": self.history_toggle}
+        for name, button in self._toggles.items():
+            button.toggled.connect(
+                lambda shown, name=name: self.set_pane_visible(name, shown))
+            toolbar.addWidget(button)
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)
@@ -130,8 +102,10 @@ class CommandWorkspace(QWidget):
         for pane in self._panes.values():
             pane.setMinimumWidth(150)
             self.splitter.addWidget(pane)
-        self.script_pane.hide()
-        self.assistant_pane.hide()
+            pane.hide()
+        # With no pane open there is nothing to give room to, and the
+        # workspace is just its two rows.
+        self.splitter.hide()
         root.addWidget(self.splitter, 1)
 
         self.composer = QFrame()
@@ -139,20 +113,12 @@ class CommandWorkspace(QWidget):
         composer = QHBoxLayout(self.composer)
         composer.setContentsMargins(6, 3, 6, 3)
         composer.setSpacing(3)
-        group = QButtonGroup(self)
-        self.command_mode = self._toggle("Command")
         self.ai_mode = self._toggle("Ask AI")
-        self.command_mode.setIcon(workspace_icon("command", active_color="#dbc087"))
         self.ai_mode.setIcon(workspace_icon("assistant", active_color="#9bd3c3"))
         self.ai_mode.setObjectName("aiMode")
-        for button in (self.command_mode, self.ai_mode):
-            group.addButton(button)
-            composer.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.command_mode.setChecked(True)
-        self.command_mode.clicked.connect(lambda: self.set_mode("command"))
-        self.ai_mode.clicked.connect(lambda: self.set_mode("ai"))
-        self.command_mode.setToolTip("Command input · Alt+/ switches destination")
-        self.ai_mode.setToolTip("Ask AI · Alt+/ switches destination")
+        composer.addWidget(self.ai_mode, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.ai_mode.clicked.connect(
+            lambda on: self.set_mode("ai" if on else "command"))
         shortcut = QShortcut(QKeySequence("Alt+/"), self)
         shortcut.activated.connect(
             lambda: self.set_mode("ai" if self.mode == "command" else "command"))
@@ -173,7 +139,13 @@ class CommandWorkspace(QWidget):
         command_line.input.textChanged.connect(self._update_draft_hint)
         command_line.suggestion_anchor = self
         self._update_composer()
-        self._update_collapse_control()
+        self._fit_height()
+
+    def _fit_height(self):
+        # Closed, it is only ever its two rows tall; open, it can be dragged.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Preferred if self._active_names()
+                           else QSizePolicy.Policy.Fixed)
 
     @staticmethod
     def _toggle(text):
@@ -183,7 +155,7 @@ class CommandWorkspace(QWidget):
         return button
 
     def sizeHint(self):
-        if self._collapsed:
+        if not self._active_names():
             return QSize(1000, self.minimumSizeHint().height())
         if self.script_toggle.isChecked():
             return QSize(1000, min(360, max(280, int(self.window.height() * .34))))
@@ -222,20 +194,32 @@ class CommandWorkspace(QWidget):
     def toggle_script(self):
         self.set_pane_visible("script", not self.script_toggle.isChecked())
 
+    def show_history(self):
+        self.set_pane_visible("history", True)
+
     def set_pane_visible(self, name, shown):
         self._remember_widths()
-        if shown:
-            (self._ensure_assistant if name == "assistant"
-             else self._ensure_script)()
-        button = (self.assistant_toggle if name == "assistant"
-                  else self.script_toggle)
+        if shown and name == "assistant":
+            self._ensure_assistant()
+        elif shown and name == "script":
+            self._ensure_script()
+        button = self._toggles[name]
         button.blockSignals(True)
         button.setChecked(shown)
         button.blockSignals(False)
+        was_open = bool(self._active_names())
         self._panes[name].setVisible(shown)
-        if shown and self._collapsed:
-            self.set_collapsed(False)
+        is_open = bool(self._active_names())
+        self.splitter.setVisible(is_open)
+        self._fit_height()
         self._restore_widths()
+        self.layout().activate()
+        if not hasattr(self.window, "_cmd_dock"):
+            return
+        if was_open and not is_open:
+            self.window.resizeDocks([self.window._cmd_dock],
+                                    [self.minimumSizeHint().height()],
+                                    Qt.Orientation.Vertical)
         preferred_height = self.sizeHint().height()
         if shown and self.window.isVisible() and self.height() < preferred_height:
             self.window.resizeDocks([self.window._cmd_dock], [preferred_height],
@@ -245,14 +229,11 @@ class CommandWorkspace(QWidget):
         return [name for name in self._ordered_names()
                 if not self._panes[name].isHidden()]
 
-    def _ordered_names(self):
-        return (["history", "script", "assistant"]
-                if self._order == "script-first"
-                else ["history", "assistant", "script"])
+    @staticmethod
+    def _ordered_names():
+        return ["history", "script", "assistant"]
 
     def _remember_widths(self):
-        if self._collapsed:
-            return
         names = self._active_names()
         widths = {name: self.splitter.sizes()[self.splitter.indexOf(self._panes[name])]
                   for name in names}
@@ -265,19 +246,6 @@ class CommandWorkspace(QWidget):
         self.splitter.setSizes([widths.get(name, 350) if name in names else 0
                                 for name in self._ordered_names()])
 
-    def set_order(self, order):
-        if order not in ("script-first", "assistant-first"):
-            return
-        self._remember_widths()
-        self._order = order
-        for index, name in enumerate(self._ordered_names()):
-            self.splitter.insertWidget(index, self._panes[name])
-        self._restore_widths()
-
-    def reset_widths(self):
-        self._pane_widths.clear()
-        self._restore_widths()
-
     def set_mode(self, mode):
         if mode not in ("command", "ai"):
             return
@@ -285,7 +253,6 @@ class CommandWorkspace(QWidget):
         if mode == "ai":
             self.show_assistant()
         self.mode = mode
-        self.command_mode.setChecked(mode == "command")
         self.ai_mode.setChecked(mode == "ai")
         self.inputs.setCurrentIndex(1 if mode == "ai" else 0)
         self._update_composer()
@@ -319,6 +286,8 @@ class CommandWorkspace(QWidget):
         label = "Stop" if busy else "Send to AI" if ai else "Run command"
         if busy and self.assistant.btn_send.text() == "Stopping…":
             label = "Stopping…"
+        # Enter runs a command; only the assistant needs a button, to stop it.
+        self.submit_button.setVisible(ai)
         self.submit_button.setText(label)
         self.submit_button.setEnabled(not ai or busy or (
             ready and not self.assistant._resetting))
@@ -329,7 +298,7 @@ class CommandWorkspace(QWidget):
             color="#a9dfce" if ai else "#dbc087"))
         self.inputs.setToolTip(
             "Enter to send · Shift+Enter for a new line" if ai else
-            "Enter to run · Esc to clear · History stays visible")
+            "Enter to run · Esc to clear")
         for widget in (self.composer, self.submit_button):
             widget.setProperty("mode", self.mode)
             widget.style().unpolish(widget)
@@ -337,59 +306,26 @@ class CommandWorkspace(QWidget):
         self._update_draft_hint()
 
     def _update_draft_hint(self):
-        for button, has_draft, label in (
-            (self.command_mode, bool(self.command_line.input.text()), "Command"),
-            (self.ai_mode, bool(self.assistant and self.assistant.input.toPlainText()), "Ask AI"),
-        ):
-            draft = " · draft saved" if has_draft else ""
-            button.setToolTip(f"{label}{draft} · Alt+/ switches destination")
-
-    def _update_collapse_control(self):
-        label = "Restore workspace" if self._collapsed else "Collapse workspace"
-        self.collapse_button.setIcon(workspace_icon(
-            "chevron-up" if self._collapsed else "chevron-down"))
-        self.collapse_button.setAccessibleName(label)
-        self.collapse_button.setToolTip(label)
-        self.expand_button.setEnabled(not self._collapsed)
-
-    def set_collapsed(self, collapsed):
-        if collapsed == self._collapsed:
-            return
-        self._remember_widths()
-        if collapsed:
-            self._expanded_height = self.height()
-        self._collapsed = collapsed
-        self.splitter.setVisible(not collapsed)
-        self._update_collapse_control()
-        if not collapsed:
-            self._restore_widths()
-        self.layout().activate()
-        if hasattr(self.window, "_cmd_dock"):
-            height = self.minimumSizeHint().height() if collapsed else self._expanded_height
-            self.window.resizeDocks([self.window._cmd_dock], [height],
-                                    Qt.Orientation.Vertical)
-
-    def expand(self):
-        self.set_collapsed(False)
-        height = min(int(self.window.height() * .62), self.height() + 180)
-        self.window.resizeDocks([self.window._cmd_dock], [height],
-                                Qt.Orientation.Vertical)
+        drafts = [label for label, has_draft in (
+            ("command", bool(self.command_line.input.text())),
+            ("question", bool(self.assistant
+                              and self.assistant.input.toPlainText())))
+            if has_draft]
+        saved = f" · {' and '.join(drafts)} kept" if drafts else ""
+        self.ai_mode.setToolTip(
+            f"Ask AI instead of running a command{saved} · Alt+/ switches")
 
     def save_settings(self):
         self._remember_widths()
         self.window.cfg.set("workspace", {
-            "assistant": self.assistant_toggle.isChecked(),
-            "script": self.script_toggle.isChecked(),
-            "order": self._order,
+            **{name: button.isChecked()
+               for name, button in self._toggles.items()},
             "widths": self._pane_widths,
-            "collapsed": self._collapsed,
-            "expanded_height": self._expanded_height,
         })
 
     def restore_settings(self):
         cfg = self.window.cfg
-        self.set_order(cfg.get("workspace", "order", default="script-first"))
-        for name in ("assistant", "script"):
+        for name in self._toggles:
             self.set_pane_visible(name, bool(cfg.get("workspace", name, default=False)))
         widths = cfg.get("workspace", "widths", default={})
         if isinstance(widths, dict):
@@ -398,8 +334,48 @@ class CommandWorkspace(QWidget):
                                  and all(isinstance(w, (int, float)) and w > 0
                                          for w in value.values())}
         self._restore_widths()
-        self.set_collapsed(bool(cfg.get("workspace", "collapsed", default=False)))
-        height = cfg.get("workspace", "expanded_height", default=360)
-        if isinstance(height, (int, float)) and height > 0:
-            self._expanded_height = int(height)
         QTimer.singleShot(0, self, self._restore_widths)
+
+
+class LastMessage(QLabel):
+    """What the history last said, on the status bar while the history is
+    closed. A click opens the history; it fades out of the way on its own."""
+
+    SHOWN_MS = 8000
+
+    def __init__(self, command_line, open_history):
+        super().__init__()
+        self._open_history = open_history
+        self._full = ""
+        self.setStyleSheet("color: #c9cacd; padding: 0 6px;")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMaximumWidth(560)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(lambda: self.say(""))
+        command_line.echoed.connect(self.say)
+
+    def say(self, msg: str):
+        lines = [line for line in str(msg).splitlines() if line.strip()]
+        self._full = lines[-1].strip() if lines else ""
+        self.setToolTip(f"{self._full}\nClick to open the history"
+                        if self._full else "")
+        self._elide()
+        if self._full:
+            self._timer.start(self.SHOWN_MS)
+
+    def full_text(self) -> str:
+        return self._full
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._elide()
+
+    def _elide(self):
+        self.setText(self.fontMetrics().elidedText(
+            self._full, Qt.TextElideMode.ElideRight, self.maximumWidth()))
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton and self._full:
+            self._open_history()
+        super().mousePressEvent(ev)

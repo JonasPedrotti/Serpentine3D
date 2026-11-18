@@ -512,7 +512,8 @@ def _existing_connection(windows, codex):
 
 
 def _send(window, panel, prompt):
-    _click(window._cmd_dock.widget(), r"Ask AI")
+    if not window.command_workspace.ai_mode.isChecked():
+        _click(window._cmd_dock.widget(), r"Ask AI")
     _lay_out(window)
     panel.input.setPlainText(prompt)
     submit = window.command_workspace.submit_button

@@ -21,7 +21,7 @@ from tests.test_local_models_can_work_on_the_scene import (
     _configure, _feed, _models, _provider,
 )
 from tests.test_the_assistant_connects_before_the_first_prompt import (
-    _button, _connection_choices, _lay_out, _mode, _visible_text, _wait,
+    _button, _connection_choices, _destination, _lay_out, _visible_text, _wait,
 )
 
 
@@ -194,7 +194,7 @@ def _connect_openai(window, servers, key=OPENAI_KEY):
 
 
 def _send(window, panel, prompt):
-    _mode(window, "Ask AI").click()
+    _destination(window, "ai")
     _lay_out(window)
     panel.input.setPlainText(prompt)
     send = window.command_workspace.submit_button

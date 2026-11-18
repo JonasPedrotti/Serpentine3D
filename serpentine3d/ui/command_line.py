@@ -154,6 +154,7 @@ class CommandLine(QWidget):
 
     submitted = Signal(str)         # raw text the user entered
     cancelled = Signal()
+    echoed = Signal(str)            # whatever was just said in the history
     optionClicked = Signal(str)     # option chip clicked -> cycle its value
     keywordClicked = Signal(str)    # keyword chip clicked -> answers prompt
     tabPressed = Signal()           # Tab while a point is wanted
@@ -258,6 +259,7 @@ class CommandLine(QWidget):
     def echo(self, msg: str):
         self.echo_view.appendPlainText(msg)
         self.echo_view.moveCursor(QTextCursor.MoveOperation.End)
+        self.echoed.emit(msg)
 
     def clear_history_selection(self):
         """Drop any text picked out of the history.

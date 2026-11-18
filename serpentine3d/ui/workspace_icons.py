@@ -12,6 +12,7 @@ _SHAPES = {
     "assistant": '<path d="M8 1.5C8.8 5.8 10.2 7.2 14.5 8C10.2 8.8 8.8 10.2 8 14.5C7.2 10.2 5.8 8.8 1.5 8C5.8 7.2 7.2 5.8 8 1.5Z"/>',
     "script": '<path d="m4.5 4-3.5 4 3.5 4m7-8 3.5 4-3.5 4M9.5 2l-3 12"/>',
     "command": '<path d="m2.5 4 4 4-4 4m6.5 0h4.5"/>',
+    "history": '<circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/>',
     "close": '<path d="m5 5 6 6m0-6-6 6"/>',
     "more": '<g fill="{color}" stroke="none"><circle cx="3" cy="8" r=".85"/><circle cx="8" cy="8" r=".85"/><circle cx="13" cy="8" r=".85"/></g>',
     "expand": '<path d="M2 6V2h4m4 0h4v4m0 4v4h-4m-4 0H2v-4"/>',

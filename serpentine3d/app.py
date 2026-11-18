@@ -159,6 +159,10 @@ class MainWindow(QMainWindow):
         self.osnap_bar = OsnapBar(self.viewport, self.cfg)
         self.command_workspace = CommandWorkspace(
             self, self.command_line, self._build_space_tab_row(), self.osnap_bar)
+        from .ui.command_workspace import LastMessage
+        self.last_message = LastMessage(self.command_line,
+                                        self.command_workspace.show_history)
+        self.statusBar().addPermanentWidget(self.last_message)
         self._cmd_dock = QDockWidget("Command", self)
         self._cmd_dock.setObjectName("commandDock")
         self._cmd_dock.setWidget(self.command_workspace)
