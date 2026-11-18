@@ -78,6 +78,11 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
+        from .ui.title_bar import FramelessFrame, TitleBar
+        self._title_bar = TitleBar(
+            self, lambda: self._file_new(), lambda: self.recent_files(),
+            lambda path: self._open_recent(path))
+        self._frame = FramelessFrame(self, self._title_bar)
         self.resize(1440, 900)
         self.setAcceptDrops(True)
         self._importing_file = False
@@ -222,12 +227,14 @@ class MainWindow(QMainWindow):
              (panel_icon("sheets"), "Sheets")],
             self._lists, self._layer_dock)
         self._layer_dock.setTitleBarWidget(self._lists_title)
+        self._lists_title.close_only_when_floating()
         # Properties shows the layers or sheets picked there too, with a
         # tab in its title for each subject once two are live.
         self.properties.follow_layers(self.layers_panel)
         self.properties.follow_sheets(self.sheets_panel)
         # The view strip rides on top of the Properties title.
         self._prop_title = SubjectTitleBar(self.properties, self._prop_dock)
+        self._prop_title.close_only_when_floating()
         self.view_strip = ViewStrip(self.run_command)
         self._prop_dock.setTitleBarWidget(
             strip_over(self.view_strip, self._prop_title))
@@ -1181,6 +1188,15 @@ class MainWindow(QMainWindow):
         bar.addWidget(hydra_button(lambda: self.run_command("hydra"), bar))
         self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, bar)
         self._tools_toolbar = bar
+
+    def menuBar(self):
+        return self._title_bar.menu_bar
+
+    def nativeEvent(self, event_type, message):
+        result = self._frame.native_event(event_type, message)
+        if result is not None:
+            return True, result
+        return super().nativeEvent(event_type, message)
 
     def _build_menus(self):
         mb = self.menuBar()
@@ -2386,9 +2402,26 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction("Clear Recent", self._clear_recent)
 
+    def _save_changes_first(self) -> bool:
+        """Offer to save unsaved work before it is replaced; False when the
+        user cancels, or cancels the save."""
+        if not (self.dirty and self.scene.all()):
+            return True
+        from .ui import save_prompt
+        path = getattr(self.ctx, "current_path", None)
+        ret = save_prompt.ask_save_changes(
+            self, os.path.basename(path) if path else "untitled")
+        if ret == save_prompt.CANCEL:
+            return False
+        if ret == save_prompt.SAVE:
+            self._file_save()
+            return not self.dirty
+        return True
+
     def _open_recent(self, path: str):
         if os.path.exists(path):
-            self._open_path(path)
+            if self._save_changes_first():
+                self._open_path(path)
         else:
             QMessageBox.warning(self, "Open", f"File no longer exists:\n{path}")
             self._rebuild_recent_menu()      # prune it from the menu
@@ -2714,24 +2747,12 @@ class MainWindow(QMainWindow):
         self.cfg.save()
 
     def closeEvent(self, ev):
-        if (self.dirty and self.scene.all()
-                and not getattr(self, "_restarting", False)):
-            # a scale restart saved or handed the work over already —
-            # restart_app sets the flag so the prompt cannot double-ask
-            ret = QMessageBox.question(
-                self, "Unsaved changes",
-                "Save changes before closing?",
-                QMessageBox.StandardButton.Save
-                | QMessageBox.StandardButton.Discard
-                | QMessageBox.StandardButton.Cancel)
-            if ret == QMessageBox.StandardButton.Cancel:
-                ev.ignore()
-                return
-            if ret == QMessageBox.StandardButton.Save:
-                self._file_save()
-                if self.dirty:          # save was cancelled
-                    ev.ignore()
-                    return
+        # a scale restart saved or handed the work over already —
+        # restart_app sets the flag so the prompt cannot double-ask
+        if (not getattr(self, "_restarting", False)
+                and not self._save_changes_first()):
+            ev.ignore()
+            return
         # Only a window somebody actually saw: a headless one (tests, a
         # crashed pre-show launch) closing would overwrite the layout the
         # user chose with default-constructed geometry.
@@ -3362,6 +3383,7 @@ class MainWindow(QMainWindow):
         name = os.path.basename(path) if path else "untitled"
         star = "*" if getattr(self, "autosave", None) and self.dirty else ""
         self.setWindowTitle(f"{name}{star} — {APP_TITLE}")
+        self._title_bar.set_document_title(f"{name}{star}")
 
     def _match_user_shortcut(self, ev) -> bool:
         try:

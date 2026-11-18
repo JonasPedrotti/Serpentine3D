@@ -13,7 +13,7 @@ from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QLabel, QProxyStyle, QStyle
 
-from . import fields
+from . import fields, popups
 
 WAKE_UP_MS = 250
 _BG = QColor("#1f2023")
@@ -31,6 +31,7 @@ class _Timing(QProxyStyle):
 
     def polish(self, widget):
         fields.polish(widget)
+        popups.polish(widget)
         return super().polish(widget)
 
 
