@@ -1,4 +1,5 @@
-"""History, assistant and scripts share a shelf, with an explicit input mode.
+"""History, assistant and scripts share a shelf, each opened by its own
+switch, over one input that Ask AI points at the assistant.
 
 Exercise the real MainWindow and Qt controls. The labels come from the
 approved command-workspace concept; widget classes and settings keys are
@@ -9,7 +10,6 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QAction
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QAbstractButton, QApplication, QLineEdit, QPlainTextEdit, QSplitter, QWidget,
@@ -75,15 +75,11 @@ def _click(win, label):
     _lay_out(win)
 
 
-def _arrange(win, label):
-    # An arrangement can be a menu action or a button, as in the concept.
-    actions = [action for action in win._cmd_dock.widget().findChildren(QAction)
-               if action.text().replace("&", "").strip() == label]
-    if actions:
-        actions[0].trigger()
-        _lay_out(win)
-    else:
-        _click(win, label)
+def _ask_ai(win, on):
+    """Ask AI is a switch: on sends what is typed to the assistant, off back
+    to the command line."""
+    if _button(win, "Ask AI").isChecked() != on:
+        _click(win, "Ask AI")
 
 
 def _script_content(win):
@@ -114,7 +110,8 @@ def _left(widget, win):
 
 
 def _fixed_controls_stay_accessible(win):
-    assert win.command_line.echo_view.isVisibleTo(win), "History must stay accessible"
+    for label in ("Assistant", "Script", "History"):
+        _button(win, label)
     assert win.command_line.input.isVisibleTo(win), "The shared input must stay accessible"
     assert win.space_tabs.isVisibleTo(win), "Model/layout tabs must stay accessible"
 
@@ -160,9 +157,8 @@ def test_existing_entrypoints_open_two_bottom_panes_without_changing_destination
     field.setText("circle")
     assistant, script = _open_both(win)
     assert win.dockWidgetArea(win._cmd_dock) == Qt.DockWidgetArea.BottomDockWidgetArea
-    assert _left(win.command_line.echo_view, win) < min(_left(assistant, win),
-                                                      _left(script, win))
-    assert _button(win, "Command").isChecked()
+    assert _left(script, win) < _left(assistant, win)
+    assert not _button(win, "Ask AI").isChecked()
     assert field.text() == "circle"
     _fixed_controls_stay_accessible(win)
 
@@ -180,16 +176,18 @@ def test_each_optional_pane_can_be_hidden_without_losing_history_or_tabs(win):
     _click(win, "Assistant")
     assert assistant.isVisibleTo(win)
     assert not script.isVisibleTo(win)
+    _click(win, "History")
+    assert win.command_line.echo_view.isVisibleTo(win)
+    assert _left(win.command_line.echo_view, win) < _left(assistant, win)
     assert "A previous modeling result" in win.command_line.echo_view.toPlainText()
-    assert _button(win, "Command").isChecked()
+    assert not _button(win, "Ask AI").isChecked()
 
 
-def test_panes_can_change_order_and_width_then_collapse_and_restore(win):
+def test_panes_keep_their_widths_and_closing_them_all_leaves_only_the_rows(win):
     assistant, script = _open_both(win)
-    _arrange(win, "History → Script → Assistant")
-    assert _left(win.command_line.echo_view, win) < _left(script, win) < _left(assistant, win)
-    _arrange(win, "History → Assistant → Script")
-    assert _left(win.command_line.echo_view, win) < _left(assistant, win) < _left(script, win)
+    _click(win, "History")
+    history = win.command_line.echo_view
+    assert _left(history, win) < _left(script, win) < _left(assistant, win)
     splitters = [splitter for splitter in win._cmd_dock.widget().findChildren(QSplitter)
                  if splitter.orientation() == Qt.Orientation.Horizontal
                  and splitter.isAncestorOf(assistant) and splitter.isAncestorOf(script)]
@@ -204,21 +202,48 @@ def test_panes_can_change_order_and_width_then_collapse_and_restore(win):
     _lay_out(win)
     assert splitter.sizes() != before, "Dragging a divider must give its pane more room"
     widths = splitter.sizes()
-    _click(win, "Collapse workspace")
+    for label in ("History", "Script", "Assistant"):
+        _click(win, label)
+    shelf = win._cmd_dock.widget()
+    assert not splitter.isVisibleTo(win)
+    assert shelf.sizeHint().height() == shelf.minimumSizeHint().height()
     assert win.space_tabs.isVisibleTo(win)
     assert win.command_line.input.isVisibleTo(win)
-    _click(win, "Restore workspace")
+    for label in ("History", "Script", "Assistant"):
+        _click(win, label)
     assert assistant.isVisibleTo(win) and script.isVisibleTo(win)
-    _fixed_controls_stay_accessible(win)
-    assert _left(assistant, win) < _left(script, win)
     assert splitter.sizes() == pytest.approx(widths, abs=3)
+
+
+def test_only_the_three_pane_switches_sit_beside_the_tabs(win):
+    shelf = win._cmd_dock.widget()
+    words = {text for button in shelf.findChildren(QAbstractButton)
+             if button.isVisibleTo(shelf)
+             for text in (button.text().replace("&", "").strip(),
+                          button.accessibleName(), button.toolTip())}
+    for gone in ("Collapse workspace", "Restore workspace", "Expand workspace",
+                 "Arrange workspace", "Command", "Run command"):
+        assert gone not in words
+
+
+def test_the_last_message_shows_on_the_status_bar_and_opens_the_history(win):
+    win.command_line.echo("Nothing picked.")
+    note = win.last_message
+    assert note.full_text() == "Nothing picked."
+    assert note.isVisibleTo(win)
+    assert not win.command_line.echo_view.isVisibleTo(win)
+    QTest.mouseClick(note, Qt.MouseButton.LeftButton)
+    _lay_out(win)
+    assert win.command_line.echo_view.isVisibleTo(win)
+    assert _button(win, "History").isChecked()
 
 
 def test_switching_destination_keeps_separate_drafts_and_changes_the_submit_label(win):
     field = win.command_line.input
     field.setText("circle")
     command_hint = field.placeholderText()
-    _button(win, "Run command")
+    assert not win.command_workspace.submit_button.isVisibleTo(win), \
+        "Enter runs a command; there is no button for it"
     _click(win, "Ask AI")
     field = _field(win)
     assert _button(win, "Ask AI").isChecked()
@@ -228,9 +253,9 @@ def test_switching_destination_keeps_separate_drafts_and_changes_the_submit_labe
     QTest.keyClicks(field, "explain this curve")
     assert _text(field) == "explain this curve", "AI words must not trigger CAD completion"
     assert win.command_line.suggestions.isHidden()
-    _click(win, "Command")
+    _click(win, "Ask AI")
     assert _text(_field(win)) == "circle"
-    _button(win, "Run command")
+    assert not win.command_workspace.submit_button.isVisibleTo(win)
     _click(win, "Ask AI")
     assert _text(_field(win)) == "explain this curve"
 
@@ -245,6 +270,7 @@ def test_ai_prose_goes_only_to_the_assistant_even_when_panes_change(win, monkeyp
     _click(win, "Assistant")
     assert _button(win, "Ask AI").isChecked()
     win.show_ai_panel()
+    _click(win, "History")
     QTest.mouseClick(win.command_line.echo_view.viewport(), Qt.MouseButton.LeftButton)
     assert _button(win, "Ask AI").isChecked()
     QTest.keyClick(field, Qt.Key.Key_Return)
@@ -269,7 +295,7 @@ def test_asking_ai_during_a_point_prompt_preserves_the_command_and_its_draft(win
     assert sent == ["what coordinates should I use"]
     assert win.processor.request is request and win.processor.busy
     assert not win.processor.picked_points
-    _click(win, "Command")
+    _ask_ai(win, False)
     assert field.text() == "0,0,"
     assert win.command_line.prompt_label.text() == prompt
     QTest.keyClicks(field, "0")
@@ -281,8 +307,8 @@ def test_asking_ai_during_a_point_prompt_preserves_the_command_and_its_draft(win
 
 
 def test_returning_from_ai_keeps_completion_repeat_and_free_text_semantics(win):
-    _click(win, "Ask AI")
-    _click(win, "Command")
+    _ask_ai(win, True)
+    _ask_ai(win, False)
     field = win.command_line.input
     QTest.keyClicks(field, "deta")
     assert field.text() == "detail" and field.selectedText() == "il"
@@ -303,10 +329,10 @@ def test_returning_from_ai_keeps_completion_repeat_and_free_text_semantics(win):
     assert win.scene.layers.find_by_name("Ground floor") is not None
 
 
-def test_workspace_visibility_and_arrangement_survive_a_window_session(windows):
+def test_which_panes_are_open_survives_a_window_session(windows):
     win = windows()
     assistant, script = _open_both(win)
-    _arrange(win, "History → Assistant → Script")
+    _click(win, "History")
     _click(win, "Assistant")
     assert script.isVisibleTo(win) and not assistant.isVisibleTo(win)
     # Match the existing persistence suite: no need to render GL to exercise
@@ -316,12 +342,13 @@ def test_workspace_visibility_and_arrangement_survive_a_window_session(windows):
     win.close()
     again = windows()
     assert _button(again, "Script").isChecked()
+    assert _button(again, "History").isChecked()
     assert not _button(again, "Assistant").isChecked()
     restored_script = _script_content(again)
     restored_assistant = again.show_ai_panel()
     _lay_out(again)
-    assert _left(again.command_line.echo_view, again) < _left(restored_assistant, again)
-    assert _left(restored_assistant, again) < _left(restored_script, again)
+    assert _left(again.command_line.echo_view, again) < _left(restored_script, again)
+    assert _left(restored_script, again) < _left(restored_assistant, again)
     _fixed_controls_stay_accessible(again)
 
 

@@ -165,6 +165,13 @@ def _mode(window, label):
     return matches[0]
 
 
+def _destination(window, destination):
+    """Send what is typed to "ai" or back to "command"; Ask AI is a switch."""
+    ask_ai = _mode(window, "Ask AI")
+    if ask_ai.isChecked() != (destination == "ai"):
+        ask_ai.click()
+
+
 def _visible_text(root):
     return "\n".join(label.text() for label in root.findChildren(QLabel)
                      if label.isVisibleTo(root))
@@ -234,7 +241,7 @@ def _assert_unconnected(window, panel, local):
     assert not re.search(r"(?<!not )(?<!dis)\bconnected\b|\bready\b", recipient), \
         f"Incomplete connection must not claim chat readiness: {recipient!r}"
     assert not local.posts and not window.scene.all(), "Setup must not send a prompt or model anything"
-    _mode(window, "Ask AI").click()
+    _destination(window, "ai")
     _lay_out(window)
     send = window.command_workspace.submit_button
     assert not send.isEnabled() or re.search(r"connect|set.?up", send.text(), re.I), \
@@ -275,7 +282,7 @@ def test_first_open_explains_connection_choices_without_claiming_anthropic(windo
     window.command_line.input.setText("circle")
     panel = window.show_ai_panel()
     _lay_out(window)
-    assert _mode(window, "Command").isChecked(), "Opening Assistant preserves the CAD destination"
+    assert not _mode(window, "Ask AI").isChecked(), "Opening Assistant preserves the CAD destination"
     assert window.command_line.input.text() == "circle"
     recipient = panel.recipient.text().lower()
     assert "anthropic" not in recipient and "claude" not in recipient, \
@@ -295,7 +302,7 @@ def test_first_open_explains_connection_choices_without_claiming_anthropic(windo
     QTest.qWait(25)
     assert not local.requests, "Incomplete first use must not contact an implicit cloud provider"
     assert not window.processor.busy and not window.scene.all()
-    _mode(window, "Command").click()
+    _destination(window, "command")
     assert window.command_line.input.text() == "circle"
 
 
@@ -339,13 +346,13 @@ def test_inline_local_connection_persists_and_the_first_approved_prompt_models(
         assert not local.posts and not reopened.scene.all(), "A starter must not silently send"
 
     reopened.command_line.input.setText("circle")
-    _mode(reopened, "Ask AI").click()
+    _destination(reopened, "ai")
     _lay_out(reopened)
     assert panel.input.isVisibleTo(reopened.command_workspace) and panel.input.isEnabled()
     panel.input.setPlainText("Make a 4 by 5 by 6 box")
-    _mode(reopened, "Command").click()
+    _destination(reopened, "command")
     assert reopened.command_line.input.text() == "circle"
-    _mode(reopened, "Ask AI").click()
+    _destination(reopened, "ai")
     assert panel.input.toPlainText() == "Make a 4 by 5 by 6 box"
     send = reopened.command_workspace.submit_button
     assert send.isEnabled() and re.search(r"send", send.text(), re.I), \

@@ -9,7 +9,9 @@ grown, the echoed history would have sat in the same four lines with the
 new space empty below it.
 
 Room given to the command area now goes to the history, which is the part
-worth reading back, and it still opens at the height it always did.
+worth reading back. With no pane open there is nothing to give room to, so
+it is only its two rows tall until the history, a script or the assistant
+is opened.
 
 The drag itself wants a window that has actually been laid out on a screen,
 so what is checked here is everything that made the drag impossible: the
@@ -57,8 +59,19 @@ def _tall(widget, height):
     QApplication.processEvents()
 
 
-def test_it_still_asks_to_open_at_the_height_it_always_did(win):
+def _open_history(win):
+    win.command_workspace.show_history()
+
+
+def test_with_nothing_open_it_is_only_its_rows_tall(win):
     """Being draggable is not an excuse to start out eating the viewport."""
+    box = win._cmd_dock.widget()
+    assert box.sizeHint().height() == box.minimumSizeHint().height()
+    assert box.sizePolicy().verticalPolicy() is QSizePolicy.Policy.Fixed
+
+
+def test_with_the_history_open_it_asks_for_the_height_it_always_did(win):
+    _open_history(win)
     asked = win._cmd_dock.widget().sizeHint().height()
     assert START_MIN <= asked <= START_MAX
 
@@ -66,6 +79,7 @@ def test_it_still_asks_to_open_at_the_height_it_always_did(win):
 def test_nothing_caps_the_command_area_at_the_height_it_opens_at(win):
     """The bug as it was met: no grip, because the dock would not take room
     however much was offered it."""
+    _open_history(win)
     assert win._cmd_dock.maximumHeight() > UNBOUNDED
     assert win._cmd_dock.widget().sizePolicy().verticalPolicy() \
         is not QSizePolicy.Policy.Fixed
@@ -78,6 +92,7 @@ def test_nothing_caps_the_history_either(win):
 def test_the_history_grows_into_the_room_the_command_area_is_given(win):
     """Four lines of history in a pane three times that tall would be a
     taller command area with nothing to show for it."""
+    _open_history(win)
     cl = win.command_line
     box = win._cmd_dock.widget()
     _tall(box, box.sizeHint().height())
@@ -89,6 +104,7 @@ def test_the_history_grows_into_the_room_the_command_area_is_given(win):
 def test_the_prompt_keeps_its_own_height_while_the_history_grows(win):
     """Only the history is worth more room; the row under it should stay
     put rather than share the growth."""
+    _open_history(win)
     cl = win.command_line
     box = win._cmd_dock.widget()
     _tall(box, box.sizeHint().height())
@@ -98,6 +114,7 @@ def test_the_prompt_keeps_its_own_height_while_the_history_grows(win):
 
 
 def test_the_osnap_bar_keeps_its_own_height_too(win):
+    _open_history(win)
     box = win._cmd_dock.widget()
     _tall(box, box.sizeHint().height())
     bar = win.osnap_bar.height()
@@ -108,6 +125,7 @@ def test_the_osnap_bar_keeps_its_own_height_too(win):
 def test_the_history_cannot_be_squeezed_away_to_nothing(win):
     """Dragging the other way has a floor: a command line with no line of
     history left on it is not a command line."""
+    _open_history(win)
     cl = win.command_line
     floor = win._cmd_dock.widget().minimumSizeHint().height()
     one_line = cl.echo_view.minimumSizeHint().height()
