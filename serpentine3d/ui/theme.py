@@ -317,18 +317,50 @@ QScrollBar::handle:horizontal {
     background: #45464d; border-radius: 5px; min-width: 24px;
 }
 
-QComboBox {
+QComboBox, QAbstractSpinBox {
     background: #1e1f22;
     border: 1px solid #3a3b41;
     border-radius: 4px;
-    padding: 4px 8px;
+    color: #e8e9ea;
+    selection-background-color: #8a6a2f;
+}
+QComboBox { padding: 4px 22px 4px 8px; }
+QAbstractSpinBox { padding: 4px 20px 4px 8px; }
+QComboBox:hover, QAbstractSpinBox:hover { border-color: #55565e; }
+QComboBox:focus, QComboBox:on, QAbstractSpinBox:focus {
+    border-color: #d9a441;
 }
 QComboBox:disabled, QLineEdit:disabled, QAbstractSpinBox:disabled {
     color: #6b6c72; border-color: #2e2f34;
 }
+
+QComboBox::drop-down {
+    subcontrol-origin: padding; subcontrol-position: center right;
+    width: 18px; border: none; background: transparent;
+}
 QComboBox QAbstractItemView {
     background: #2e2f34;
+    border: 1px solid #1b1c1f;
+    padding: 4px;
+    outline: none;
     selection-background-color: #4a3f28;
+    selection-color: #f0d9a8;
+}
+
+QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
+    subcontrol-origin: border; width: 18px;
+    border: none; background: transparent;
+}
+QAbstractSpinBox::up-button {
+    subcontrol-position: top right; border-top-right-radius: 4px;
+    margin-top: 2px;
+}
+QAbstractSpinBox::down-button {
+    subcontrol-position: bottom right; border-bottom-right-radius: 4px;
+    margin-bottom: 2px;
+}
+QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover {
+    background: #2f3035;
 }
 
 QLabel#commandPrompt {
@@ -357,6 +389,58 @@ QCheckBox::indicator:checked {
     border-color: #d9a441;
 }
 """
+
+# Chevrons for drop-downs and spin boxes. Qt style sheets take arrows only as
+# image files, and nothing ships as a file, so they are written out on start.
+_CHEVRONS = {
+    "down": (10, 6, "M1.5 1.25 L5 4.75 L8.5 1.25"),
+    "spin-up": (8, 5, "M1.25 4 L4 1.25 L6.75 4"),
+    "spin-down": (8, 5, "M1.25 1 L4 3.75 L6.75 1"),
+}
+_CHEVRON_TONES = {"": "#9a9b9e", "-hot": ACCENT, "-off": "#4a4b50"}
+
+_ARROW_QSS = """
+QComboBox::down-arrow {{ image: url("{d}/down.svg"); width: 10px; height: 6px; }}
+QComboBox::down-arrow:hover, QComboBox::down-arrow:on {{
+    image: url("{d}/down-hot.svg");
+}}
+QComboBox::down-arrow:disabled {{ image: url("{d}/down-off.svg"); }}
+QAbstractSpinBox::up-arrow {{
+    image: url("{d}/spin-up.svg"); width: 8px; height: 5px;
+}}
+QAbstractSpinBox::down-arrow {{
+    image: url("{d}/spin-down.svg"); width: 8px; height: 5px;
+}}
+QAbstractSpinBox::up-arrow:hover {{ image: url("{d}/spin-up-hot.svg"); }}
+QAbstractSpinBox::down-arrow:hover {{ image: url("{d}/spin-down-hot.svg"); }}
+QAbstractSpinBox::up-arrow:disabled, QAbstractSpinBox::up-arrow:off {{
+    image: url("{d}/spin-up-off.svg");
+}}
+QAbstractSpinBox::down-arrow:disabled, QAbstractSpinBox::down-arrow:off {{
+    image: url("{d}/spin-down-off.svg");
+}}
+"""
+
+
+def stylesheet() -> str:
+    """QSS with its arrow images written out where it can find them."""
+    import tempfile
+    from pathlib import Path
+    folder = Path(tempfile.gettempdir()) / "serpentine3d-ui"
+    try:
+        folder.mkdir(exist_ok=True)
+        for name, (w, h, path) in _CHEVRONS.items():
+            for suffix, tone in _CHEVRON_TONES.items():
+                svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" '
+                       f'height="{h}" viewBox="0 0 {w} {h}"><path d="{path}" '
+                       f'fill="none" stroke="{tone}" stroke-width="1.5" '
+                       'stroke-linecap="round" stroke-linejoin="round"/></svg>')
+                file = folder / f"{name}{suffix}.svg"
+                if not file.exists() or file.read_text() != svg:
+                    file.write_text(svg)
+    except OSError:
+        return QSS
+    return QSS + _ARROW_QSS.format(d=folder.as_posix())
 
 
 def apply_interface_font(app, family: str) -> None:
