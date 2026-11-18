@@ -324,7 +324,7 @@ QComboBox, QAbstractSpinBox {
     color: #e8e9ea;
     selection-background-color: #8a6a2f;
 }
-QComboBox { padding: 4px 22px 4px 8px; }
+QComboBox { padding: 4px 22px 4px 8px; combobox-popup: 0; }
 QAbstractSpinBox { padding: 4px 20px 4px 8px; }
 QComboBox:hover, QAbstractSpinBox:hover { border-color: #55565e; }
 QComboBox:focus, QComboBox:on, QAbstractSpinBox:focus {
@@ -346,18 +346,19 @@ QComboBox QAbstractItemView {
     selection-background-color: #4a3f28;
     selection-color: #f0d9a8;
 }
+QComboBox QAbstractItemView::item {
+    padding: 4px 8px; min-height: 18px; border-radius: 3px;
+}
 
 QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
-    subcontrol-origin: border; width: 18px;
-    border: none; background: transparent;
+    subcontrol-origin: border; width: 15px;
+    border: none; border-radius: 3px; background: transparent;
 }
 QAbstractSpinBox::up-button {
-    subcontrol-position: top right; border-top-right-radius: 4px;
-    margin-top: 2px;
+    subcontrol-position: top right; margin: 3px 3px 0 0;
 }
 QAbstractSpinBox::down-button {
-    subcontrol-position: bottom right; border-bottom-right-radius: 4px;
-    margin-bottom: 2px;
+    subcontrol-position: bottom right; margin: 0 3px 3px 0;
 }
 QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover {
     background: #2f3035;

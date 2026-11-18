@@ -11,11 +11,11 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
-from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QLabel,
-                               QLineEdit, QProxyStyle, QStyle)
+from PySide6.QtWidgets import QApplication, QLabel, QProxyStyle, QStyle
+
+from . import fields
 
 WAKE_UP_MS = 250
-SPIN_TEXT_INSET = 7
 _BG = QColor("#1f2023")
 _BORDER = QColor("#3d3e44")
 _TEXT = "#cfd0d2"
@@ -30,13 +30,7 @@ class _Timing(QProxyStyle):
         return super().styleHint(hint, option, widget, data)
 
     def polish(self, widget):
-        # Style sheets cannot pad a spin box's text on the left, so its
-        # edit field gets the inset a line edit has.
-        if (isinstance(widget, QAbstractSpinBox) and widget.buttonSymbols()
-                != QAbstractSpinBox.ButtonSymbols.NoButtons):
-            edit = widget.findChild(QLineEdit)
-            if edit is not None:
-                edit.setTextMargins(SPIN_TEXT_INSET, 0, 0, 0)
+        fields.polish(widget)
         return super().polish(widget)
 
 
