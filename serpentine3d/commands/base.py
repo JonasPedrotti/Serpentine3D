@@ -247,6 +247,9 @@ class SelectReq(Req):
     # Enter or a right-click with fewer than min_count picked ends the
     # command rather than asking again: Join with one curve is done.
     too_few_ends: bool = False
+    # Typed or clicked keywords that answer the prompt with their name in
+    # place of the objects: Split's Points goes straight to picking points.
+    extra_options: tuple = ()
 
 
 def _is_length(text: str, units: str) -> bool:
@@ -1393,6 +1396,13 @@ class CommandProcessor:
         text = text.strip()
         if not text:
             self.finish_selection()
+            return
+        keyword = next((w for w in req.extra_options
+                        if w.lower().startswith(text.lower())), None)
+        if keyword is not None:
+            self._select_buffer = []
+            self.ctx.selection.clear()
+            self._advance(keyword)
             return
         if text.lower() == "all":
             matches = [o.id for o in self.ctx.scene.visible_objects()

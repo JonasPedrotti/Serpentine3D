@@ -3672,6 +3672,34 @@ def curve_degree(shape) -> int:
     return max(bs.Degree() for bs in _wire_bsplines(shape))
 
 
+def closest_point_on(shape, point: Point) -> Point:
+    """The point of `shape` nearest to `point`."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    v = BRepBuilderAPI_MakeVertex(_pnt(point)).Vertex()
+    dist = BRepExtrema_DistShapeShape(v, shape)
+    if not dist.IsDone() or dist.NbSolution() == 0:
+        raise GeometryError("Could not measure to that shape")
+    p = dist.PointOnShape2(1)
+    return (p.X(), p.Y(), p.Z())
+
+
+def split_curve_at_points(curve, points: list) -> list:
+    """Split a curve at the points of it nearest to `points`."""
+    if shape_kind(curve) != "curve":
+        raise GeometryError("Only curves can be split at points")
+    on = [make_point(closest_point_on(curve, p)) for p in points]
+    if not on:
+        raise GeometryError("No points to split at")
+    return split_shape(curve, on)
+
+
+def shapes_touch(a, b) -> bool:
+    """Whether the two shapes meet anywhere, within tolerance."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    dist = BRepExtrema_DistShapeShape(a, b)
+    return dist.IsDone() and dist.Value() <= tol()
+
+
 def distance_point_to_shape(shape, point: Point) -> float:
     """Shortest distance from a point to anything with an edge or a face."""
     from OCP.BRepExtrema import BRepExtrema_DistShapeShape

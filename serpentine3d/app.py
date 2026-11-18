@@ -1148,13 +1148,12 @@ class MainWindow(QMainWindow):
         bar.setOrientation(Qt.Orientation.Vertical)
         bar.setMovable(False)
         groups = [
-            [("Point", "point",
-              ("Multiple points", "points"))],
             [("Move", "move", ("Copy", "copy")), ("Rotate", "rotate", ("Rotate 3D", "rotate3d")),
              ("Scale", "scale"), ("Mirror", "mirror"),
              ("Orient: from 2 points", "orient",
               ("from 3 points", "orient3pt"))],
-            [("Line", "line"), ("Polyline", "polyline"),
+            [("Point", "point", ("Multiple points", "points")),
+             ("Line", "line"), ("Polyline", "polyline"),
              ("Curve", "curve", ("Curve through points", "interpcrv")),
              ("Circle: center, radius", "circle",
               ("through 3 points", "circle 3point")),
@@ -1164,7 +1163,8 @@ class MainWindow(QMainWindow):
               ("ends first, point on arc", "arc endsfirst")),
              ("Rectangle", "rectangle",
               ("from 3 points", "rectangle 3point"))],
-            [("Trim", "trim"), ("Split", "split"), ("Offset", "offset"),
+            [("Trim", "trim"), ("Split", "split", ("Split with points", "splitpoints")),
+             ("Offset", "offset"),
              ("Fillet", "fillet")],
             [("Plane, corner to corner", "plane"),
              ("Plane from 3 points", "plane3pt"),

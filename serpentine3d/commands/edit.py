@@ -2,7 +2,7 @@
 
 from ..core import geometry as g
 from .base import (
-    NumberReq, OptionReq, PointReq, SelectReq, TextReq, command)
+    UNDO_POINT, NumberReq, OptionReq, PointReq, SelectReq, TextReq, command)
 
 
 def _delete_held_points(ctx) -> bool:
@@ -436,21 +436,69 @@ def _add_split_piece(ctx, shape, target):
     return ctx.scene.add(shape, layer_id=target.layer_id)
 
 
+_SPLIT_KINDS = ("curve", "surface", "solid", "picture", "hatch")
+
+
 @command("split")
 def cmd_split(ctx):
+    yield from _split(ctx)
+
+
+@command("splitpoints", label="Split with points")
+def cmd_splitpoints(ctx):
+    """Split, cutting a curve at points picked on it rather than by cutters."""
+    yield from _split(ctx, at_points=True)
+
+
+def _split(ctx, at_points=False):
     targets = yield SelectReq(
         "Select curve, surface, hatch or picture to split",
-        kinds=("curve", "surface", "solid", "picture", "hatch"),
-        max_count=1)
-    cutters = yield SelectReq("Select cutting objects",
-                              allow_preselected=False)
+        kinds=_SPLIT_KINDS, max_count=1)
     target = targets[0]
-    pieces = g.split_shape(target.shape, [c.shape for c in cutters],
-                           direction=tuple(ctx.cplane.normal))
-    for p in pieces:
-        _add_split_piece(ctx, p, target)
+    is_curve = target.kind == "curve"
+    if not (is_curve and at_points):
+        cutters = yield SelectReq(
+            "Select cutting objects", allow_preselected=False,
+            extra_options=("Points",) if is_curve else ())
+        at_points = cutters == "Points"
+    if at_points:
+        points = yield from _points_on(ctx, target.shape)
+        if not points:
+            return
+        pieces = g.split_curve_at_points(target.shape, points)
+    else:
+        pieces = g.split_shape(target.shape, [c.shape for c in cutters],
+                               direction=tuple(ctx.cplane.normal))
+    made = [_add_split_piece(ctx, p, target) for p in pieces]
     ctx.scene.remove(target.id)
+    ctx.select_result(made)
+    ctx.flash(made)
     ctx.echo(f"Split {target.name} into {len(pieces)} pieces.")
+
+
+def _points_on(ctx, curve):
+    """Points picked on `curve` until Enter, each moved onto it."""
+    def ghost(p):
+        try:
+            return g.make_point(g.closest_point_on(curve, p))
+        except (g.GeometryError, TypeError, ValueError):
+            return None
+
+    points = []
+    while True:
+        p = yield PointReq(
+            "Point on the curve to split at"
+            + (", Enter when done" if points else ""),
+            allow_empty=True, snap_on=curve, steps_back=True,
+            extra_options=(UNDO_POINT,) if points else (),
+            marks=[(q, "") for q in points],
+            rubber_band=False, preview_fn=ghost)
+        if p is None:
+            return points
+        if p == UNDO_POINT:
+            points.pop()
+            continue
+        points.append(g.closest_point_on(curve, p))
 
 
 @command("trim", aliases=("tr",))
@@ -482,6 +530,13 @@ def cmd_trim(ctx):
             if at is None:
                 return          # scripted, as trim always was: said, and done
             continue            # clicked: say so and let the next click try
+        if len(pieces) == 1:
+            # only touching the cutters: there is one part, and it goes
+            ctx.scene.remove(target.id)
+            trimmed += 1
+            if at is None:
+                break
+            continue
         if at is None:
             yield from _trim_by_asking(ctx, target, pieces)
             return
@@ -508,6 +563,9 @@ def _pieces_to_trim(ctx, target, cutting):
     except g.GeometryError:
         pieces = []
     if len(pieces) < 2:
+        if target.kind == "curve" and any(
+                g.shapes_touch(target.shape, c) for c in others):
+            return [target.shape]
         ctx.echo(f"The cutters do not cross {target.name}; nothing to trim.")
         return None
     return pieces
