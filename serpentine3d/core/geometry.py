@@ -1852,6 +1852,28 @@ def face_normal(face) -> Point:
     return n
 
 
+def flat_normal(shape) -> Point | None:
+    """The one normal all faces of `shape` share if they lie in one plane,
+    whatever kind of surface carries them, else None."""
+    from OCP.BRep import BRep_Tool
+    from OCP.GeomLib import GeomLib_IsPlanarSurface
+    from OCP.TopAbs import TopAbs_Orientation
+    normal = None
+    for face in faces_of(shape):
+        check = GeomLib_IsPlanarSurface(BRep_Tool.Surface_s(face), tol())
+        if not check.IsPlanar():
+            return None
+        d = check.Plan().Axis().Direction()
+        n = (d.X(), d.Y(), d.Z())
+        if face.Orientation() == TopAbs_Orientation.TopAbs_REVERSED:
+            n = (-n[0], -n[1], -n[2])
+        if normal is None:
+            normal = n
+        elif abs(abs(sum(a * b for a, b in zip(n, normal))) - 1.0) > 1e-9:
+            return None
+    return normal
+
+
 def face_point_normal(face):
     """A representative surface point and outward unit normal on `face`,
     sampled at its mid-parameter — works for curved faces too (where the
