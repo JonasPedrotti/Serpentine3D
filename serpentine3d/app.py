@@ -8,7 +8,9 @@ import signal
 import sys
 
 import numpy as np
-from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QEvent, QObject, QPoint, QProcess, Qt, QTimer, Signal,
+)
 from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDockWidget, QFileDialog, QInputDialog, QMainWindow,
@@ -39,6 +41,7 @@ from .ui.icons import panel_icon
 from .ui.viewport import Viewport, set_default_gl_format
 
 _UNLIMITED = 16777215        # Qt's QWIDGETSIZE_MAX: "no maximum"
+_LISTS_GAP = 40              # px between a layer's properties and Layers
 
 PANEL_WIDTH = 280            # what a fresh window gives Properties/Layers
 PANEL_SHARE = 0.3            # ... and the most a restored one may hold
@@ -414,7 +417,7 @@ class MainWindow(QMainWindow):
                 self._set_panel_width(kept)
             else:
                 self._panel_width = saved
-        self._set_lists_height(self.height() // 2)
+        self._put_lists_under_layer_page()
         # again once the opening window has its final size
         self._lists_height_due = True
         self._repaint_panes()
@@ -465,6 +468,14 @@ class MainWindow(QMainWindow):
             dock.setMaximumWidth(_UNLIMITED)
         self._panel_width = width
 
+    def _put_lists_under_layer_page(self):
+        """Move the line between Properties and Layers to a little under
+        where a picked layer's properties end."""
+        page_top = self.properties.mapTo(self, QPoint(0, 0)).y()
+        top = page_top + self.properties.layer_page_height() + _LISTS_GAP
+        bottom = self._layer_dock.geometry().bottom() + 1
+        self._set_lists_height(bottom - top)
+
     def _set_lists_height(self, height):
         """Make the Layers and Sheets dock this tall when it sits under
         Properties in the column, held the same way as the column's width.
@@ -509,7 +520,7 @@ class MainWindow(QMainWindow):
         self._hold_panel_width()
         if getattr(self, "_lists_height_due", False):
             self._lists_height_due = False
-            self._set_lists_height(self.height() // 2)
+            self._put_lists_under_layer_page()
 
     def _hold_panel_width(self):
         if self._panel_width:
