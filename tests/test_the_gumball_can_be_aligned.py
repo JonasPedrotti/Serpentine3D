@@ -277,13 +277,17 @@ def test_a_world_ring_tilts_about_the_axis_laid_into_the_face():
 
 # --- the tag and the menu ---------------------------------------------------
 
-def test_the_tag_is_a_handle_that_opens_the_menu():
+def test_a_right_click_on_the_pivot_opens_the_menu(monkeypatch):
     gb, vp, _ = _whole(g.make_box((0, 0, 0), 10, 10, 10))
-    px, py = gb._project([gb.tag_position()])[0][:2]
+    anchor, _ = gb.anchor_and_axes()
+    px, py = gb._project([anchor])[0][:2]
+    opened = []
+    monkeypatch.setattr(gb, "open_menu", lambda x, y: opened.append((x, y)))
 
-    assert gb.hit_test(px, py) == ("menu", 0)
-    assert gb.begin_drag(("menu", 0), px, py, NONE) is True
-    assert gb.drag is None
+    assert gb.hit_test(px, py) == ("center", 0)
+    assert gb.context_menu(px + 40, py) is False
+    assert gb.context_menu(px, py) is True
+    assert opened == [(px, py)]
 
 
 def test_the_menu_offers_the_four_and_knows_which_is_on():
