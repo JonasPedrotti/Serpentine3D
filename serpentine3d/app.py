@@ -165,6 +165,8 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea,
                            self._cmd_dock)
 
+        # however the drawing is saved, its panes go with it
+        self.scene.before_save = self.store_view_settings
         self.properties = PropertiesPanel(
             self.scene, self.selection, self.history,
             # a sheet's selection belongs to whichever pane is showing it
@@ -172,7 +174,8 @@ class MainWindow(QMainWindow):
             # the model panes a clipping plane lists among its views
             panes_source=lambda: [
                 (vp.view_key, self._viewport_title(vp))
-                for vp in self.all_viewports() if vp.space == "model"])
+                for vp in self.all_viewports() if vp.space == "model"],
+            viewports_source=self._model_panes)
         self.properties.modelTextChanged.connect(
             self._model_text_changed_from_properties)
         self.properties.textTypographyChanged.connect(
@@ -182,6 +185,7 @@ class MainWindow(QMainWindow):
         self.properties.lookAtTextRequested.connect(self._look_at_text)
         self.properties.hatchPatternsRequested.connect(
             self._run_hatch_patterns)
+        self.properties.viewCommandRequested.connect(self.run_command)
         self._text_placement_choice = "CPlane"
         self._prop_dock = QDockWidget("Properties", self)
         self._prop_dock.setObjectName("propertiesDock")
@@ -549,6 +553,7 @@ class MainWindow(QMainWindow):
         self.dock_viewports.append(vp)
         dock = self._dock_viewport(vp, "Viewport", closable=True)
         vp.view_key = dock.objectName()       # its own, to a clipping plane
+        kept = self._apply_kept_settings(vp)
         areas = {"Right": Qt.DockWidgetArea.RightDockWidgetArea,
                  "Left": Qt.DockWidgetArea.LeftDockWidgetArea,
                  "Top": Qt.DockWidgetArea.TopDockWidgetArea,
@@ -561,9 +566,40 @@ class MainWindow(QMainWindow):
         if space != "model":
             vp.set_space(space)
         self._update_viewport_dock_title(vp)
-        vp.zoom_extents()
+        if not kept:
+            vp.zoom_extents()
         self._set_active_viewport(vp)
         return vp
+
+    def _model_panes(self) -> list:
+        """Every model pane the window has made, shown or not."""
+        return [vp for vp in [self.viewport, *self.aux_viewports,
+                              *self.dock_viewports] if vp.space == "model"]
+
+    def _apply_kept_settings(self, vp) -> bool:
+        """Give a pane what the drawing kept for it; True when that put
+        its camera somewhere."""
+        settings = self.scene.view_settings
+        pane = settings.panes.get(vp.view_key, {})
+        vp.apply_pane_settings(
+            pane, settings.background if settings.for_all else None)
+        return bool(pane.get("camera"))
+
+    def store_view_settings(self):
+        """Write each model pane into the drawing, for saving it."""
+        settings = self.scene.view_settings
+        for vp in self._model_panes():
+            settings.panes[vp.view_key] = vp.pane_settings()
+
+    def apply_view_settings(self) -> bool:
+        """Every pane as the drawing kept it. True when the primary pane's
+        camera came from the drawing, so nothing needs to frame it."""
+        placed = False
+        for vp in self._model_panes():
+            kept = self._apply_kept_settings(vp)
+            placed = placed or (kept and vp is self.viewport)
+        self.properties.refresh_view_page()
+        return placed
 
     def show_ai_panel(self):
         """Reveal the conversation without changing the input destination."""
@@ -583,10 +619,8 @@ class MainWindow(QMainWindow):
             dock = QDockWidget("Hydra", self)
             dock.setObjectName("hydraDock")
             dock.setWindowIcon(hydra_icon())
-            # the side panels' own title, its close button plain to see; no
-            # float button, it floats by a drag or a double-click
-            title = DockTitleBar(hydra_icon().pixmap(16, 16), "Hydra", dock,
-                                 float_button=False)
+            # the side panels' own title, its close button plain to see
+            title = DockTitleBar(hydra_icon().pixmap(16, 16), "Hydra", dock)
             dock.windowTitleChanged.connect(title.title.setText)
             dock.setTitleBarWidget(title)
             dock.setWidget(self.hydra)
@@ -729,7 +763,7 @@ class MainWindow(QMainWindow):
         for obj in planes:
             act = sub.addAction(clipping.label(self.scene, obj))
             act.setCheckable(True)
-            act.setChecked(view not in obj.clip_plane.get("off_in", ()))
+            act.setChecked(clipping.chosen(obj.clip_plane, view))
             act.triggered.connect(
                 lambda on, i=obj.id: self.set_clip_view(i, view, on))
         hidden = [o.id for o in planes if clipping.hidden(self.scene, o)]
@@ -802,6 +836,9 @@ class MainWindow(QMainWindow):
         vp.displayModeChanged.connect(self._update_status)
         vp.layoutSelectionChanged.connect(self._update_status)
         vp.layoutSelectionChanged.connect(self.properties.refresh)
+        vp.cameraMoved.connect(
+            lambda pane=vp: pane is self._active_vp
+            and self.properties.camera_moved())
         vp.history = self.history
         vp.objectClicked.connect(
             lambda obj_id, mods, pane=vp: self._on_object_clicked(
@@ -906,6 +943,7 @@ class MainWindow(QMainWindow):
         # holding open. Keeping the old one would make the next Ctrl+M put
         # back a layout from before this call.
         self._maximized_vp = self._maximized_state = None
+        fresh = []
         if mode == "quad" and not self.aux_docks:
             for title, view in (("Top", "top"), ("Front", "front"),
                                 ("Right", "right")):
@@ -920,6 +958,8 @@ class MainWindow(QMainWindow):
                 aux.camera.target = self.viewport.camera.target.copy()
                 aux.camera.distance = self.viewport.camera.distance
                 self._wire_viewport(aux)
+                if self._apply_kept_settings(aux):
+                    fresh.append(aux)
                 self.aux_viewports.append(aux)
                 self.aux_docks.append(self._dock_viewport(aux, title))
         if mode == "quad":
@@ -942,7 +982,8 @@ class MainWindow(QMainWindow):
                                Qt.Orientation.Vertical)       # top   / right
             for aux in self.aux_viewports:
                 aux.show()
-                aux.zoom_extents()
+                if aux not in fresh:
+                    aux.zoom_extents()
             # split builds the 2x2 structure but leaves lopsided sizes;
             # even them out once the layout is realised
             QTimer.singleShot(0, self, self._equalize_quad)
@@ -2144,6 +2185,7 @@ class MainWindow(QMainWindow):
                 return
         self.history.checkpoint("new")
         self.scene.clear()
+        self.apply_view_settings()
         self.ctx.current_path = None
         self.command_line.echo("New document.")
         self.mark_saved()
@@ -2153,6 +2195,7 @@ class MainWindow(QMainWindow):
         welcome screen."""
         self.history.checkpoint("new")
         self.scene.clear()
+        self.apply_view_settings()
         self.scene.units = units
         self.scene.notify()
         self.ctx.current_path = None
@@ -2259,7 +2302,8 @@ class MainWindow(QMainWindow):
             self.command_line.echo(
                 f"Opened {path}: {len(self.scene.all())} object(s)"
                 + "".join(f", {note}" for note in notes) + ".")
-            self.viewport.zoom_extents()
+            if not self.apply_view_settings():
+                self.viewport.zoom_extents()
             self.mark_saved()
             self.add_recent(path)
         except fileio.Cancelled:
@@ -2728,7 +2772,8 @@ class MainWindow(QMainWindow):
             self.command_line.echo(
                 f"Recovered {len(self.scene.all())} object(s) a restart "
                 "had kept.")
-            self.viewport.zoom_extents()
+            if not self.apply_view_settings():
+                self.viewport.zoom_extents()
             self._update_status()
         except Exception as exc:                              # noqa: BLE001
             QMessageBox.warning(self, "Recovery failed", str(exc))
@@ -3623,6 +3668,7 @@ def run_app(app, splash=None):
     if os.path.exists(template):
         try:
             fileio.import_file(window.scene, template, replace=True)
+            window.apply_view_settings()
             window.mark_saved()
             window.command_line.echo("Started from template.serp.")
         except Exception:                                     # noqa: BLE001
@@ -3683,7 +3729,8 @@ def _open_launch_args(window, args: list[str]):
                         window.ctx.current_path = os.path.abspath(arg)
                     window.command_line.echo(
                         f"Opened {arg}: {len(window.scene.all())} object(s).")
-                window.viewport.zoom_extents()
+                if not window.apply_view_settings():
+                    window.viewport.zoom_extents()
                 if handoff is not None:
                     if handoff["doc_path"]:
                         window.add_recent(handoff["doc_path"])

@@ -561,7 +561,6 @@ class _ClipViews(QWidget):
         the view a detail looks along, and `units` are the document's,
         which its scale is written in."""
         setting = plane.clip_plane or {}
-        off = set(setting.get("off_in", ()))
         with QSignalBlocker(self.paused):
             self.paused.setChecked(not setting.get("enabled"))
         _cleared(self._rows)
@@ -570,7 +569,7 @@ class _ClipViews(QWidget):
 
         def tick(key, label):
             box = QCheckBox(label)
-            box.setChecked(key not in off)
+            box.setChecked(clipping.chosen(setting, key))
             box.setEnabled(bool(setting.get("enabled")))
             box.toggled.connect(lambda on, k=key: self._switch(k, on))
             self._rows.addWidget(box)
@@ -640,7 +639,7 @@ class _DetailClips(QWidget):
         for obj, label in planes:
             setting = obj.clip_plane
             box = QCheckBox(label)
-            box.setChecked(detail.id not in setting.get("off_in", ()))
+            box.setChecked(clipping.chosen(setting, detail.id))
             box.toggled.connect(lambda on, i=obj.id: self._switch(i, on))
             self._rows.addWidget(box)
             self._boxes.append((obj.id, box))
@@ -956,6 +955,7 @@ class SubjectHeader(QWidget):
             % (8 if subject is None else 4, _INSET))
         if subject is None:
             self._kind_row.hide()
+            self.title.show()
             self.title.setText(self._empty[0])
             self.detail.setText(self._empty[1])
             self.detail.setVisible(bool(self._empty[1]))
@@ -964,6 +964,7 @@ class SubjectHeader(QWidget):
         self.mark.setPixmap(subject.mark.pixmap(14, 14))
         self.kind.setText(subject.kind)
         self.title.setText(subject.title)
+        self.title.setVisible(bool(subject.title))
         self.detail.setText(subject.detail)
         self.detail.setVisible(bool(subject.detail))
 
@@ -985,9 +986,12 @@ class PropertiesPanel(QWidget):
     # Load or Delete patterns… was picked in a pattern list: the
     # hatchpatterns action to run (#92)
     hatchPatternsRequested = Signal(str)
+    # a button on the view page that picks in the model: the command to run
+    viewCommandRequested = Signal(str)
 
     def __init__(self, scene, selection, history, parent=None,
-                 viewport_source=None, panes_source=None):
+                 viewport_source=None, panes_source=None,
+                 viewports_source=None):
         super().__init__(parent)
         self.scene = scene
         self.selection = selection
@@ -1341,10 +1345,18 @@ class PropertiesPanel(QWidget):
         page.addStretch(1)
         self._build_layer_page()
         self._build_sheet_page()
+        from .view_page import ViewPage
+        self.view_head = SubjectHeader()
+        self.view_page = ViewPage(
+            scene, self.view_head, self._view_pane,
+            viewports_source or (lambda: [p for p in [self._view_pane()]
+                                          if p is not None]),
+            self.viewCommandRequested.emit)
         self.pages = QStackedWidget()
         self.pages.addWidget(self.object_page)
         self.pages.addWidget(self.layer_page)
         self.pages.addWidget(self.sheet_page)
+        self.pages.addWidget(self.view_page)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1517,7 +1529,25 @@ class PropertiesPanel(QWidget):
             out.append("layers")
         elif self._picked_sheets():
             out.append("sheets")
+        if not out and self._view_pane() is not None:
+            out.append("view")
         return out
+
+    def _view_pane(self):
+        """The model pane being worked in, whose page shows with nothing
+        picked; None on a sheet or with no window to ask."""
+        src = self._viewport_source
+        vp = src() if src is not None else None
+        return vp if vp is not None and vp.space == "model" else None
+
+    def refresh_view_page(self):
+        if self.shown() == "view":
+            self.view_head.show_subject(self.describe("view"))
+            self.view_page.refresh()
+
+    def camera_moved(self):
+        if self.shown() == "view":
+            self.view_page.refresh_camera()
 
     def shown(self) -> str | None:
         """The subject on show: the one last chosen while it is live, else
@@ -1544,7 +1574,17 @@ class PropertiesPanel(QWidget):
             return self._describe_layers()
         if subject == "sheets":
             return self._describe_sheets()
+        if subject == "view":
+            return self._describe_view()
         return self._describe_selection()
+
+    def _describe_view(self) -> Subject | None:
+        # The pane's own title already names its view and display mode,
+        # and the page below its lens, so the header says only what it is.
+        if self._view_pane() is None:
+            return None
+        return Subject("Viewport", "", "", icons.view_mark(), "Viewport",
+                       "The view you are working in")
 
     def _describe_selection(self) -> Subject | None:
         """In the order refresh() chooses its page: notes, then paper
@@ -1738,6 +1778,9 @@ class PropertiesPanel(QWidget):
         elif shown == "sheets":
             self._refresh_sheet_page()
             self.pages.setCurrentWidget(self.sheet_page)
+        elif shown == "view":
+            self.refresh_view_page()
+            self.pages.setCurrentWidget(self.view_page)
         else:
             self.pages.setCurrentWidget(self.object_page)
         self.subjectsChanged.emit()

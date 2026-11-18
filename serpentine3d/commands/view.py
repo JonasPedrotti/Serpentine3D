@@ -206,7 +206,11 @@ def cmd_clippingplane(ctx):
     if sum(a * b for a, b in zip(normal, away)) < 0:
         face = g.mirror(face, tuple(c1), tuple(ctx.cplane.normal))
     obj = ctx.scene.add(face, name=_next_clip_name(ctx.scene))
-    ctx.scene.update(obj.id, clip_plane={"enabled": True})
+    from ..core import clipping
+    clip_view = getattr(ctx.viewport, "clip_view", None)
+    view = clip_view() if clip_view is not None else None
+    ctx.scene.update(obj.id, clip_plane=(
+        clipping.drawn_in(view) if view else {"enabled": True}))
     ctx.echo(f"Created {obj.name}. The purple arrow points toward the visible "
              "side. 'disableclippingplane' pauses it.")
 

@@ -1193,6 +1193,16 @@ def sheet_mark() -> QIcon:
     return QIcon(_mark_pixmap(_page))
 
 
+def _view_frame(p):
+    p.drawRoundedRect(QRectF(1.5, 3.5, 13, 9), 1.5, 1.5)
+    p.drawEllipse(QPointF(8, 8), 2.4, 2.4)
+
+
+def view_mark() -> QIcon:
+    """The model pane's mark in Properties, shown with nothing picked."""
+    return QIcon(_mark_pixmap(_view_frame))
+
+
 def panel_icon(name: str) -> QPixmap:
     """The mark at the left of a panel's title: "properties", "layers" or
     "sheets"."""
@@ -1264,6 +1274,93 @@ def switch_glyph(kind: str, state: str) -> QPixmap:
         else:
             ink = _SWITCH_INK["locked" if state == "on" else state]
             drawer = lambda p: _padlock(p, state != "off")  # noqa: E731
+
+        def inked(p, drawer=drawer, ink=ink):
+            pen = p.pen()
+            pen.setColor(ink)
+            p.setPen(pen)
+            drawer(p)
+        _switches[key] = _mark_pixmap(inked)
+    return _switches[key]
+
+
+def _crosshair(p):
+    p.drawEllipse(QPointF(8, 8), 3.5, 3.5)
+    for a, b in (((8, 1.5), (8, 4.5)), ((8, 11.5), (8, 14.5)),
+                 ((1.5, 8), (4.5, 8)), ((11.5, 8), (14.5, 8))):
+        p.drawLine(QPointF(*a), QPointF(*b))
+
+
+def _folder(p):
+    path = QPainterPath(QPointF(2, 4))
+    path.lineTo(6, 4)
+    path.lineTo(7.5, 5.5)
+    path.lineTo(14, 5.5)
+    path.lineTo(14, 13)
+    path.lineTo(2, 13)
+    path.closeSubpath()
+    p.drawPath(path)
+
+
+def _half_disc(p):
+    p.drawEllipse(QPointF(8, 8), 5.5, 5.5)
+    half = QPainterPath(QPointF(8, 2.5))
+    half.arcTo(QRectF(2.5, 2.5, 11, 11), 90, 180)
+    half.closeSubpath()
+    p.save()
+    p.setBrush(QBrush(p.pen().color()))
+    p.drawPath(half)
+    p.restore()
+
+
+def _plus(p):
+    p.drawLine(QPointF(8, 3), QPointF(8, 13))
+    p.drawLine(QPointF(3, 8), QPointF(13, 8))
+
+
+def _arrow(p):
+    p.drawLine(QPointF(3, 8), QPointF(13, 8))
+    p.drawLine(QPointF(9.5, 4.5), QPointF(13, 8))
+    p.drawLine(QPointF(9.5, 11.5), QPointF(13, 8))
+
+
+def _lock_shut(p):
+    p.drawRoundedRect(QRectF(4, 7.5, 8, 6.5), 1.3, 1.3)
+    shackle = QPainterPath(QPointF(5.6, 7.5))
+    shackle.lineTo(5.6, 5.2)
+    shackle.arcTo(QRectF(5.6, 2.8, 4.8, 4.8), 180, -180)
+    shackle.lineTo(10.4, 7.5)
+    p.drawPath(shackle)
+
+
+def _lock_open(p):
+    """The shackle swung out to the right, its free leg well clear of the
+    body, so open reads as open and not as a faint closed lock."""
+    p.drawRoundedRect(QRectF(1.5, 7.5, 8, 6.5), 1.3, 1.3)
+    shackle = QPainterPath(QPointF(7.9, 7.5))
+    shackle.lineTo(7.9, 4.6)
+    shackle.arcTo(QRectF(7.9, 2.2, 4.8, 4.8), 180, -180)
+    shackle.lineTo(12.7, 6.2)
+    p.drawPath(shackle)
+
+
+def _cross(p):
+    p.drawLine(QPointF(4, 4), QPointF(12, 12))
+    p.drawLine(QPointF(12, 4), QPointF(4, 12))
+
+
+_VIEW_GLYPHS = {"target": _crosshair, "folder": _folder, "gray": _half_disc,
+                "add": _plus, "remove": _cross, "arrow": _arrow,
+                "locked": _lock_shut, "unlocked": _lock_open}
+
+
+def view_glyph(name: str, on: bool = True) -> QPixmap:
+    """A small glyph for the view page's buttons, inked like a layer
+    switch: bright when on, faint when off."""
+    key = ("view", name, on)
+    if key not in _switches:
+        ink = _SWITCH_INK["on" if on else "off"]
+        drawer = _VIEW_GLYPHS[name]
 
         def inked(p, drawer=drawer, ink=ink):
             pen = p.pen()

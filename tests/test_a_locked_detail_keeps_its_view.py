@@ -179,7 +179,7 @@ def _lock_box(panel) -> QCheckBox:
 
 
 def _combo(panel, offers: str) -> QComboBox:
-    return next(c for c in panel.findChildren(QComboBox)
+    return next(c for c in panel.object_page.findChildren(QComboBox)
                 if offers in [c.itemText(i) for i in range(c.count())])
 
 
