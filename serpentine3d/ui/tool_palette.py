@@ -18,7 +18,7 @@ it.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt
 from PySide6.QtWidgets import QFrame, QScrollArea, QSizePolicy, QToolButton, QWidget
 
 from .icons import command_icon
@@ -36,13 +36,14 @@ class ToolPalette(QWidget):
 
     def __init__(self, groups, invoke, parent=None):
         super().__init__(parent)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
         # An empty column's worth, so that the size hint is answerable from
         # the moment the widget exists: reflow only works out the real
         # height once every button has been parented on, and a hint asked
         # for before then came back as an AttributeError from inside a Qt
         # override, which surfaces as a bare SystemError somewhere else.
         self._height = MARGIN * 2
+        self._lead = 0
         self._buttons: list[QToolButton] = []
         self._rules: list[QFrame] = []
         self._items: list[tuple[QWidget, bool]] = []   # (widget, is_rule)
@@ -88,15 +89,25 @@ class ToolPalette(QWidget):
     def rules(self) -> list[QFrame]:
         return list(self._rules)
 
+    def set_lead(self, lead: int) -> None:
+        """Start the column this far down, to centre it on something."""
+        if lead != self._lead:
+            self._lead = lead
+            self.reflow()
+
+    def content_height(self) -> int:
+        return self._height
+
     def reflow(self) -> None:
         """Stack the tools, in order, at the size they are."""
         y = MARGIN
+        lead = self._lead
         for widget, is_rule in self._items:
             if is_rule:
-                widget.setGeometry(MARGIN, y + RULE // 2, BUTTON, 1)
+                widget.setGeometry(MARGIN, lead + y + RULE // 2, BUTTON, 1)
                 y += RULE
             else:
-                widget.move(MARGIN, y)
+                widget.move(MARGIN, lead + y)
                 y += PITCH
         self._height = y - GAP + MARGIN
 
@@ -126,10 +137,42 @@ class _Strip(QScrollArea):
     def minimumSizeHint(self) -> QSize:
         return QSize(self.sizeHint().width(), 0)
 
+    _target: QWidget | None = None
+
+    def centre_on(self, target: QWidget) -> None:
+        """Keep the tools level with the middle of ``target``."""
+        self._target = target
+        target.installEventFilter(self)
+        self.recentre()
+
+    def recentre(self) -> None:
+        palette = self.widget()
+        view = self.viewport()
+        room = view.height()
+        content = palette.content_height()
+        target = self._target
+        if target is not None and target.isVisible():
+            middle = target.mapToGlobal(QPoint(0, target.height() // 2))
+            centre = view.mapFromGlobal(middle).y()
+        else:
+            centre = room // 2
+        palette.set_lead(max(0, min(centre - content // 2, room - content)))
+
+    def eventFilter(self, watched, event):
+        if watched is self._target and event.type() in (
+                QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.Show):
+            self.recentre()
+        return False
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         # A scrollbar coming or going changes how wide we need to be.
         self.updateGeometry()
+        self.recentre()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self.recentre()
 
 
 def hydra_button(invoke, parent=None) -> QWidget:
@@ -148,8 +191,12 @@ def hydra_button(invoke, parent=None) -> QWidget:
     return host
 
 
-def tool_strip(groups, invoke, parent=None) -> QScrollArea:
-    """The palette, in something that will scroll it if it has to."""
+def tool_strip(groups, invoke, parent=None, centre_on=None) -> QScrollArea:
+    """The palette, in something that will scroll it if it has to.
+
+    With room to spare the tools sit level with the middle of ``centre_on``,
+    or of the strip itself without one.
+    """
     area = _Strip(parent)
     area.setObjectName("toolStrip")
     area.setFrameShape(QFrame.Shape.NoFrame)
@@ -160,6 +207,8 @@ def tool_strip(groups, invoke, parent=None) -> QScrollArea:
     # Expanding, or the toolbar hands the strip its height hint and the
     # tools scroll in a window with room to spare.
     area.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+    if centre_on is not None:
+        area.centre_on(centre_on)
     return area
 
 

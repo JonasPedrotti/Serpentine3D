@@ -103,10 +103,12 @@ class OsnapBar(QWidget):
             " border: 1px solid #3a3b41; border-radius: 4px;"
             " background: #1e1f22; color: #cfd0d2; }"
             "QDoubleSpinBox:focus { border-color: #d9a441; }"
-            # without the origin the hidden arrows still take the width,
-            # and the text gets none of it
+            # without the origin the hidden arrows still take the width;
+            # placed "top right", as the theme has them, they leave the
+            # text 1 px of it
             "QDoubleSpinBox::up-button, QDoubleSpinBox::down-button"
-            " { subcontrol-origin: border; width: 0px; }"
+            " { subcontrol-origin: border; subcontrol-position: top;"
+            " width: 0px; }"
             "QDoubleSpinBox:disabled { color: #5d5e63;"
             " background: transparent; border-color: #2e2f34; }")
         self._project_z.setValue(viewport.snaps.project_z)
