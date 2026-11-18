@@ -39,6 +39,7 @@ class DockTitleBar(QWidget):
     def __init__(self, icon, title: str, dock: QDockWidget | None = None):
         super().__init__()
         self._dock = dock
+        self._close_when_floating = False
         self.setObjectName("dockTitle")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(_QSS)
@@ -62,6 +63,7 @@ class DockTitleBar(QWidget):
         if dock is not None:
             self.close_btn.clicked.connect(dock.close)
             dock.featuresChanged.connect(self._show_buttons)
+            dock.topLevelChanged.connect(self._show_buttons)
         self._show_buttons()
         self.setMinimumHeight(26)
 
@@ -76,11 +78,20 @@ class DockTitleBar(QWidget):
         self.row.insertWidget(self._slot, widget, *args)
         self._slot += 1
 
+    def close_only_when_floating(self):
+        """Show the close button only while the panel is torn off; docked,
+        it stays part of the window."""
+        self._close_when_floating = True
+        self._show_buttons()
+
     def _show_buttons(self, *_args):
-        feats = (self._dock.features() if self._dock is not None
+        dock = self._dock
+        feats = (dock.features() if dock is not None
                  else QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
-        self.close_btn.setVisible(
-            bool(feats & QDockWidget.DockWidgetFeature.DockWidgetClosable))
+        closable = bool(feats & QDockWidget.DockWidgetFeature.DockWidgetClosable)
+        if self._close_when_floating:
+            closable = closable and dock is not None and dock.isFloating()
+        self.close_btn.setVisible(closable)
 
     def mouseDoubleClickEvent(self, ev):
         """A double-click on a dock's title floats it, as Qt's own does."""

@@ -289,10 +289,12 @@ QToolTip {
 
 QMenu {
     background: #2e2f34;
-    border: 1px solid #1b1c1f;
+    border: 1px solid #45464c;
+    border-radius: 8px;
+    margin: 8px;
     padding: 4px;
 }
-QMenu::item { padding: 5px 24px 5px 12px; border-radius: 3px; }
+QMenu::item { padding: 5px 24px 5px 12px; border-radius: 5px; }
 QMenu::item:selected { background: #4a3f28; color: #f0d9a8; }
 QMenu::separator { height: 1px; background: #3d3e44; margin: 4px 6px; }
 
