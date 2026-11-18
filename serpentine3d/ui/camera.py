@@ -34,6 +34,8 @@ def drag_pans(projection: str, shift: bool, ctrl: bool = False) -> bool:
 
 
 # cinema sensor presets: (width, height) in millimetres
+DEFAULT_LENS_MM = 25.0
+
 SENSORS = {
     "Super35": (24.89, 18.66),
     "FullFrame": (36.0, 24.0),
@@ -161,8 +163,14 @@ class Camera:
         self.distance = 60.0
         self.azimuth = math.radians(-60.0)     # around +Z from +X
         self.elevation = math.radians(30.0)    # from XY plane
-        self.fov = 45.0
         self.sensor_name = "Super35"
+        self.set_focal_length(DEFAULT_LENS_MM)
+        # A locked view keeps its framing: orbit, pan and zoom leave it be.
+        self.locked = False
+        # One end held still: a held target is orbited and zoomed toward,
+        # a held position is looked around from.
+        self.position_locked = False
+        self.target_locked = False
         self.projection = "perspective"        # or "parallel" (orthographic)
         self.scene_bounds = None               # ((x,y,z),(x,y,z)); clip_planes
         self.drawing_bounds = None             # the same, without the grid
@@ -287,13 +295,26 @@ class Camera:
 
     # -- interaction ----------------------------------------------------------
 
+    @property
+    def frozen(self) -> bool:
+        """Nothing about where it looks from may change."""
+        return self.locked or (self.position_locked and self.target_locked)
+
     def orbit(self, dx_px: float, dy_px: float):
+        if self.frozen:
+            return
+        eye = self.position
         self.azimuth -= dx_px * 0.008
         self.elevation += dy_px * 0.008
         limit = math.radians(89.9)
         self.elevation = max(-limit, min(limit, self.elevation))
+        if self.position_locked:
+            # looking around: the target swings about the camera instead
+            self.target = eye - (self.position - self.target)
 
     def pan(self, dx_px: float, dy_px: float, viewport_h: int):
+        if self.locked or self.position_locked or self.target_locked:
+            return
         right, up = self.right_up()
         scale = 2.0 * self.distance * math.tan(math.radians(self.fov) / 2)
         per_px = scale / max(viewport_h, 1)
@@ -307,6 +328,8 @@ class Camera:
         self.zoom(-dy_px / 40.0)
 
     def zoom(self, steps: float):
+        if self.locked or self.position_locked:
+            return
         self.distance *= math.pow(0.88, steps)
         # The floor is numerical, not ergonomic: 0.01 stopped a
         # millimetre-scale detail from ever filling the frame (GitHub #5).
@@ -330,6 +353,8 @@ class Camera:
         `aspect` is the window's width over its height; the default of 1
         assumes a square window, which only ever leaves room spare.
         """
+        if self.locked or self.position_locked or self.target_locked:
+            return
         if bbox is None:
             self.target = np.zeros(3)
             self.distance = 60.0
@@ -374,8 +399,24 @@ class Camera:
     def set_standard_view(self, name: str):
         if name not in STANDARD_VIEWS:
             raise ValueError(f"Unknown view '{name}'")
+        if self.locked or self.position_locked:
+            return
         self.azimuth, self.elevation = STANDARD_VIEWS[name]
         self.projection = projection_for(name)
+
+    def look_from(self, position, target) -> bool:
+        """Stand at `position` looking at `target`. False when the two
+        coincide and there is no direction to look in."""
+        direction = np.subtract(position, target).astype(float)
+        dist = float(np.linalg.norm(direction))
+        if dist < 1e-9:
+            return False
+        d = direction / dist
+        self.target = np.asarray(target, float)
+        self.distance = dist
+        self.azimuth = math.atan2(d[1], d[0])
+        self.elevation = math.asin(float(np.clip(d[2], -1.0, 1.0)))
+        return True
 
     # -- where the view is, as something you can keep -------------------------
 

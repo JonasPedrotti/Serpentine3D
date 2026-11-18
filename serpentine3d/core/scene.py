@@ -190,6 +190,13 @@ class Scene:
         self._batched_kinds: set[str] = set()
         self.revision = 0               # bumped on every change notification
         self.named_views: dict = {}     # name -> camera params
+        from .view_settings import ViewSettings
+        # How each model pane looks and where it looks from, kept in the
+        # file but outside undo, as a view change is.
+        self.view_settings = ViewSettings()
+        # Called by a save before it writes, by a window keeping its panes'
+        # cameras and looks in `view_settings`.
+        self.before_save = None
         # Objects showing their control points. Kept here rather than on a
         # viewport because points on is something the drawing is doing: turn
         # a curve's points on in the Top view and its corners are there to
@@ -691,6 +698,8 @@ class Scene:
         self.layers = LayerManager()
         self.layers.on_shown = self.realise_layer
         self.named_views = {}
+        from .view_settings import ViewSettings
+        self.view_settings = ViewSettings()
         self.layouts = []
         self.sheet_groups = []
         self.block_defs = {}

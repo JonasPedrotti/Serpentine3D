@@ -12,9 +12,10 @@ those views as they were. A view is named by a key: a model pane's
 (`Viewport.view_key`, "perspective", "top", "front" and "right" for the
 four standard panes) or a detail's id.
 
-The views it is off in rather than the ones it is on in, so a plane cuts
-a view made after it, the way it always has, and a file from before this
-opens with every plane cutting every view.
+A plane drawn now cuts only the view it was drawn in: its setting keeps
+the views it is on in, `on_in`, instead, and the others are ticked on by
+hand. A plane from a file before that carries `off_in` and goes on
+cutting every view it is not switched off in, a view made after it too.
 
 Hiding a plane, or its layer, only puts it out of sight, as in Rhino: it
 goes on cutting, which is how a section is kept without the plane in the
@@ -31,7 +32,19 @@ def cuts(clip_plane: dict | None, view: str | None = None) -> bool:
     whether it cuts at all."""
     if not clip_plane or not clip_plane.get("enabled"):
         return False
-    return view is None or view not in clip_plane.get("off_in", ())
+    return view is None or chosen(clip_plane, view)
+
+
+def chosen(clip_plane: dict, view: str) -> bool:
+    """Whether `view` is one the plane is set to cut, paused or not."""
+    if "on_in" in clip_plane:
+        return view in clip_plane["on_in"]
+    return view not in clip_plane.get("off_in", ())
+
+
+def drawn_in(view: str) -> dict:
+    """The setting of a plane just drawn in `view`: it cuts that one."""
+    return {"enabled": True, "on_in": [view]}
 
 
 def switched(clip_plane: dict, view: str, on: bool) -> dict:
@@ -42,6 +55,10 @@ def switched(clip_plane: dict, view: str, on: bool) -> dict:
     plane switched off anywhere is written the way it was before.
     """
     out = dict(clip_plane)
+    if "on_in" in out:
+        keys = [key for key in out["on_in"] if key != view]
+        out["on_in"] = keys + [view] if on else keys
+        return out
     off = [key for key in out.get("off_in", ()) if key != view]
     if not on:
         off.append(view)
@@ -74,6 +91,12 @@ def carry_views(scene, pairs) -> None:
     sheet's details are cut as the originals were, not by every plane."""
     for obj in scene.all():
         cp = obj.clip_plane
+        if cp and "on_in" in cp:
+            on = list(cp["on_in"])
+            added = [new for old, new in pairs if old in on and new not in on]
+            if added:
+                scene.update(obj.id, clip_plane={**cp, "on_in": on + added})
+            continue
         off = list((cp or {}).get("off_in", ()))
         added = [new for old, new in pairs if old in off and new not in off]
         if added:

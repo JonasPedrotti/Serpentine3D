@@ -1,9 +1,5 @@
 """Camera and lens controls for previz-style framing."""
 
-import math
-
-import numpy as np
-
 from .base import NumberReq, OptionReq, PointReq, command
 
 ASPECTS = {
@@ -18,7 +14,12 @@ def cmd_camera(ctx):
     cam = vp.camera
     action = yield OptionReq(
         f"Camera ({cam.focal_length:.0f}mm on {cam.sensor_name})",
-        options=["Lens", "Sensor", "Place", "Frame"], default="Lens")
+        options=["Lens", "Sensor", "Place", "Position", "Target", "Frame"],
+        default="Lens")
+    if cam.locked and action in ("Lens", "Sensor", "Place", "Position",
+                                 "Target"):
+        ctx.echo("This view is locked; unlock it in Properties first.")
+        return
 
     if action == "Lens":
         mm = yield NumberReq("Focal length (mm)",
@@ -45,20 +46,31 @@ def cmd_camera(ctx):
     elif action == "Place":
         eye = yield PointReq("Camera position")
         target = yield PointReq("Camera target", rubber_from=eye)
-        direction = np.subtract(eye, target)
-        dist = float(np.linalg.norm(direction))
-        if dist < 1e-9:
+        if not cam.look_from(eye, target):
             ctx.echo("Camera and target coincide.")
             return
-        d = direction / dist
-        cam.target = np.asarray(target, float)
-        cam.distance = dist
-        cam.azimuth = math.atan2(d[1], d[0])
-        cam.elevation = math.asin(float(np.clip(d[2], -1, 1)))
         vp.update()
         ctx.echo(f"Camera placed at {tuple(round(c, 2) for c in eye)} "
                  f"looking at {tuple(round(c, 2) for c in target)} "
                  f"({cam.focal_length:.0f}mm).")
+
+    elif action in ("Position", "Target"):
+        eye, target = cam.position.copy(), cam.target.copy()
+        if (cam.position_locked if action == "Position"
+                else cam.target_locked):
+            ctx.echo(f"The camera's {action.lower()} is locked; unlock it "
+                     "in Properties first.")
+            return
+        if action == "Position":
+            eye = yield PointReq("Camera position")
+        else:
+            target = yield PointReq("Camera target")
+        if not cam.look_from(eye, target):
+            ctx.echo("Camera and target coincide.")
+            return
+        vp.update()
+        ctx.echo(f"Camera at {tuple(round(float(c), 2) for c in eye)} "
+                 f"looking at {tuple(round(float(c), 2) for c in target)}.")
 
     elif action == "Frame":
         choice = yield OptionReq("Frame guide aspect",

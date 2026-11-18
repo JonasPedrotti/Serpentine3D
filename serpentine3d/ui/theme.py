@@ -1,8 +1,8 @@
 """Serpentine3D dark theme: muted greys with a warm serpentine3d-gold accent."""
 
 # viewport colors (linear-ish RGB floats)
-VIEWPORT_BG_TOP = (0.16, 0.165, 0.18)
-VIEWPORT_BG_BOTTOM = (0.10, 0.105, 0.12)
+from ..core.view_settings import BG_BOTTOM as VIEWPORT_BG_BOTTOM
+from ..core.view_settings import BG_TOP as VIEWPORT_BG_TOP
 # A text background is the drawing's own colour, the middle of its gradient,
 # so it reads as a gap cut out of whatever lies behind the lettering.
 TEXT_BACKGROUND = tuple((a + b) / 2 for a, b in zip(VIEWPORT_BG_TOP,
@@ -323,7 +323,9 @@ QComboBox {
     border-radius: 4px;
     padding: 4px 8px;
 }
-QComboBox:disabled, QLineEdit:disabled { color: #6b6c72; border-color: #2e2f34; }
+QComboBox:disabled, QLineEdit:disabled, QAbstractSpinBox:disabled {
+    color: #6b6c72; border-color: #2e2f34;
+}
 QComboBox QAbstractItemView {
     background: #2e2f34;
     selection-background-color: #4a3f28;

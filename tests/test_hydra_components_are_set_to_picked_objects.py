@@ -3644,7 +3644,7 @@ def test_hydras_title_shows_a_close_button_and_no_float_button(win):
     QApplication.processEvents()
     title = win._hydra_dock.titleBarWidget()
     assert isinstance(title, DockTitleBar)
-    assert title.close_btn.isVisible() and not title.float_btn.isVisible()
+    assert title.close_btn.isVisible() and not hasattr(title, "float_btn")
     editor.set_path("C:/graphs/roof.hydra")
     assert title.title.text() == "Hydra · roof.hydra"
     title.close_btn.click()

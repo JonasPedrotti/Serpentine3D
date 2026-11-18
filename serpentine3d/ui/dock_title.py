@@ -33,15 +33,12 @@ _QSS = (
 
 class DockTitleBar(QWidget):
     """Icon, name, then whatever a subclass puts in `row`, then the dock's
-    own float and close buttons for the features it has. With `float_button`
-    False there is no float button: the panel still floats by dragging or
-    by a double-click on its title."""
+    close button when it can be closed. A panel floats by dragging or by a
+    double-click on its title."""
 
-    def __init__(self, icon, title: str, dock: QDockWidget | None = None,
-                 float_button: bool = True):
+    def __init__(self, icon, title: str, dock: QDockWidget | None = None):
         super().__init__()
         self._dock = dock
-        self._float_button = float_button
         self.setObjectName("dockTitle")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(_QSS)
@@ -58,17 +55,11 @@ class DockTitleBar(QWidget):
         # underneath and the panel still tears off.
         self._slot = self.row.count()
         self.row.addStretch(1)
-        self.float_btn = QToolButton(self)
-        self.float_btn.setText("❐")
-        self.float_btn.setToolTip("Float or dock this panel")
         self.close_btn = QToolButton(self)
         self.close_btn.setText("✕")
         self.close_btn.setToolTip("Close this panel")
-        self.row.addWidget(self.float_btn)
         self.row.addWidget(self.close_btn)
         if dock is not None:
-            self.float_btn.clicked.connect(
-                lambda: dock.setFloating(not dock.isFloating()))
             self.close_btn.clicked.connect(dock.close)
             dock.featuresChanged.connect(self._show_buttons)
         self._show_buttons()
@@ -88,9 +79,6 @@ class DockTitleBar(QWidget):
     def _show_buttons(self, *_args):
         feats = (self._dock.features() if self._dock is not None
                  else QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
-        self.float_btn.setVisible(
-            self._float_button
-            and bool(feats & QDockWidget.DockWidgetFeature.DockWidgetFloatable))
         self.close_btn.setVisible(
             bool(feats & QDockWidget.DockWidgetFeature.DockWidgetClosable))
 

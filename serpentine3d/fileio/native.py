@@ -14,7 +14,7 @@ from __future__ import annotations
 import base64
 import json
 
-from ..core import geometry, user_text
+from ..core import geometry, user_text, view_settings
 from ..utils.units import convert, converted_note, rescale
 from ..core.layers import (DEFAULT_CUT_LINE_WIDTH, DEFAULT_SCREEN_WIDTH,
                            Layer, section_fill_dict)
@@ -85,6 +85,8 @@ def read_thumbnail(path: str) -> bytes | None:
 
 
 def save_scene(scene, path: str, thumbnail: bytes | None = None):
+    if getattr(scene, "before_save", None) is not None:
+        scene.before_save()
     from ..core.layout import layouts_to_json, sheet_groups_to_json, style_set
     clouds = [o for o in scene.all() if o.kind == "pointcloud"]
     trajectories = list(getattr(scene, "trajectories", None) or [])
@@ -94,6 +96,7 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
         "format": "serpentine3d",
         "version": PLAIN_VERSION,
         "named_views": scene.named_views,
+        "view_settings": view_settings.to_json(scene.view_settings, blobs),
         "units": scene.units,
         "image_planes": _image_planes_to_json([
             dict(obj.shape.plane, id=obj.id, name=obj.name, layer=obj.layer_id,
@@ -650,6 +653,8 @@ def _load_doc(scene, doc: dict, blobs=None):
     current = doc.get("current_layer", "default")
     layers.current_id = id_map.get(current, "default")
     scene.named_views = dict(doc.get("named_views", {}))
+    scene.view_settings = view_settings.from_json(doc.get("view_settings"),
+                                                  blobs)
     scene.units = doc.get("units", scene.units)
     object_id_map = {}
     from ..core.picture import PictureShape

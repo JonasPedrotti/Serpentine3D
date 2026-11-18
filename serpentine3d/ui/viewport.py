@@ -496,6 +496,41 @@ out vec4 frag;
 void main() { frag = vec4(mix(uBottom, uTop, vY), 1.0); }
 """
 
+# A wallpaper: the background quad squeezed into `uRect` (NDC corners).
+WALL_VERT = """
+#version 330 core
+layout(location=0) in vec2 pos;
+uniform vec4 uRect;
+out vec2 vUV;
+void main() {
+    vUV = pos * 0.5 + 0.5;
+    gl_Position = vec4(mix(uRect.xy, uRect.zw, vUV), 0.999, 1.0);
+}
+"""
+
+WALL_FRAG = """
+#version 330 core
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform float uGray;
+uniform vec3 uFade;
+out vec4 frag;
+void main() {
+    vec4 c = texture(uTex, vUV);
+    float l = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+    vec3 gray = mix(vec3(l), uFade, 0.55);
+    frag = vec4(mix(c.rgb, gray, uGray), c.a);
+}
+"""
+
+
+def wallpaper_fit(image_aspect: float, view_aspect: float) -> tuple:
+    """Half the wallpaper's width and height in NDC: the whole picture,
+    as large as the pane lets it be, centred."""
+    if image_aspect >= view_aspect:
+        return 1.0, view_aspect / max(image_aspect, 1e-9)
+    return image_aspect / max(view_aspect, 1e-9), 1.0
+
 
 def _compile(vert_src: str, frag_src: str) -> int:
     def sh(kind, src):
@@ -1357,6 +1392,7 @@ class Viewport(QOpenGLWidget):
     chordActivated = Signal(str)            # a bound mouse chord: command
     displayModeChanged = Signal()           # shaded/rendered/... changed
     viewChanged = Signal(str)               # named view set (top/perspective/…)
+    cameraMoved = Signal()                  # the camera is somewhere new
     layoutSelectionChanged = Signal()       # sheet items picked or dropped
     detailEntered = Signal(object)           # stepped into a detail mid-command
     textEditRequested = Signal(str)          # editable model text, by id
@@ -1383,6 +1419,10 @@ class Viewport(QOpenGLWidget):
         self._edge_override = None
         self._view_name = "perspective"     # last-picked named view (for HUD)
         self.grid_visible = True
+        self.grid_axes_visible = True       # the grid's red and green lines
+        self.world_axes_visible = True      # the axis icon in the corner
+        from ..core.view_settings import Background
+        self.background = Background()
         self.point_mode = False             # command wants a point click
         from ..core.cplane import CPlane
         self.cplane = CPlane()
@@ -1579,6 +1619,7 @@ class Viewport(QOpenGLWidget):
         self._point_prog = _compile(POINT_VERT, POINT_FRAG)
         self._marker_prog = _compile(MARKER_VERT, MARKER_FRAG)
         self._bg_prog = _compile(BG_VERT, BG_FRAG)
+        self._wall_prog = _compile(WALL_VERT, WALL_FRAG)
         self._tex_prog = _compile(TEX_VERT, TEX_FRAG)
         self._count_prog = _compile(_caps.COUNT_VERT, _caps.COUNT_FRAG)
         self._cap_prog = _compile(_caps.CAP_VERT, _caps.CAP_FRAG)
@@ -1716,21 +1757,8 @@ class Viewport(QOpenGLWidget):
         GL.glEnable(GL.GL_DEPTH_TEST)
         GL.glDepthFunc(GL.GL_LESS)          # a parallel view changes both
         GL.glDisable(GL.GL_DEPTH_CLAMP)     # for its overlays, below
-        GL.glClearColor(*theme.VIEWPORT_BG_BOTTOM, 1.0)
-        GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
-
-        # gradient background
-        GL.glDisable(GL.GL_DEPTH_TEST)
-        self._use(self._bg_prog)
-        GL.glUniform3f(self._uloc(self._bg_prog, "uTop"),
-                       *theme.VIEWPORT_BG_TOP)
-        GL.glUniform3f(self._uloc(self._bg_prog, "uBottom"),
-                       *theme.VIEWPORT_BG_BOTTOM)
-        GL.glBindVertexArray(self._bg_vao)
-        GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
-        GL.glEnable(GL.GL_DEPTH_TEST)
-
         w, h = self.width(), self.height()
+        self._paint_background(w, h, model=self.space == "model")
 
         if self.space != "model":
             self._frame_anchor = None      # paper coordinates are small
@@ -1803,13 +1831,48 @@ class Viewport(QOpenGLWidget):
         if parallel:
             GL.glDepthFunc(GL.GL_LESS)
             GL.glDisable(GL.GL_DEPTH_CLAMP)
-        self._draw_axis_triad(view, w, h)
+        if self.world_axes_visible:
+            self._draw_axis_triad(view, w, h)
         self._draw_frame_guides(w, h)
         self._draw_selection_box(w, h)
         self._update_gumball_readout()
         self._update_draw_readout()
         self._paint_dots(w, h)
         self._paint_marker_labels(w, h)
+
+    def _paint_background(self, w: int, h: int, model: bool = True):
+        """The pane's background: its colour or gradient, and its wallpaper
+        over that. A sheet keeps the theme's, since paper is drawn on it."""
+        bg = self.background if model else None
+        top, bottom = (bg.colors() if bg is not None else
+                       (theme.VIEWPORT_BG_TOP, theme.VIEWPORT_BG_BOTTOM))
+        GL.glClearColor(*bottom, 1.0)
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        self._use(self._bg_prog)
+        GL.glUniform3f(self._uloc(self._bg_prog, "uTop"), *top)
+        GL.glUniform3f(self._uloc(self._bg_prog, "uBottom"), *bottom)
+        GL.glBindVertexArray(self._bg_vao)
+        GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
+        if bg is not None and bg.shows_wallpaper():
+            self._paint_wallpaper(bg, w, h, bottom)
+        GL.glEnable(GL.GL_DEPTH_TEST)
+
+    def _paint_wallpaper(self, bg, w: int, h: int, fade):
+        tex, aspect = self._texture_for("", bg.wallpaper)
+        if not tex:
+            return
+        sx, sy = wallpaper_fit(aspect, w / max(h, 1))
+        self._use(self._wall_prog)
+        GL.glUniform4f(self._uloc(self._wall_prog, "uRect"), -sx, -sy, sx, sy)
+        GL.glUniform1f(self._uloc(self._wall_prog, "uGray"),
+                       1.0 if bg.wallpaper_gray else 0.0)
+        GL.glUniform3f(self._uloc(self._wall_prog, "uFade"), *fade)
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
+        GL.glUniform1i(self._uloc(self._wall_prog, "uTex"), 0)
+        GL.glBindVertexArray(self._bg_vao)
+        GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
 
     def _paint_marker_labels(self, w, h):
         """The numbers by picked points that a command names, as Orient
@@ -2338,8 +2401,9 @@ class Viewport(QOpenGLWidget):
         GL.glDisable(GL.GL_DEPTH_TEST)
         self._draw_lines(self._grid["minor"], mvp, theme.GRID_MINOR)
         self._draw_lines(self._grid["major"], mvp, theme.GRID_MAJOR)
-        self._draw_lines(self._grid["axis_x"], mvp, theme.GRID_AXIS_X)
-        self._draw_lines(self._grid["axis_y"], mvp, theme.GRID_AXIS_Y)
+        if self.grid_axes_visible:
+            self._draw_lines(self._grid["axis_x"], mvp, theme.GRID_AXIS_X)
+            self._draw_lines(self._grid["axis_y"], mvp, theme.GRID_AXIS_Y)
         GL.glEnable(GL.GL_DEPTH_TEST)
 
     def set_cplane(self, cplane):
@@ -4194,6 +4258,36 @@ class Viewport(QOpenGLWidget):
             return target.view
         return self.view_key
 
+    def pane_settings(self) -> dict:
+        """What the drawing keeps of this pane (core/view_settings.py)."""
+        from ..core.view_settings import PaneLook
+        return {"camera": self.camera.state(),
+                "background": self.background.copy(),
+                "look": PaneLook(grid=self.grid_visible,
+                                 grid_axes=self.grid_axes_visible,
+                                 world_axes=self.world_axes_visible,
+                                 locked=self.camera.locked,
+                                 position_locked=self.camera.position_locked,
+                                 target_locked=self.camera.target_locked)}
+
+    def apply_pane_settings(self, pane: dict, background=None):
+        """Look the way a drawing kept this pane; what it did not keep goes
+        back to the defaults. `background`, when given, is the one every
+        pane shares."""
+        from ..core.view_settings import Background, PaneLook
+        look = pane.get("look") or PaneLook()
+        self.grid_visible = look.grid
+        self.grid_axes_visible = look.grid_axes
+        self.world_axes_visible = look.world_axes
+        bg = background if background is not None else pane.get("background")
+        self.background = bg.copy() if bg is not None else Background()
+        if pane.get("camera"):
+            self.camera.restore(pane["camera"])
+        self.camera.locked = look.locked
+        self.camera.position_locked = look.position_locked
+        self.camera.target_locked = look.target_locked
+        self.update()
+
     def clip_view(self) -> str | None:
         """The view a clipping plane is switched on or off in from this
         pane: the pane's own in the model, the detail you are inside on a
@@ -4757,6 +4851,8 @@ class Viewport(QOpenGLWidget):
         self.update()
 
     def set_view(self, name: str):
+        if self.camera.locked or self.camera.position_locked:
+            return
         self.camera.set_standard_view(name)
         self._view_name = name
         self._take_the_views_plane(name)
@@ -4807,17 +4903,7 @@ class Viewport(QOpenGLWidget):
             GL.glEnable(GL.GL_BLEND)
             GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
             GL.glEnable(GL.GL_DEPTH_TEST)
-            GL.glClearColor(*theme.VIEWPORT_BG_BOTTOM, 1.0)
-            GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
-            GL.glDisable(GL.GL_DEPTH_TEST)
-            self._use(self._bg_prog)
-            GL.glUniform3f(self._uloc(self._bg_prog, "uTop"),
-                           *theme.VIEWPORT_BG_TOP)
-            GL.glUniform3f(self._uloc(self._bg_prog, "uBottom"),
-                           *theme.VIEWPORT_BG_BOTTOM)
-            GL.glBindVertexArray(self._bg_vao)
-            GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
-            GL.glEnable(GL.GL_DEPTH_TEST)
+            self._paint_background(px_w, px_h)
             self._sync_gpu()
             proj = camera.proj_matrix(px_w, px_h)
             view = camera.view_matrix()
@@ -6066,6 +6152,8 @@ class Viewport(QOpenGLWidget):
         the camera moves. Either way `set_view` stays instant, because the
         RPC bridge and the scripts read the camera the moment they set it.
         """
+        if self.camera.locked or self.camera.position_locked:
+            return
         if self._flight_secs() <= 0.0:
             self._land_at(pose, name)
             return
@@ -6445,6 +6533,7 @@ class Viewport(QOpenGLWidget):
             self.view_history.record(self._view_last)
         self._view_last = state
         self._view_moved_at = when
+        self.cameraMoved.emit()
 
     def _go_to_view_state(self, state) -> bool:
         if state is None:
@@ -6605,6 +6694,8 @@ class Viewport(QOpenGLWidget):
             self.layout_view.wheel(steps, pos.x(), pos.y())
             self.update()
             return
+        if self.camera.locked:
+            return
         pos = ev.position()
         origin, direction = self.camera.ray_through(
             pos.x(), pos.y(), self.width(), self.height())
@@ -6613,8 +6704,9 @@ class Viewport(QOpenGLWidget):
             normalize(self.camera.target - self.camera.position))
         before = self.camera.distance
         self.camera.zoom(steps)
-        if anchor is not None and (self.config is None or self.config.get(
-                "mouse", "zoom_to_cursor", default=True)):
+        if anchor is not None and not self.camera.target_locked and (
+                self.config is None or self.config.get(
+                    "mouse", "zoom_to_cursor", default=True)):
             f = self.camera.distance / before
             self.camera.target = anchor + (self.camera.target - anchor) * f
         self.update()
