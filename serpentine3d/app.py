@@ -703,14 +703,10 @@ class MainWindow(QMainWindow):
                 toggle(lay.name, vp.space == lay.id,
                        lambda i=lay.id: self.set_pane_space(vp, i))
         menu.addSeparator()
-        self._action(menu, "Zoom Extents", None, vp.zoom_extents)
-        menu.addSeparator()
         self._action(menu, "Maximize Viewport", None,
                      lambda: self.toggle_maximized_viewport(vp))
         self._action(menu, "Four Viewports", None,
                      lambda: self.run_command("4view"))
-        self._action(menu, "Single Viewport", None,
-                     lambda: self.run_command("1view"))
         return menu
 
     def _clip_planes_menu(self, vp, menu):
@@ -1021,9 +1017,12 @@ class MainWindow(QMainWindow):
         others = [d for d in self._viewport_docks()
                   if d is not dock and not d.isHidden()]
         if not others:
-            # Already the only pane on show. Taking the state anyway would
-            # leave a maximise that the next press "restores" into the
-            # layout that is on screen already.
+            # Already the only pane on show, as when the window opens the
+            # way it was left: there is nothing to maximise, so the toggle
+            # goes the other way and brings the four panes back. Taking the
+            # state anyway would leave a maximise that the next press
+            # "restores" into the layout that is on screen already.
+            self.set_view_layout("quad")
             return False
 
         self._maximized_state = self.viewport_area.saveState()
@@ -3409,10 +3408,10 @@ class _ViewportTitleBar(QWidget):
 
         self.button = QToolButton(self)
         self.button.setAutoRaise(True)
-        self.button.setPopupMode(
-            QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.button.setToolTip("View, display mode and layout for this pane")
+        self.button.setToolTip("Right-click: view, display mode and layout "
+                               "for this pane\n"
+                               "Double-click: maximize or back to four "
+                               "viewports")
         # Qt's own menu indicator lands as a speck on the text baseline; a
         # caret in the label reads as something to click.
         self.button.setStyleSheet(
@@ -3422,7 +3421,13 @@ class _ViewportTitleBar(QWidget):
         # whatever was true when the dock was made.
         self._menu = QMenu(self)
         self._menu.aboutToShow.connect(self._rebuild)
-        self.button.setMenu(self._menu)
+        # A right-click opens it, as on a Rhino viewport title; a left click
+        # is left free for the double-click that maximizes.
+        for widget in (self, self.button):
+            widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            widget.customContextMenuRequested.connect(
+                lambda pos, w=widget: self._menu.popup(w.mapToGlobal(pos)))
+        self.button.installEventFilter(self)
         row.addWidget(self.button)
         # The stretch is the drag handle: a bare QWidget ignores a press, so
         # it reaches the dock underneath and the pane still tears off.
@@ -3446,6 +3451,14 @@ class _ViewportTitleBar(QWidget):
         instead."""
         self._win.toggle_maximized_viewport(self._vp)
         ev.accept()
+
+    def eventFilter(self, obj, ev):
+        if (obj is self.button
+                and ev.type() == QEvent.Type.MouseButtonDblClick
+                and ev.button() == Qt.MouseButton.LeftButton):
+            self._win.toggle_maximized_viewport(self._vp)
+            return True
+        return False
 
     def _rebuild(self):
         self._menu.clear()
