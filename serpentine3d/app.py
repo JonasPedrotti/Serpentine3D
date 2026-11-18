@@ -1149,20 +1149,20 @@ class MainWindow(QMainWindow):
         bar.setMovable(False)
         groups = [
             [("Point", "point",
-              ("Multiple points, finish with Enter or right-click", "points"))],
-            [("Move", "move", ("Copy", "copy")), ("Rotate", "rotate",
-              ("Rotate 3D, about an axis", "rotate3d")),
+              ("Multiple points", "points"))],
+            [("Move", "move", ("Copy", "copy")), ("Rotate", "rotate", ("Rotate 3D", "rotate3d")),
              ("Scale", "scale"), ("Mirror", "mirror"),
              ("Orient: from 2 points", "orient",
               ("from 3 points", "orient3pt"))],
-            [("Line", "line"), ("Polyline", "polyline"), ("Curve", "curve"),
+            [("Line", "line"), ("Polyline", "polyline"),
+             ("Curve", "curve", ("Curve through points", "interpcrv")),
              ("Circle: center, radius", "circle",
               ("through 3 points", "circle 3point")),
              ("Ellipse from center", "ellipse",
               ("from a diameter", "ellipse diameter")),
              ("Arc: center, start, end", "arc",
               ("ends first, point on arc", "arc endsfirst")),
-             ("Rectangle: corner to corner", "rectangle",
+             ("Rectangle", "rectangle",
               ("from 3 points", "rectangle 3point"))],
             [("Trim", "trim"), ("Split", "split"), ("Offset", "offset"),
              ("Fillet", "fillet")],
@@ -1182,7 +1182,8 @@ class MainWindow(QMainWindow):
         # One widget rather than thirty-two actions: a toolbar hides the
         # actions it has no room for behind a chevron, where the palette
         # sizes the tools to the height it has and keeps them all in sight.
-        bar.addWidget(tool_strip(groups, self.run_command, bar))
+        bar.addWidget(tool_strip(groups, self.run_command, bar,
+                                 centre_on=self.viewport_area))
         # below the strip, which takes all the height it is given, so Hydra
         # sits at the very bottom however tall the window is
         bar.addWidget(hydra_button(lambda: self.run_command("hydra"), bar))

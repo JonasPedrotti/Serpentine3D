@@ -156,3 +156,22 @@ def test_the_cursor_stays_off_the_z(window):
     QTest.keyClick(edit, Qt.Key.Key_Home)
     assert edit.cursorPosition() == len(box.prefix())
     assert edit.text().startswith("Z ")
+
+
+def test_the_height_shows_whole_under_the_app_theme(window):
+    """The theme puts spin arrows "top right"; on a field with none Qt
+    then left the number 1 px of room."""
+    from serpentine3d.ui import theme
+    app = QApplication.instance()
+    kept = app.styleSheet()
+    app.setStyleSheet(theme.stylesheet())
+    try:
+        window.show()
+        QApplication.processEvents()
+        box = window.osnap_bar._project_z
+        box.setValue(-123.45)
+        QApplication.processEvents()
+        edit = box.lineEdit()
+        assert edit.width() >= edit.fontMetrics().horizontalAdvance(box.text())
+    finally:
+        app.setStyleSheet(kept)
