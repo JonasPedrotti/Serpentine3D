@@ -18,9 +18,10 @@ from PySide6.QtCore import QEvent, QSignalBlocker, QSize, QTimer, Signal, Qt
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFontComboBox,
-    QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPlainTextEdit,
-    QPushButton, QSpinBox, QStackedWidget, QTabBar, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
+    QStackedWidget, QTabBar, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from ..core import clipping
@@ -1357,10 +1358,22 @@ class PropertiesPanel(QWidget):
         self.pages.addWidget(self.layer_page)
         self.pages.addWidget(self.sheet_page)
         self.pages.addWidget(self.view_page)
+        # Only the page on show counts towards the height, and that page
+        # scrolls rather than holding the panels below it to its height.
+        self.pages.currentChanged.connect(self._fit_pages)
+        self._fit_pages()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.viewport().setAutoFillBackground(False)
+        scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        scroll.setWidget(self.pages)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.pages)
+        layout.addWidget(scroll)
 
         # Which subject the user last chose to see, "objects" or "layers";
         # shown() falls back to whatever is live when it is not.
@@ -1374,6 +1387,15 @@ class PropertiesPanel(QWidget):
         scene.add_listener(self.refresh, kinds=("objects", "layers",
                                                 "layouts"))
         self.refresh()
+
+    def _fit_pages(self, _index=None):
+        current = self.pages.currentWidget()
+        for i in range(self.pages.count()):
+            page = self.pages.widget(i)
+            policy = (QSizePolicy.Policy.Preferred if page is current
+                      else QSizePolicy.Policy.Ignored)
+            page.setSizePolicy(QSizePolicy.Policy.Preferred, policy)
+        self.pages.adjustSize()
 
     # -------------------------------------------------------- what is picked
 
@@ -2083,20 +2105,6 @@ class PropertiesPanel(QWidget):
         self.layer_hatch_background = self.layer_look.background
         self.layer_cut_width = self.layer_look.cut_width
         self.layer_cut_color = self.layer_look.cut_color
-        self.layer_visible = QCheckBox("Visible")
-        self.layer_visible.clicked.connect(lambda: self._layer_switch(
-            self.layer_visible, "layer visibility",
-            self.scene.layers.set_visible))
-        self.layer_locked = QCheckBox("Locked")
-        self.layer_locked.clicked.connect(lambda: self._layer_switch(
-            self.layer_locked, "layer lock", self.scene.layers.set_locked))
-        state = QHBoxLayout()
-        state.setContentsMargins(0, 0, 0, 0)
-        state.addWidget(self.layer_visible)
-        state.addWidget(self.layer_locked)
-        state.addStretch(1)
-        state_widget = QWidget()
-        state_widget.setLayout(state)
 
         self.layer_form = form = QFormLayout()
         form.setContentsMargins(_INSET, 8, _INSET, _INSET)
@@ -2108,7 +2116,6 @@ class PropertiesPanel(QWidget):
         form.addRow("Print width (mm)", self.layer_print)
         form.addRow("Section hatch", self.layer_hatch)
         self.layer_look.add_rows(form)
-        form.addRow("", state_widget)
 
         page = QVBoxLayout(self.layer_page)
         page.setContentsMargins(0, 0, 0, 0)
@@ -2172,8 +2179,6 @@ class PropertiesPanel(QWidget):
                  for la in layers],
                 layers[0].color if len({la.color for la in layers}) == 1
                 else _MIXED_MARK)
-            self._show_check(self.layer_visible, {la.visible for la in layers})
-            self._show_check(self.layer_locked, {la.locked for la in layers})
         finally:
             self._layer_updating = False
 
@@ -2186,26 +2191,6 @@ class PropertiesPanel(QWidget):
     @staticmethod
     def _show_common_text(combo, values):
         _show_common_text(combo, values)
-
-    @staticmethod
-    def _show_check(box, values):
-        box.setTristate(len(values) > 1)
-        box.setCheckState(
-            Qt.CheckState.PartiallyChecked if len(values) > 1
-            else Qt.CheckState.Checked if values == {True}
-            else Qt.CheckState.Unchecked)
-
-    def _layer_switch(self, box, label: str, setter):
-        """A click on Visible or Locked. On a mixed box it switches them
-        all on and the box stops being mixed; it never goes back to mixed,
-        which is not a state a layer can be put in."""
-        on = box.checkState() != Qt.CheckState.Unchecked
-        if box.isTristate():
-            box.setTristate(False)
-            on = True
-        with QSignalBlocker(box):
-            box.setChecked(on)
-        self._edit_layers(label, lambda i: setter(i, on))
 
     def _edit_layers(self, label: str, apply):
         """One undo step for a change to every picked layer."""

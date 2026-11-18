@@ -9,8 +9,7 @@ sets it on all of them.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QCheckBox
 
 from serpentine3d.core import geometry as g
 from serpentine3d.core.history import History
@@ -123,15 +122,14 @@ def test_renaming_from_properties():
     assert props.layer_head.title.text() == "Concrete walls"
 
 
-def test_visible_and_locked():
-    scene, _sel, _h, props, panel, (walls,) = _setup("Walls")
+def test_visible_and_locked_are_left_to_the_layers_list():
+    """The eye and the padlock in the list already switch them, so the
+    page does not repeat them."""
+    _scene, _sel, _h, props, panel, (walls,) = _setup("Walls")
     _pick(panel, walls.id)
 
-    props.layer_visible.click()
-    props.layer_locked.click()
-
-    assert not scene.layers.get(walls.id).visible
-    assert scene.layers.get(walls.id).locked
+    texts = {box.text() for box in props.layer_page.findChildren(QCheckBox)}
+    assert not texts & {"Visible", "Locked"}
 
 
 def test_two_layers_that_differ_show_blank_and_take_one_value():
@@ -151,19 +149,6 @@ def test_two_layers_that_differ_show_blank_and_take_one_value():
     history.undo()
     assert scene.layers.get(a.id).print_width == 0.25
     assert scene.layers.get(b.id).print_width == 0.5
-
-
-def test_mixed_visibility_shows_partly_checked():
-    scene, _sel, _h, props, panel, (a, b) = _setup("A", "B")
-    scene.layers.set_visible(b.id, False)
-    _pick(panel, a.id, b.id)
-
-    assert props.layer_visible.checkState() == Qt.CheckState.PartiallyChecked
-
-    props.layer_visible.click()
-
-    assert scene.layers.get(a.id).visible and scene.layers.get(b.id).visible
-    assert props.layer_visible.checkState() == Qt.CheckState.Checked
 
 
 def test_the_held_selection_can_be_moved_onto_the_layer():

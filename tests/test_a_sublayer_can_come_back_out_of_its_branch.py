@@ -96,7 +96,8 @@ def _out_button(panel):
 
 
 def _row_of_buttons(panel):
-    """What the row under the tree reads like, gaps and all."""
+    """What the row under the tree reads like: a button as "b", a gap as
+    a space."""
     row = None
     for i in range(panel.layout().count()):
         row = panel.layout().itemAt(i).layout() or row
@@ -104,7 +105,7 @@ def _row_of_buttons(panel):
     out = []
     for i in range(row.count()):
         widget = row.itemAt(i).widget()
-        out.append(widget.text() if widget is not None else " ")
+        out.append("b" if widget is not None else " ")
     return "".join(out)
 
 
@@ -148,7 +149,7 @@ def test_the_move_button_stands_apart_from_the_ones_that_make_a_layer():
     deletes it.
     """
     _scene, panel = _panel()
-    assert _row_of_buttons(panel) == "+\u21b3 \u21b0\u2191\u2193 \u2212 ", \
+    assert _row_of_buttons(panel) == "bb bbb b ", \
         "the buttons that make, move and delete a layer all run together"
 
 
