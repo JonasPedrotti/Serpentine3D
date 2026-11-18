@@ -15,7 +15,7 @@ from .workspace_icons import workspace_icon
 class CommandWorkspace(QWidget):
     """Keep pane layout independent from the destination of typed input."""
 
-    def __init__(self, window, command_line, tab_row, osnap_bar):
+    def __init__(self, window, command_line, osnap_bar):
         super().__init__(window)
         self.window = window
         self.command_line = command_line
@@ -54,12 +54,13 @@ class CommandWorkspace(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(tab_row)
-
-        # Space tabs and workspace controls share one strip, leaving the
-        # vertical room to the drawing and the pane contents.
-        toolbar = tab_row.layout()
-        toolbar.setContentsMargins(0, 0, 2, 0)
+        # The pane toggles sit at the end of the input row, under the panel
+        # column, where the input stops.
+        self.toggle_box = QWidget()
+        toolbar = QHBoxLayout(self.toggle_box)
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(3)
+        toolbar.addStretch(1)
         self.assistant_toggle = self._toggle("Assistant")
         self.script_toggle = self._toggle("Script")
         self.history_toggle = self._toggle("History")
@@ -134,6 +135,7 @@ class CommandWorkspace(QWidget):
         self.submit_button.setObjectName("workspaceSubmit")
         self.submit_button.clicked.connect(self.submit)
         composer.addWidget(self.submit_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        composer.addWidget(self.toggle_box, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addWidget(self.composer)
         root.addWidget(osnap_bar)
         command_line.input.textChanged.connect(self._update_draft_hint)
@@ -141,11 +143,18 @@ class CommandWorkspace(QWidget):
         self._update_composer()
         self._fit_height()
 
+    def set_right_inset(self, inset):
+        """End the input this far short of the right edge, in line with the
+        panel column above it, and give that room to the pane toggles."""
+        layout = self.composer.layout()
+        room = inset - layout.contentsMargins().right() - layout.spacing()
+        self.toggle_box.setMinimumWidth(max(0, room))
+
     def _fit_height(self):
-        # Closed, it is only ever its two rows tall; open, it can be dragged.
+        # Always the height sizeHint names: two rows closed, more when a
+        # pane is open. Nothing above it drags it taller.
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
-                           QSizePolicy.Policy.Preferred if self._active_names()
-                           else QSizePolicy.Policy.Fixed)
+                           QSizePolicy.Policy.Fixed)
 
     @staticmethod
     def _toggle(text):
@@ -207,23 +216,12 @@ class CommandWorkspace(QWidget):
         button.blockSignals(True)
         button.setChecked(shown)
         button.blockSignals(False)
-        was_open = bool(self._active_names())
         self._panes[name].setVisible(shown)
-        is_open = bool(self._active_names())
-        self.splitter.setVisible(is_open)
+        self.splitter.setVisible(bool(self._active_names()))
         self._fit_height()
         self._restore_widths()
         self.layout().activate()
-        if not hasattr(self.window, "_cmd_dock"):
-            return
-        if was_open and not is_open:
-            self.window.resizeDocks([self.window._cmd_dock],
-                                    [self.minimumSizeHint().height()],
-                                    Qt.Orientation.Vertical)
-        preferred_height = self.sizeHint().height()
-        if shown and self.window.isVisible() and self.height() < preferred_height:
-            self.window.resizeDocks([self.window._cmd_dock], [preferred_height],
-                                    Qt.Orientation.Vertical)
+        self.updateGeometry()
 
     def _active_names(self):
         return [name for name in self._ordered_names()
@@ -337,6 +335,52 @@ class CommandWorkspace(QWidget):
         QTimer.singleShot(0, self, self._restore_widths)
 
 
+class StatusLine(QWidget):
+    """The window's status readout, at the right end of the osnap bar. It
+    answers the QStatusBar calls the app makes, so it stands in for one."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._normal = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Preferred)
+        self._message = QLabel()
+        self._message.setStyleSheet("color: #9a9b9e; padding: 0 4px;")
+        self._message.setAlignment(Qt.AlignmentFlag.AlignRight
+                                   | Qt.AlignmentFlag.AlignVCenter)
+        self._message.setMinimumWidth(1)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(lambda: self._show(self._normal))
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(self._message)
+
+    def _show(self, text):
+        self._message.setText(text)
+        self._message.setToolTip(text)
+
+    def showMessage(self, text, timeout=0):
+        if timeout:
+            self._timer.start(timeout)
+        else:
+            self._timer.stop()
+            self._normal = text
+        self._show(text)
+
+    def clearMessage(self):
+        self._timer.stop()
+        self._show(self._normal)
+
+    def currentMessage(self):
+        return self._message.text()
+
+    def addPermanentWidget(self, widget, stretch=0):
+        layout = self.layout()
+        layout.insertWidget(layout.indexOf(self._message), widget, stretch)
+
+
 class LastMessage(QLabel):
     """What the history last said, on the status bar while the history is
     closed. A click opens the history; it fades out of the way on its own."""
@@ -350,6 +394,10 @@ class LastMessage(QLabel):
         self.setStyleSheet("color: #c9cacd; padding: 0 6px;")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMaximumWidth(560)
+        self.setAlignment(Qt.AlignmentFlag.AlignRight
+                          | Qt.AlignmentFlag.AlignVCenter)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Preferred)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(lambda: self.say(""))
@@ -373,7 +421,8 @@ class LastMessage(QLabel):
 
     def _elide(self):
         self.setText(self.fontMetrics().elidedText(
-            self._full, Qt.TextElideMode.ElideRight, self.maximumWidth()))
+            self._full, Qt.TextElideMode.ElideRight,
+            min(self.width(), self.maximumWidth())))
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.MouseButton.LeftButton and self._full:

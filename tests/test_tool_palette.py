@@ -129,27 +129,23 @@ def test_a_right_click_runs_the_alternative_and_the_tooltip_says_so(_qapp):
     p.deleteLater()
 
 
-@pytest.mark.parametrize("command", ["1view", "4view"])
-def test_the_tools_are_centred_on_the_viewports(_qapp, command):
+def test_the_tools_start_a_little_below_the_top(_qapp):
     from PySide6.QtCore import QPoint
     from PySide6.QtWidgets import QApplication, QToolBar
 
     from serpentine3d.app import MainWindow
+    from serpentine3d.ui.tool_palette import TOP_GAP
     win = MainWindow()
     try:
         win.resize(1600, 1400)                 # room for every tool
         win.show()
-        win.run_command(command)
         for _ in range(3):
             QApplication.processEvents()
         bar = win.findChild(QToolBar, "toolPalette")
         palette = bar.findChild(ToolPalette)
         items = palette.findChildren(QToolButton) + palette.rules()
         top = min(w.mapToGlobal(QPoint(0, 0)).y() for w in items)
-        bottom = max(w.mapToGlobal(QPoint(0, w.height())).y() for w in items)
-        area = win.viewport_area
-        middle = area.mapToGlobal(QPoint(0, area.height() // 2)).y()
-        assert abs((top + bottom) / 2 - middle) <= MARGIN + 1
+        assert top - palette.mapToGlobal(QPoint(0, 0)).y() == TOP_GAP + MARGIN
     finally:
         win.close()
 
@@ -160,7 +156,7 @@ def test_no_rule_above_the_first_tool_or_below_the_last(palette):
     assert all(min(tops) < r.y() < max(tops) for r in palette.rules())
 
 
-def test_the_last_tools_are_not_cut_off_when_centred(_qapp):
+def test_the_last_tools_are_not_cut_off_below_the_gap(_qapp):
     from PySide6.QtWidgets import QApplication
 
     from serpentine3d.ui.tool_palette import tool_strip
@@ -169,7 +165,7 @@ def test_the_last_tools_are_not_cut_off_when_centred(_qapp):
     strip.resize(60, palette.content_height() + 200)
     strip.show()
     QApplication.processEvents()
-    assert palette._lead > 0, "the tools were not moved down to centre"
+    assert palette._lead > 0, "the tools were not moved down from the top"
     last = max(_buttons(palette), key=lambda b: b.y())
     assert last.geometry().bottom() < palette.height()
     strip.deleteLater()

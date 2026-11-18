@@ -49,7 +49,7 @@ def win(windows):
 def _lay_out(win):
     """Lay out the shelf without showing an offscreen OpenGL viewport."""
     win.layout().activate()
-    shelf = win._cmd_dock.widget()
+    shelf = win.command_workspace
     shelf.resize(1100, 360)
     for _ in range(2):
         for widget in [shelf, *shelf.findChildren(QWidget)]:
@@ -60,7 +60,7 @@ def _lay_out(win):
 
 
 def _button(win, label):
-    shelf = win._cmd_dock.widget()
+    shelf = win.command_workspace
     matches = [button for button in shelf.findChildren(QAbstractButton)
                if button.isVisibleTo(shelf)
                and label in (button.text().replace("&", "").strip(),
@@ -99,7 +99,7 @@ def _open_both(win):
     win._toggle_console()
     _lay_out(win)
     script = _script_content(win)
-    shelf = win._cmd_dock.widget()
+    shelf = win.command_workspace
     assert shelf.isAncestorOf(assistant), "Assistant must live in the bottom workspace"
     assert shelf.isAncestorOf(script), "Python must open inside the same bottom workspace"
     return assistant, script
@@ -133,7 +133,7 @@ def _record_ai(win, monkeypatch):
 def _field(win):
     """The existing CAD and assistant inputs may share a stacked region."""
     from serpentine3d.ai.panel import AiPanel
-    shelf = win._cmd_dock.widget()
+    shelf = win.command_workspace
     candidates = [win.command_line.input]
     candidates.extend(panel.input for panel in win.findChildren(AiPanel))
     candidates.extend(widget for widget in shelf.findChildren(QWidget)
@@ -156,7 +156,7 @@ def test_existing_entrypoints_open_two_bottom_panes_without_changing_destination
     field = win.command_line.input
     field.setText("circle")
     assistant, script = _open_both(win)
-    assert win.dockWidgetArea(win._cmd_dock) == Qt.DockWidgetArea.BottomDockWidgetArea
+    assert win._cmd_bar.window() is win and win._cmd_bar.y() > win.viewport_area.y()
     assert _left(script, win) < _left(assistant, win)
     assert not _button(win, "Ask AI").isChecked()
     assert field.text() == "circle"
@@ -188,7 +188,7 @@ def test_panes_keep_their_widths_and_closing_them_all_leaves_only_the_rows(win):
     _click(win, "History")
     history = win.command_line.echo_view
     assert _left(history, win) < _left(script, win) < _left(assistant, win)
-    splitters = [splitter for splitter in win._cmd_dock.widget().findChildren(QSplitter)
+    splitters = [splitter for splitter in win.command_workspace.findChildren(QSplitter)
                  if splitter.orientation() == Qt.Orientation.Horizontal
                  and splitter.isAncestorOf(assistant) and splitter.isAncestorOf(script)]
     assert splitters, "The visible panes need a draggable divider"
@@ -204,7 +204,7 @@ def test_panes_keep_their_widths_and_closing_them_all_leaves_only_the_rows(win):
     widths = splitter.sizes()
     for label in ("History", "Script", "Assistant"):
         _click(win, label)
-    shelf = win._cmd_dock.widget()
+    shelf = win.command_workspace
     assert not splitter.isVisibleTo(win)
     assert shelf.sizeHint().height() == shelf.minimumSizeHint().height()
     assert win.space_tabs.isVisibleTo(win)
@@ -216,7 +216,7 @@ def test_panes_keep_their_widths_and_closing_them_all_leaves_only_the_rows(win):
 
 
 def test_only_the_three_pane_switches_sit_beside_the_tabs(win):
-    shelf = win._cmd_dock.widget()
+    shelf = win.command_workspace
     words = {text for button in shelf.findChildren(QAbstractButton)
              if button.isVisibleTo(shelf)
              for text in (button.text().replace("&", "").strip(),

@@ -60,7 +60,7 @@ def win(windows):
 
 
 def _layout(win):
-    shelf = win._cmd_dock.widget()
+    shelf = win.command_workspace
     shelf.resize(1200, 430)
     for widget in [shelf, *shelf.findChildren(QWidget)]:
         if widget.layout() is not None:

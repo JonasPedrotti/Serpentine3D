@@ -400,7 +400,7 @@ def _wait(predicate, message, seconds=6):
 
 def _lay_out(window):
     window.layout().activate()
-    shelf = window._cmd_dock.widget()
+    shelf = window.command_workspace
     shelf.resize(1100, 360)
     for _ in range(2):
         for widget in [shelf, *shelf.findChildren(QWidget)]:
@@ -513,7 +513,7 @@ def _existing_connection(windows, codex):
 
 def _send(window, panel, prompt):
     if not window.command_workspace.ai_mode.isChecked():
-        _click(window._cmd_dock.widget(), r"Ask AI")
+        _click(window.command_workspace, r"Ask AI")
     _lay_out(window)
     panel.input.setPlainText(prompt)
     submit = window.command_workspace.submit_button

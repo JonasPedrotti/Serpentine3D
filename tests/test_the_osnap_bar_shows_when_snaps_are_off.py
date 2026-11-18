@@ -1,6 +1,6 @@
 """With object snaps switched off, the Osnap bar has to look it.
 
-The master "On" button greyed out on its own while End, Point, Mid, Cen,
+The master Osnap button greyed out on its own while End, Point, Mid, Cen,
 Quad and Int stayed lit, so the bar with snaps off looked like the bar
 with snaps on, and a sheet where nothing would snap read as snaps being
 broken (QA, 2026-09-30). The types keep what they were set to, for when
@@ -77,8 +77,10 @@ def test_a_type_that_is_off_looks_the_same_either_way(bar):
 def test_the_master_says_off_when_it_is_off(bar):
     _w, osnaps = bar
     osnaps._master.setChecked(True)
-    assert osnaps._master.text() == "On"
+    assert osnaps._master.text() == "Osnap"
+    assert "are on" in osnaps._master.toolTip()
 
     osnaps._master.setChecked(False)
 
-    assert osnaps._master.text() == "Off"
+    assert osnaps._master.text() == "Osnap"
+    assert "are off" in osnaps._master.toolTip()

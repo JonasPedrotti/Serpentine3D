@@ -62,9 +62,8 @@ def _urls(*paths):
 
 
 def _said(window):
-    """What the window said since the drag began (the banner is not news)."""
-    return window.command_line.echo_view.toPlainText().split(
-        "type a command to begin (line, circle, box, extrude, loft, ...)")[-1]
+    """What the window said since the drag began."""
+    return window.command_line.echo_view.toPlainText()
 
 
 def _a_dwg(tmp_path):

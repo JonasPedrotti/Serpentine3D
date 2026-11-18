@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QLocale, Qt, QTimer
 from PySide6.QtWidgets import (
-    QAbstractSpinBox, QDoubleSpinBox, QHBoxLayout, QLabel, QToolButton, QWidget,
+    QAbstractSpinBox, QDoubleSpinBox, QHBoxLayout, QToolButton, QWidget,
 )
 
 from ..core.snaps import SNAP_TYPES
@@ -55,11 +55,7 @@ class OsnapBar(QWidget):
         layout.setContentsMargins(8, 1, 8, 3)
         layout.setSpacing(2)
 
-        title = QLabel("Osnap:")
-        title.setStyleSheet("color: #85868a; font-size: 11px;")
-        layout.addWidget(title)
-
-        self._master = self._button("On", "Master object-snap toggle")
+        self._master = self._button("Osnap", "Object snaps on or off")
         self._master.setChecked(viewport.snaps.enabled)
         self._master.toggled.connect(self._master_toggled)
         layout.addWidget(self._master)
@@ -99,7 +95,7 @@ class OsnapBar(QWidget):
         self._project_z.setButtonSymbols(
             QAbstractSpinBox.ButtonSymbols.NoButtons)
         self._project_z.setStyleSheet(
-            "QDoubleSpinBox { font-size: 11px; padding: 1px 6px;"
+            "QDoubleSpinBox { font-size: 13px; padding: 1px 6px;"
             " border: 1px solid #3a3b41; border-radius: 4px;"
             " background: #1e1f22; color: #cfd0d2; }"
             "QDoubleSpinBox:focus { border-color: #d9a441; }"
@@ -116,6 +112,7 @@ class OsnapBar(QWidget):
         self._project_z.valueChanged.connect(self._project_z_changed)
         self._fit_project_z()
         layout.addWidget(self._project_z)
+        self._trailing_stretch = layout.count()
         layout.addStretch(1)
         # A type left set while snaps are off keeps its setting for when
         # they come back on, but must not look on: lit up as usual, the bar
@@ -125,15 +122,21 @@ class OsnapBar(QWidget):
             ' color: #8a8272; border: 1px dashed #5d5646; }')
         self._show_master(viewport.snaps.enabled)
 
+    def set_trailing(self, widget: QWidget):
+        """Fill the room right of the snaps with this widget."""
+        layout = self.layout()
+        layout.takeAt(self._trailing_stretch)
+        layout.addWidget(widget, 1)
+
     def _show_master(self, on: bool):
         """Wake the snap types up, or put them to sleep, with the master."""
-        # it says what it is, not only what it would be: a greyed "On" read
-        # as one more snap type switched off, not all of them
-        self._master.setText("On" if on else "Off")
+        self._master.setToolTip("Object snaps are on: click to turn them off"
+                                if on else
+                                "Object snaps are off: click to turn them on")
         for t, btn in self._buttons.items():
             btn.setProperty("dormant", not on)
             btn.setToolTip(_TIPS[t] if on else
-                           f"{_TIPS[t]} (object snaps are off: turn On)")
+                           f"{_TIPS[t]} (object snaps are off: turn Osnap on)")
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
@@ -143,7 +146,7 @@ class OsnapBar(QWidget):
         btn.setToolTip(tip)
         btn.setCheckable(True)
         btn.setStyleSheet(
-            "QToolButton { font-size: 11px; padding: 1px 7px; }")
+            "QToolButton { font-size: 13px; padding: 1px 7px; }")
         return btn
 
     def _master_toggled(self, on: bool):

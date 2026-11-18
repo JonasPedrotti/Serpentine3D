@@ -15,7 +15,8 @@ from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDockWidget, QFileDialog, QInputDialog, QMainWindow,
     QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QProgressDialog,
-    QStackedWidget, QTabBar, QTextEdit, QToolBar, QVBoxLayout, QWidget,
+    QStackedWidget, QStatusBar, QTabBar, QTextEdit, QToolBar, QVBoxLayout,
+    QWidget,
 )
 
 from . import commands as cmd_pkg
@@ -107,6 +108,7 @@ class MainWindow(QMainWindow):
         self.space_tabs.setExpanding(False)
         self.space_tabs.setDrawBase(False)
         self.space_tabs.setStyleSheet(
+            "QTabBar { background: transparent; }"
             "QTabBar::tab { padding: 4px 14px; background: #2b2c30;"
             " border: 1px solid #1b1c1f; border-bottom: none; }"
             "QTabBar::tab:selected { background: #4a3f28; color: #f0d9a8; }")
@@ -163,19 +165,28 @@ class MainWindow(QMainWindow):
         self.command_line = CommandLine()
         self.osnap_bar = OsnapBar(self.viewport, self.cfg)
         self.command_workspace = CommandWorkspace(
-            self, self.command_line, self._build_space_tab_row(), self.osnap_bar)
-        from .ui.command_workspace import LastMessage
+            self, self.command_line, self.osnap_bar)
+        # The space tabs float over the bottom-left corner of the drawing
+        # rather than taking a strip of their own.
+        self._space_tab_row = self._build_space_tab_row()
+        self._space_tab_row.setParent(self.viewport_area)
+        from .ui.command_workspace import LastMessage, StatusLine
+        self._status_line = StatusLine()
+        self.osnap_bar.set_trailing(self._status_line)
         self.last_message = LastMessage(self.command_line,
                                         self.command_workspace.show_history)
-        self.statusBar().addPermanentWidget(self.last_message)
-        self._cmd_dock = QDockWidget("Command", self)
-        self._cmd_dock.setObjectName("commandDock")
-        self._cmd_dock.setWidget(self.command_workspace)
-        self._cmd_dock.setFeatures(
-            QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
-        self._cmd_dock.setTitleBarWidget(_EmptyTitleBar())
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea,
-                           self._cmd_dock)
+        self.statusBar().addPermanentWidget(self.last_message, 1)
+        # The window's foot rather than a dock: it spans the full width with
+        # no resize grip above it, and takes the height its panes ask for.
+        bar = self._cmd_bar = _FootBar(self)
+        bar.setObjectName("commandBar")
+        bar.setSizeGripEnabled(False)
+        bar.setStyleSheet("QStatusBar { border: none; padding: 0px;"
+                          " background: #202226; }"
+                          " QStatusBar::item { border: none; }")
+        bar.addPermanentWidget(self.command_workspace, 1)
+        bar.flatten()
+        self.setStatusBar(bar)
 
         # however the drawing is saved, its panes go with it
         self.scene.before_save = self.store_view_settings
@@ -251,6 +262,8 @@ class MainWindow(QMainWindow):
         self._panel_docks = (self._prop_dock, self._layer_dock)
         for dock in self._panel_docks:
             dock.installEventFilter(self)
+        self.viewport_area.installEventFilter(self)
+        self._space_tab_row.installEventFilter(self)
         # proportions are set post-show in _balance_docks (a pre-show
         # resizeDocks gets redistributed once the layout is realised)
         QTimer.singleShot(0, self, self._balance_docks)
@@ -335,8 +348,6 @@ class MainWindow(QMainWindow):
         self.spacemouse = SpaceMouseNavigator(self)
 
         self._update_status()
-        self.command_line.echo("Serpentine3D — type a command to begin "
-                               "(line, circle, box, extrude, loft, ...)")
         self.command_line.focus()
         self.command_workspace.restore_settings()
 
@@ -408,10 +419,6 @@ class MainWindow(QMainWindow):
         in which case the user already chose their widths and re-imposing
         280 px would undo them every launch (GitHub #5)."""
         if not getattr(self, "_docks_restored", False):
-            # the command strip spans the bottom full-width: resize it alone
-            self.resizeDocks([self._cmd_dock],
-                             [self.command_workspace.sizeHint().height()],
-                             Qt.Orientation.Vertical)
             self._set_panel_width(PANEL_WIDTH)
             # 280 is the width our own font's columns need. A machine
             # whose sans-serif is wider needs more, and the layers panel
@@ -519,10 +526,20 @@ class MainWindow(QMainWindow):
         read here.
         """
         super().resizeEvent(event)
+        QTimer.singleShot(0, self, self._align_composer)
         self._settling = True
         if self._panel_width:
             QTimer.singleShot(0, self, self._hold_panel_width)
         QTimer.singleShot(_SETTLE_MS, self, self._settled)
+
+    def _align_composer(self):
+        ws = self.command_workspace
+        column = self._panel_column()
+        inset = 0
+        if column and ws.isVisible():
+            ws_right = ws.mapTo(self, QPoint(ws.width(), 0)).x()
+            inset = ws_right - min(d.geometry().left() for d in column)
+        ws.set_right_inset(inset)
 
     def _settled(self):
         """The window has stopped moving: the docks are the user's again."""
@@ -582,6 +599,15 @@ class MainWindow(QMainWindow):
                 and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)):
             event.accept()
             return True
+        if (event.type() in (QEvent.Type.Resize, QEvent.Type.LayoutRequest,
+                             QEvent.Type.ChildAdded)
+                and obj in (self.viewport_area,
+                            getattr(self, "_space_tab_row", None))):
+            QTimer.singleShot(0, self, self._place_space_tabs)
+        if (obj in self._panel_docks and event.type() in (
+                QEvent.Type.Resize, QEvent.Type.Move,
+                QEvent.Type.Show, QEvent.Type.Hide)):
+            QTimer.singleShot(0, self, self._align_composer)
         if (event.type() == QEvent.Type.Resize
                 and obj in self._panel_docks
                 and not getattr(self, "_settling", False)
@@ -1183,8 +1209,7 @@ class MainWindow(QMainWindow):
         # One widget rather than thirty-two actions: a toolbar hides the
         # actions it has no room for behind a chevron, where the palette
         # sizes the tools to the height it has and keeps them all in sight.
-        bar.addWidget(tool_strip(groups, self.run_command, bar,
-                                 centre_on=self.viewport_area))
+        bar.addWidget(tool_strip(groups, self.run_command, bar))
         # below the strip, which takes all the height it is given, so Hydra
         # sits at the very bottom however tall the window is
         bar.addWidget(hydra_button(lambda: self.run_command("hydra"), bar))
@@ -2851,6 +2876,8 @@ class MainWindow(QMainWindow):
         full 'layout' options (custom size, portrait)."""
         from PySide6.QtWidgets import QHBoxLayout, QMenu, QToolButton, QWidget
         row = QWidget()
+        row.setObjectName("spaceTabRow")
+        row.setStyleSheet("QWidget#spaceTabRow { background: transparent; }")
         hl = QHBoxLayout(row)
         hl.setContentsMargins(0, 0, 0, 0)
         hl.setSpacing(3)
@@ -2870,7 +2897,7 @@ class MainWindow(QMainWindow):
             "QToolButton { padding: 1px 8px; background: #212226;"
             " border: 1px solid #1b1c1f; color: #b9b9bd; font-size: 14px; }"
             "QToolButton:hover { background: #2f3035; color: #e8e8ea; }"
-            "QToolButton::menu-indicator { width: 9px; }")
+            "QToolButton::menu-indicator { image: none; width: 0px; }")
         menu = QMenu(add)
         for size in ("A4", "A3", "A2", "A1", "Letter", "Tabloid"):
             menu.addAction(f"New layout — {size}",
@@ -2884,6 +2911,13 @@ class MainWindow(QMainWindow):
         hl.addWidget(add)
         hl.addStretch(1)
         return row
+
+    def _place_space_tabs(self):
+        row = self._space_tab_row
+        row.resize(row.sizeHint())
+        row.move(0, self.viewport_area.height() - row.height())
+        row.raise_()
+        row.show()
 
     def _new_sheet(self, paper: str = "A3", landscape: bool = True):
         """Create a new paper-space drafting sheet and switch to it — the '+'
@@ -3356,6 +3390,9 @@ class MainWindow(QMainWindow):
             for vp in self.all_viewports():
                 vp.update()
 
+    def statusBar(self):
+        return self._status_line
+
     def _update_status(self):
         n = len(self.scene.all())
         # On a sheet, what is picked lives in the layout view; a readout
@@ -3492,11 +3529,33 @@ class _SpaceTabs(QTabBar):
         return fits if fits.width() < floor.width() else floor
 
 
-class _EmptyTitleBar(QWidget):
-    """Zero-height title bar to hide the command dock header."""
-    def __init__(self):
-        super().__init__()
-        self.setFixedHeight(0)
+class _FootBar(QStatusBar):
+    """The window's foot, holding the command area edge to edge.
+
+    QStatusBar pads its items with a few pixels of spacers and rebuilds
+    them whenever its height changes, so they are taken out again after."""
+
+    def event(self, ev):
+        handled = super().event(ev)
+        if ev.type() in (QEvent.Type.LayoutRequest, QEvent.Type.Show):
+            self.flatten()
+        return handled
+
+    def flatten(self):
+        layouts = [self.layout()]
+        while layouts:
+            layout = layouts.pop()
+            if layout is None:
+                continue
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                if item.layout() is not None:
+                    layouts.append(item.layout())
+                elif item.spacerItem() is not None:
+                    item.spacerItem().changeSize(0, 0)
+            layout.invalidate()
 
 
 class _ViewportTitleBar(QWidget):
