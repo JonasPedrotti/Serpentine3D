@@ -16,15 +16,25 @@ def polish(widget) -> None:
         _leave_out_current(widget)
 
 
-class _SelectOnClickIn(QObject):
+_ENTER = (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+
+
+class _NumberSelection(QObject):
     """The click that enters a number field picks the whole number, so what
-    is typed next replaces it. Clicks once inside place the cursor."""
+    is typed next replaces it; clicks once inside place the cursor. Enter
+    takes the number and lets go of the selection Qt puts back on it."""
+
+    def __init__(self, spin, edit):
+        super().__init__(spin)
+        self._edit = edit
 
     def eventFilter(self, spin, ev):
+        # both run after Qt's own handling, which would undo them
         if (ev.type() == QEvent.Type.FocusIn
                 and ev.reason() == Qt.FocusReason.MouseFocusReason):
-            # after the press has put the cursor down, or it undoes this
             QTimer.singleShot(0, spin.selectAll)
+        elif ev.type() == QEvent.Type.KeyPress and ev.key() in _ENTER:
+            QTimer.singleShot(0, self._edit.deselect)
         return False
 
 
@@ -33,7 +43,7 @@ def _inset_spin_text(spin: QAbstractSpinBox) -> None:
     if edit is None or spin.property("_fields_polished"):
         return
     spin.setProperty("_fields_polished", True)
-    spin.installEventFilter(_SelectOnClickIn(spin))
+    spin.installEventFilter(_NumberSelection(spin, edit))
     # Style sheets cannot pad a spin box's text on the left. A field with
     # no arrows centres its text itself.
     if spin.buttonSymbols() != QAbstractSpinBox.ButtonSymbols.NoButtons:

@@ -80,6 +80,19 @@ def test_clicking_into_a_number_field_picks_the_whole_number(styled):
     assert spin.text().startswith("40")
 
 
+def test_enter_takes_the_number_and_lets_go_of_the_selection(styled):
+    host, spin, edit = _field()
+    QTest.mouseClick(edit, Qt.MouseButton.LeftButton, pos=QPoint(10, 5))
+    QTest.qWait(20)
+
+    QTest.keyClicks(edit, "40")
+    QTest.keyClick(edit, Qt.Key.Key_Return)
+    QTest.qWait(20)
+
+    assert spin.value() == 40
+    assert edit.selectedText() == ""
+
+
 def test_a_second_click_inside_places_the_cursor(styled):
     host, spin, edit = _field()
     QTest.mouseClick(edit, Qt.MouseButton.LeftButton, pos=QPoint(10, 5))
