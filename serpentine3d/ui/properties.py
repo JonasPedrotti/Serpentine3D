@@ -2126,6 +2126,16 @@ class PropertiesPanel(QWidget):
         page.addLayout(form)
         page.addStretch(1)
 
+    def layer_page_height(self) -> int:
+        """How tall the layer page stands with a layer picked, whether or
+        not one is: its head then says what is on the layer, a line it
+        leaves out with nothing picked."""
+        height = self.layer_page.sizeHint().height()
+        for label in (self.layer_head.title, self.layer_head.detail):
+            if label.isHidden():
+                height += label.sizeHint().height()
+        return height
+
     def _refresh_layer_page(self):
         layers = self._picked_layers()
         if not layers:
