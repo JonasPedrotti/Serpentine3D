@@ -31,18 +31,30 @@ def _place(ctx, obj, shape) -> list:
     return out
 
 
-@command("booleanunion", aliases=("union", "bu"))
-def cmd_union(ctx):
+def _union(ctx, merge: bool):
     objs = yield SelectReq("Select 2 or more solids to union",
                            kinds=_SOLIDISH, min_count=2)
     result = reduce(lambda a, b: g.boolean_union(a, b),
                     (o.shape for o in objs))
+    if merge:
+        result = g.merge_coplanar_faces(result)
     for o in objs[1:]:
         ctx.scene.remove(o.id)
     made = _place(ctx, objs[0], result)
     ctx.select_result(made)
     names = ", ".join(o.name for o in made)
     ctx.echo(f"Union of {len(objs)} objects -> {names}.")
+
+
+@command("booleanunion", aliases=("union", "bu"))
+def cmd_union(ctx):
+    yield from _union(ctx, merge=False)
+
+
+@command("booleanunionmerge", aliases=("unionmerge",))
+def cmd_union_merge(ctx):
+    """Boolean union, then MergeAllCoplanarFaces on the result."""
+    yield from _union(ctx, merge=True)
 
 
 @command("booleandifference", aliases=("difference", "bd"))
