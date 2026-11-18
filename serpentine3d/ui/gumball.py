@@ -10,7 +10,7 @@ centre, constant screen size):
 Precision: drag a handle for feel, or click it and type an exact value
 (distance / angle / factor) then Enter — the value previews live while
 you type. Grid snap rounds move drags to the grid step. Alt-drag any
-move handle drags a copy. Escape cancels.
+move, rotate or scale handle works on a copy. Escape cancels.
 """
 
 from __future__ import annotations
@@ -32,6 +32,13 @@ PAD_ALPHA = 0.35
 SIZE_PX = 78.0            # on-screen gumball radius
 SHAFT0, SHAFT1 = 0.18, 1.0
 CONE1 = 1.22
+
+
+def _arc(anchor, u, v, radius, n):
+    """The quarter of a ring from -u round to -v: the three of them close an
+    eighth of a sphere on the side away from the arrows, as Rhino draws it."""
+    return [anchor - radius * (u * math.cos(t) + v * math.sin(t))
+            for t in (k / n * math.pi / 2 for k in range(n + 1))]
 
 
 def _turned(p, anchor, axis, degrees):
@@ -61,17 +68,22 @@ def _ctrl_held(modifiers) -> bool:
 # then reads as one handle with an end of its own either way, and two boxes
 # that look different and sit at opposite ends are never mistaken for each
 # other, so neither asks you to hold a key down while you drag.
-# DASH0 and SCALE_POS are distances back along -axis: see _leader.
+# The hollow box stands where the selection ends on that side, so it is
+# taken hold of at the edge it moves. DASH0 and SCALE_MIN are distances back
+# along -axis, in gumball sizes; SCALE_POS is where it goes with nothing to
+# measure. See _leader and scale_reach.
 EXT_POS = 0.6
-DASH0, SCALE_POS = 0.18, 1.66
+DASH0, SCALE_MIN, SCALE_POS = 0.18, 0.36, 1.66
+DASH_PERIOD = 0.25
 ARC_R = 0.82
 PAD0, PAD1 = 0.28, 0.5
-TAG_AT = 1.42                # the alignment tag, up and right of the pivot
-TAG_R = 0.07
+CENTER_R = 0.07             # the pivot's own circle, in gumball sizes
 ALIGNMENTS = ("object", "cplane", "world", "view")
-TAG_COLOR = (0.62, 0.63, 0.68)
+CENTER_COLOR = (0.92, 0.92, 0.95)
 
 # handle ids: ("move",axis) ("pad",axis) ("rot",axis) ("scale",axis)
+#             ("center",0) — the pivot: drag to move freely, right-click to
+#             choose what the axes are aligned to
 #             ("ext",axis) — the filled box, where there is something to grow
 _ONE_DOF = ("move", "rot", "scale", "ext")   # take a single typed value
 
@@ -87,6 +99,7 @@ class Gumball:
         self._sweep_cache: list = []
         self._sweep_axes: dict = {}
         self._memo: dict = {}          # sub-object targets, per scene state
+        self._spans: dict = {}         # (state, axes, lo, hi) per shape
         self._align = None             # only when there is no config to ask
         self._menu = None              # the alignment menu while it is open
 
@@ -174,19 +187,6 @@ class Gumball:
                 ("Align to CPlane", "cplane", current == "cplane", True),
                 ("Align to world", "world", current == "world", True),
                 ("Align to view", "view", current == "view", True)]
-
-    def tag_position(self):
-        """Where the alignment tag sits: up and right of the pivot on the
-        glass, clear of the rings and most arrows, at the end of a short
-        leader."""
-        state = self._draw_anchor()
-        if state is None:
-            return None
-        anchor = np.asarray(state[0], float)
-        s = self._size_world(anchor)
-        right, up = self.vp._eye().right_up()
-        d = right * 0.72 + up * 0.72
-        return anchor + d * TAG_AT * s
 
     def open_menu(self, px, py):
         """Offer every alignment at the cursor, with the current one checked."""
@@ -720,7 +720,7 @@ class Gumball:
             # the geometry can do, so no rings or boxes are offered
             return {("move", i) for i in range(3)}
         out = {(kind, i) for kind in ("move", "pad", "rot", "scale")
-               for i in range(3)}
+               for i in range(3)} | {("center", 0)}
         state = self.anchor_and_axes()
         if state is not None:
             out |= {("ext", i) for i in range(3)
@@ -1029,7 +1029,8 @@ class Gumball:
             return None if state is None else (state[0], state[1])
         d = self.drag
         anchor = np.asarray(d["anchor"], float)
-        if d["handle"][0] in ("move", "pad") and not d.get("extrude"):
+        if (d["handle"][0] in ("move", "pad", "center")
+                and not d.get("extrude")):
             anchor = anchor + d["offset"]
         return anchor, d["axes"]
 
@@ -1059,6 +1060,7 @@ class Gumball:
         on = self.handles()
         two_way = self._two_way_axes()
         colours = self._axis_colours()
+        reach = self.scale_reach(anchor, axes, s)
         GL.glDisable(GL.GL_DEPTH_TEST)
 
         for i in range(3):                    # rings
@@ -1093,22 +1095,15 @@ class Gumball:
                                axes[(i + 2) % 3], s, (*color, 1.0))
             if ("scale", i) in on and self._usable("scale", i, axes, vdir):
                 kc = self._colour(("scale", i), colours[i])
-                self._leader(mvp, anchor, axis, s, (*kc, 0.85))
-                self._knob(mvp, anchor - axis * SCALE_POS * s, s,
+                self._leader(mvp, anchor, axis, s, reach[i], (*kc, 0.85))
+                self._knob(mvp, anchor - axis * reach[i] * s, s,
                            (*kc, 1.0), fill=False)
             if ("ext", i) in on and self._usable("ext", i, axes, vdir):
                 self._knob(mvp, anchor + axis * EXT_POS * s, s,
                            (*self._colour(("ext", i), colours[i]), 1.0))
 
-        if self.drag is None:                 # the alignment tag
-            tag = self.tag_position()
-            if tag is not None:
-                d = (tag - anchor) / (np.linalg.norm(tag - anchor) or 1.0)
-                col = self._colour(("menu", 0), TAG_COLOR)
-                self._lines(mvp, np.asarray(
-                    [anchor + d * 0.92 * s, tag - d * TAG_R * 1.6 * s],
-                    float), (*col, 0.75), 1.2)
-                self._ring_at(mvp, tag, TAG_R * s, (*col, 1.0))
+        col = self._colour(("center", 0), CENTER_COLOR)
+        self._ring_at(mvp, anchor, CENTER_R * s, (*col, 1.0))
         if self._face_mode():                 # a faint square in the plane
             n = self._face_normal()
             u, v = _frame(n if n is not None else axes[2])
@@ -1136,15 +1131,12 @@ class Gumball:
         return base
 
     def _ring(self, mvp, anchor, u, v, s, color):
-        pts = [anchor + ARC_R * s * (u * math.cos(k / 48 * 2 * math.pi)
-                                     + v * math.sin(k / 48 * 2 * math.pi))
-               for k in range(49)]
-        arr = np.asarray(pts, float)
+        arr = np.asarray(_arc(anchor, u, v, ARC_R * s, 16), float)
         segs = np.stack([arr[:-1], arr[1:]], axis=1).reshape(-1, 3)
         self._lines(mvp, segs, color, 1.6)
 
     def _ring_at(self, mvp, centre, radius, color):
-        """A small circle facing you: the alignment tag."""
+        """A small circle facing you: the pivot."""
         right, up = self.vp._eye().right_up()
         pts = [centre + radius * (right * math.cos(k / 20 * 2 * math.pi)
                                   + up * math.sin(k / 20 * 2 * math.pi))
@@ -1236,7 +1228,7 @@ class Gumball:
         self._lines(mvp, np.asarray([c0, c1, c1, c2, c2, c3, c3, c0],
                                     float), color, 1.8)
 
-    def _leader(self, mvp, anchor, axis, s, color):
+    def _leader(self, mvp, anchor, axis, s, reach, color):
         """The dashed run back from the pivot to the scale box.
 
         It leaves the anchor where the shaft does and goes the other way, so
@@ -1244,13 +1236,125 @@ class Gumball:
         dashes say which axis it belongs to and that it is the other end of
         the same handle the arrow is one end of.
         """
-        n, run = 6, SCALE_POS - DASH0 - 0.06
+        run = reach - DASH0 - 0.06
+        if run <= 0:
+            return
+        n = max(1, round(run / DASH_PERIOD))
         pts = []
         for k in range(n):
             t0 = DASH0 + run * (k / n)
             t1 = t0 + run * 0.55 / n
             pts.extend([anchor - axis * t0 * s, anchor - axis * t1 * s])
         self._lines(mvp, np.asarray(pts, float), color, 1.4)
+
+    def scale_reach(self, anchor, axes, s) -> list:
+        """How far back along each axis the scale box stands, in gumball
+        sizes: at the selection's edge on that side, never closer to the
+        pivot than SCALE_MIN, and at SCALE_POS when nothing held has an
+        extent to measure."""
+        if s <= 0:
+            return [SCALE_POS] * 3
+        axes = np.asarray(axes, float)
+        try:
+            spans = self._held_spans(axes)
+        except Exception:                    # a shape that cannot be measured
+            spans = None
+        if not spans:
+            return [SCALE_POS] * 3
+        lo = np.min([sp[0] for sp in spans], axis=0)
+        at = axes @ np.asarray(anchor, float)
+        return [max(float(at[i] - lo[i]) / s, SCALE_MIN) for i in range(3)]
+
+    def _held_spans(self, axes) -> list:
+        """(lo, hi) along `axes` of each thing the gumball holds."""
+        vp, d = self.vp, self.drag
+        if d is None:
+            cv = self._cv_target()
+            cvs = cv[0] if cv is not None else None
+        else:
+            cvs = d.get("cvs")
+        if cvs:
+            pts = []
+            for oid, idxs in cvs.items():
+                obj = vp.scene.get(oid)
+                every = vp._cv_points(obj) if obj is not None else None
+                if every is None:
+                    continue
+                pts += [every[i] for i in idxs if 0 <= i < len(every)]
+            if not pts:
+                return []
+            along = np.asarray(pts, float) @ axes.T
+            return [(along.min(axis=0), along.max(axis=0))]
+        if d is None:
+            pp = self._pushpull_target()
+            face = pp[:2] if pp is not None else None
+        else:
+            face = d.get("pp")
+        if face is not None:
+            obj = vp.scene.get(face[0])
+            if obj is None:
+                return []
+            faces = g.faces_of(obj.shape)
+            if not 0 <= face[1] < len(faces):
+                return []
+            return [self._span(("face", *face), faces[face[1]], axes)]
+        if d is not None and any(d.get(k) for k in (
+                "segments", "multiface", "parts", "fillet", "edge_move")):
+            return []
+        if d is None and (self._segment_target() is not None
+                          or self._parts_target() is not None):
+            return []
+        return [self._span(o.id, o, axes) for o in vp.selection.objects()]
+
+    def _span(self, key, held, axes):
+        """(lo, hi) of an object or a shape along each of `axes`, measured
+        once per scene revision and frame.
+
+        Along world axes an object's box already says it. Along any other
+        frame the shape is measured turned into that frame, which is as
+        tight as its own box would be had it been drawn square to it.
+        """
+        state = getattr(self.vp.scene, "revision", 0)
+        frame = tuple(np.round(axes, 9).ravel())
+        hit = self._spans.get(key)
+        if hit is not None and hit[0] == state and hit[1] == frame:
+            return hit[2]
+        shape = getattr(held, "shape", held)
+        if np.allclose(axes, np.eye(3), atol=1e-9):
+            box = held.bbox() if hasattr(held, "bbox") else g.bbox(shape)
+            lo, hi = np.asarray(box[0], float), np.asarray(box[1], float)
+        else:
+            lo, hi = self._turned_span(shape, axes)
+        if len(self._spans) > 4096:
+            self._spans.clear()
+        self._spans[key] = (state, frame, (lo, hi))
+        return lo, hi
+
+    @staticmethod
+    def _turned_span(shape, axes):
+        rot = np.array(axes, float)
+        flip = np.linalg.det(rot) < 0
+        if flip:                             # a turn, not a mirror
+            rot[2] = -rot[2]
+        if not np.allclose(rot @ rot.T, np.eye(3), atol=1e-6):
+            lo, hi = (np.asarray(c, float) for c in g.bbox(shape))
+            corners = np.array([[x, y, z] for x in (lo[0], hi[0])
+                                for y in (lo[1], hi[1])
+                                for z in (lo[2], hi[2])]) @ np.asarray(axes).T
+            return corners.min(axis=0), corners.max(axis=0)
+        from ..core import occ
+        if isinstance(shape, occ.TopoDS_Shape):
+            trsf = occ.gp_Trsf()
+            trsf.SetValues(*rot[0], 0.0, *rot[1], 0.0, *rot[2], 0.0)
+            turned = shape.Moved(occ.TopLoc_Location(trsf))
+        else:
+            m = np.eye(4)
+            m[:3, :3] = rot
+            turned = g.apply_matrix(shape, m)
+        lo, hi = (np.asarray(c, float) for c in g.bbox(turned))
+        if flip:
+            lo[2], hi[2] = -hi[2], -lo[2]
+        return lo, hi
 
     def _paper(self, pts):
         """The points to upload: as they are, or where they appear on a sheet.
@@ -1335,14 +1439,10 @@ class Gumball:
 
         def on_ring(i):
             u, v = axes[(i + 1) % 3], axes[(i + 2) % 3]
-            best = np.inf
-            for k in range(36):
-                ang = k / 36 * 2 * math.pi
-                p = scr(anchor + ARC_R * s * (u * math.cos(ang)
-                                              + v * math.sin(ang)))
-                if p is not None:
-                    best = min(best, float(np.linalg.norm(p - cursor)))
-            return best < 7
+            pts = [scr(p) for p in _arc(anchor, u, v, ARC_R * s, 12)]
+            pts = [p for p in pts if p is not None]
+            return any(_seg_dist(cursor, a, b) < 7
+                       for a, b in zip(pts, pts[1:]))
 
         def on_arrow(i, both_ways):
             a = scr(anchor - axes[i] * (CONE1 if both_ways else -SHAFT0) * s)
@@ -1366,20 +1466,20 @@ class Gumball:
                         return ("move", i)
             return None
 
-        if self.drag is None:
-            tag = self.tag_position()
-            t = scr(tag) if tag is not None else None
-            if t is not None and np.linalg.norm(t - cursor) < 8:
-                return ("menu", 0)
+        c = scr(anchor)
+        if c is not None and np.linalg.norm(c - cursor) < 8:
+            return ("center", 0)
         on = self.handles()
         two_way = self._two_way_axes()
+        reach = self.scale_reach(anchor, axes, s)
         # the boxes (smallest targets first, and the filled one sits on the
         # shaft, so it has to be asked about before the arrow it lies along)
-        for kind, along in (("ext", EXT_POS), ("scale", -SCALE_POS)):
+        for kind in ("ext", "scale"):
             for i in range(3):
                 if ((kind, i) not in on
                         or not self._usable(kind, i, axes, vdir)):
                     continue
+                along = EXT_POS if kind == "ext" else -reach[i]
                 p = scr(anchor + axes[i] * along * s)
                 if p is not None and np.linalg.norm(p - cursor) < 6.5:
                     return (kind, i)
@@ -1412,17 +1512,64 @@ class Gumball:
 
     # ----------------------------------------------------------- dragging
 
+    def context_menu(self, px, py) -> bool:
+        """A right-click on the pivot offers the alignments."""
+        if self.drag is not None or not self.active():
+            return False
+        if self.hit_test(px, py) != ("center", 0):
+            return False
+        self.open_menu(px, py)
+        return True
+
+    def _center_normal(self, anchor):
+        """The plane the pivot is dragged in: the construction plane, or
+        the screen when that plane is seen too nearly edge-on to aim in."""
+        normal = np.asarray(self._plane().normal, float)
+        vdir = self._view_dir(anchor)
+        if abs(float(np.dot(normal, vdir))) < 0.15:
+            return -vdir
+        return normal
+
     def begin_drag(self, handle, px, py, modifiers) -> bool:
-        if handle == ("menu", 0):
-            # A press, not a drag: the menu takes the release. True so the
-            # press is spent here and does not go on to pick something.
-            self.open_menu(px, py)
+        if handle == ("center", 0) and handle not in self.handles():
+            # held faces and edges have no free move; the press is still
+            # spent here so it does not pick what lies under the pivot
             return True
         state = self.anchor_and_axes()
         if state is None:
             return False
         anchor, axes = state
         vp = self.vp
+        copies = None
+        origin, direction = vp._eye().ray_through(px, py, vp.width(),
+                                                  vp.height())
+        kind, i = handle
+        ref = None
+        center_normal = None
+        if kind == "center":
+            center_normal = self._center_normal(anchor)
+            hit = ray_plane_any(origin, direction, anchor, center_normal)
+            if hit is None:
+                return False
+            ref = hit
+        elif kind in ("move", "scale", "ext"):
+            t = ray_line_parameter(origin, direction, anchor, axes[i])
+            if t is None:
+                return False
+            ref = t
+        elif kind == "pad":
+            hit = ray_plane_any(origin, direction, anchor, axes[i])
+            if hit is None:
+                return False
+            ref = hit
+        elif kind == "rot":
+            hit = ray_plane_any(origin, direction, anchor, axes[i])
+            if hit is None:
+                return False
+            vec = hit - anchor
+            if np.linalg.norm(vec) < 1e-9:
+                return False
+            ref = vec / np.linalg.norm(vec)
         cv = self._cv_target()
         seg = None if cv is not None else self._segment_target()
         pp = None if (cv is not None or seg is not None) \
@@ -1524,38 +1671,17 @@ class Gumball:
             if not objs:
                 return False
             copy_mode = bool(modifiers & Qt.KeyboardModifier.AltModifier) and \
-                handle[0] in ("move", "pad")
+                handle[0] in ("move", "pad", "rot", "scale", "center")
             self.vp.window_checkpoint("gumball " + handle[0])
             if copy_mode:
                 new_objs = []
                 for o in objs:
                     new_objs.append(vp.scene.add(g.copy_shape(o.shape),
                                                  layer_id=o.layer_id))
-                vp.selection.set([o.id for o in new_objs])
+                copies = ([o.id for o in objs], [o.id for o in new_objs])
+                vp.selection.set(copies[1])
                 objs = new_objs
             originals = {o.id: o.shape for o in objs}
-        origin, direction = vp._eye().ray_through(px, py, vp.width(),
-                                                  vp.height())
-        kind, i = handle
-        ref = None
-        if kind in ("move", "scale", "ext"):
-            t = ray_line_parameter(origin, direction, anchor, axes[i])
-            if t is None:
-                return False
-            ref = t
-        elif kind == "pad":
-            hit = ray_plane_any(origin, direction, anchor, axes[i])
-            if hit is None:
-                return False
-            ref = hit
-        elif kind == "rot":
-            hit = ray_plane_any(origin, direction, anchor, axes[i])
-            if hit is None:
-                return False
-            vec = hit - anchor
-            if np.linalg.norm(vec) < 1e-9:
-                return False
-            ref = vec / np.linalg.norm(vec)
         self.drag = {
             "handle": handle, "anchor": anchor, "axes": axes,
             "originals": originals,
@@ -1578,7 +1704,8 @@ class Gumball:
             "face_normal": (np.asarray(pp[3][2], float) if pp is not None
                             else None),
             "turned": 0.0, "reshaped": False, "tilt_axis": None,
-            "extrude": ex, "made": {},
+            "extrude": ex, "made": {}, "copies": copies,
+            "center_normal": center_normal,
             "ref": ref, "last_label": "", "offset": np.zeros(3),
             "typed": "", "armed": False, "moved": False,
         }
@@ -1638,6 +1765,25 @@ class Gumball:
         d["moved"] = True
         if d.get("fillet"):                  # hold Alt to chamfer instead
             d["chamfer"] = _alt_held(modifiers)
+        if kind == "center":                 # free, onto whatever it snaps to
+            at = self._snapped(px, py)
+            if at is not None:
+                delta = at - anchor
+            else:
+                hit = ray_plane_any(origin, direction, anchor,
+                                    d["center_normal"])
+                if hit is None:
+                    return d["last_label"]
+                delta = hit - d["ref"]
+                if vp.grid_snap and vp.grid_snap_step > 0:
+                    step = vp.grid_snap_step
+                    delta = np.round(delta / step) * step
+            d["offset"] = np.asarray(delta, float)
+            self._move_by(delta)
+            d["last_label"] = ("move "
+                               + vp.scene.format_length(float(
+                                   np.linalg.norm(delta))))
+            return d["last_label"]
         if kind == "pad":
             hit = ray_plane_any(origin, direction, anchor, axes[i])
             if hit is None:
@@ -1828,6 +1974,8 @@ class Gumball:
         elif kind == "rot":
             self._turn_by(anchor, axes[i], value)
             label = f"rotate {value:.1f}°"
+            if d.get("copies"):
+                d["turned"] = float(value)
         elif kind == "scale" and d.get("pp"):  # taper a held face
             if abs(value) < 1e-4:
                 return d["last_label"]
@@ -1851,6 +1999,8 @@ class Gumball:
             else:
                 self._scale_by(anchor, axes[i], value)
                 label = f"scale {value:.3f}"
+            if d.get("copies"):
+                d["reshaped"] = abs(value - 1.0) > 1e-9
         else:
             return d["last_label"]
         d["last_label"] = label
@@ -2208,8 +2358,19 @@ class Gumball:
                         if self.vp.scene.get(i) is not None]
                 if made:
                     self.vp.selection.set(made)
+        elif d is not None and d.get("copies"):
+            self._drop_copies(d)             # an Alt-click is not a copy
+            self.vp.window_discard_checkpoint()
         self.vp.selection.rebuilding = None
         self.drag = None
+
+    def _drop_copies(self, d):
+        """Take an Alt-drag's copies away again and hold the originals."""
+        held, made = d["copies"]
+        for obj_id in made:
+            self.vp.scene.remove(obj_id)
+        self.vp.selection.set([i for i in held
+                               if self.vp.scene.get(i) is not None])
 
     def _clear_filleted_edges(self, d):
         """A committed fillet consumes the picked edges (their indices now
@@ -2380,6 +2541,8 @@ class Gumball:
         for obj_id, original in d["originals"].items():
             if vp.scene.get(obj_id) is not None:
                 vp.scene.replace_shape(obj_id, original)
+        if d.get("copies"):
+            self._drop_copies(d)
         self.vp.window_discard_checkpoint()
         self.vp.selection.rebuilding = None
         self.drag = None

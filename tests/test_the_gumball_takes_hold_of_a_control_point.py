@@ -22,7 +22,7 @@ from PySide6.QtWidgets import QApplication
 from serpentine3d.core import geometry as g
 from serpentine3d.core.scene import Scene
 from serpentine3d.core.selection import SelectionManager
-from serpentine3d.ui.gumball import SCALE_POS, SHAFT0, CONE1
+from serpentine3d.ui.gumball import SHAFT0, CONE1
 from serpentine3d.ui.viewport import Viewport
 
 CORNERS = [(0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (10.0, 10.0, 0.0),
@@ -95,8 +95,10 @@ def _take(vp, handle):
     gb = vp.gumball
     anchor, axes = gb.anchor_and_axes()
     # scale is drawn back the other way from the pivot, so its reach is signed
-    reach = {"move": (SHAFT0 + CONE1) / 2, "scale": -SCALE_POS}[handle[0]]
-    at = anchor + axes[handle[1]] * reach * gb._size_world(anchor)
+    size = gb._size_world(anchor)
+    reach = ((SHAFT0 + CONE1) / 2 if handle[0] == "move"
+             else -gb.scale_reach(anchor, axes, size)[handle[1]])
+    at = anchor + axes[handle[1]] * reach * size
     px, py = _screen(vp, at)
     assert gb.begin_drag(handle, px, py, NONE), "the handle refused the drag"
     return gb

@@ -6055,6 +6055,9 @@ class Viewport(QOpenGLWidget):
             if press is not None and \
                     (pos - press).manhattanLength() <= 4:
                 # a click, not an orbit/pan drag
+                menu = getattr(self._live_gumball(), "context_menu", None)
+                if menu is not None and menu(pos.x(), pos.y()):
+                    return
                 if self._fire_chord(ev):
                     return
                 self.enterShortcut.emit()      # Rhino-style Enter

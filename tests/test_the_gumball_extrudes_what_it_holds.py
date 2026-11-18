@@ -100,8 +100,26 @@ def test_scale_is_the_hollow_box_on_the_far_side_of_the_pivot(pane):
     as one handle with an end of its own at each side and the two boxes are
     never mistaken for each other."""
     _line(pane)
-    assert pane.gumball.hit_test(*_handle_at(pane, -gb.SCALE_POS)) \
+    assert pane.gumball.hit_test(*_handle_at(pane, -_scale_reach(pane)[2])) \
         == ("scale", 2)
+
+
+def _scale_reach(vp):
+    anchor, axes = vp.gumball.anchor_and_axes()
+    return vp.gumball.scale_reach(anchor, axes,
+                                  vp.gumball._size_world(anchor))
+
+
+def test_the_scale_box_stands_at_the_end_of_what_it_holds(pane):
+    """Taken hold of at the edge it moves, however long the selection is."""
+    for far in (4.0, 30.0):
+        _line(pane, (-far, 0.0, 0.0), (far, 0.0, 0.0))
+        anchor, _axes = pane.gumball.anchor_and_axes()
+        size = pane.gumball._size_world(anchor)
+        reach = _scale_reach(pane)[0]
+        assert reach * size == pytest.approx(far, rel=1e-3)
+        assert pane.gumball.hit_test(*_handle_at(pane, -reach, 0)) \
+            == ("scale", 0)
 
 
 def test_nothing_is_left_out_past_the_arrowhead(pane):
@@ -458,3 +476,100 @@ def test_a_solid_is_not_something_a_sweep_flattens():
 def test_a_sweep_of_no_length_is_no_sweep_at_all():
     line = g.make_line((0, 0, 0), (10, 0, 0))
     assert g.sweep_adds_nothing(line, (0, 0, 0)) is True
+
+
+def test_the_rings_are_quarters_on_the_far_side_of_the_arrows(pane):
+    """Each ring is the quarter between the other two axes' tails, so the
+    three close an eighth of a sphere behind the pivot and stay clear of the
+    arrows."""
+    _line(pane)
+    anchor, axes = pane.gumball.anchor_and_axes()
+    size = pane.gumball._size_world(anchor)
+    x, y = (np.asarray(a, float) for a in axes[:2])
+    for sign, hit in ((-1, ("rot", 2)), (1, None)):
+        at = anchor + sign * (x + y) / np.sqrt(2) * gb.ARC_R * size
+        assert pane.gumball.hit_test(*_press_at(pane, at)) == hit
+
+
+ALT = Qt.KeyboardModifier.AltModifier
+
+
+def _grab_where_drawn(vp, handle, modifiers):
+    """Press on a handle where it is drawn: a box at its reach, a ring on
+    its arc, an arrow along its shaft."""
+    gumball = vp.gumball
+    anchor, axes = gumball.anchor_and_axes()
+    size = gumball._size_world(anchor)
+    kind, i = handle
+    axes = [np.asarray(a, float) for a in axes]
+    if kind == "rot":
+        u, v = axes[(i + 1) % 3], axes[(i + 2) % 3]
+        at = anchor - (u + v) / np.sqrt(2) * gb.ARC_R * size
+    elif kind == "scale":
+        at = anchor - axes[i] * _scale_reach(vp)[i] * size
+    else:
+        at = anchor + axes[i] * (gb.SHAFT0 + gb.CONE1) / 2 * size
+    return gumball.begin_drag(handle, *_press_at(vp, at), modifiers)
+
+
+@pytest.mark.parametrize("handle, value", [
+    (("move", 0), 3.0), (("rot", 2), 30.0), (("scale", 0), 2.0)])
+def test_alt_transforms_a_copy_and_leaves_the_original(pane, handle, value):
+    obj = _line(pane)
+    before = g.bbox(obj.shape)
+    assert _grab_where_drawn(pane, handle, ALT)
+    pane.gumball.apply_scalar(value)
+    pane.gumball.end_drag()
+    assert pane.scene.get(obj.id) is not None
+    assert np.allclose(g.bbox(pane.scene.get(obj.id).shape), before)
+    (copy,) = _others(pane, obj)
+    assert pane.selection.objects() == [copy]
+    assert not np.allclose(g.bbox(copy.shape), before)
+
+
+@pytest.mark.parametrize("finish", ["end_drag", "cancel_drag"])
+def test_an_alt_grab_that_changes_nothing_leaves_no_copy(pane, finish):
+    obj = _line(pane)
+    assert _grab_where_drawn(pane, ("rot", 2), ALT)
+    getattr(pane.gumball, finish)()
+    assert _others(pane, obj) == []
+    assert [o.id for o in pane.selection.objects()] == [obj.id]
+
+
+def test_dragging_the_pivot_moves_freely_in_the_plane(pane):
+    obj = _line(pane)
+    anchor, _ = pane.gumball.anchor_and_axes()
+    assert pane.gumball.hit_test(*_press_at(pane, anchor)) == ("center", 0)
+    assert pane.gumball.begin_drag(("center", 0), *_press_at(pane, anchor),
+                                   NONE)
+    target = anchor + np.array([3.0, 4.0, 0.0])
+    pane.gumball.drag_to(*_press_at(pane, target), NONE)
+    pane.gumball.end_drag()
+    lo, hi = g.bbox(pane.scene.get(obj.id).shape)
+    assert np.allclose((np.asarray(lo) + np.asarray(hi)) / 2, target,
+                       atol=1e-3)
+
+
+def test_dragging_the_pivot_lands_it_on_a_snap(pane):
+    obj = _line(pane)
+    anchor, _ = pane.gumball.anchor_and_axes()
+    assert pane.gumball.begin_drag(("center", 0), *_press_at(pane, anchor),
+                                   NONE)
+    snap = np.array([2.0, 7.0, 5.0])
+    pane.gumball._snapped = lambda px, py: snap
+    pane.gumball.drag_to(*_press_at(pane, anchor), NONE)
+    pane.gumball.end_drag()
+    lo, hi = g.bbox(pane.scene.get(obj.id).shape)
+    assert np.allclose((np.asarray(lo) + np.asarray(hi)) / 2, snap,
+                       atol=1e-6)
+
+
+def test_alt_dragging_the_pivot_moves_a_copy(pane):
+    obj = _line(pane)
+    anchor, _ = pane.gumball.anchor_and_axes()
+    assert pane.gumball.begin_drag(("center", 0), *_press_at(pane, anchor),
+                                   ALT)
+    pane.gumball.drag_to(*_press_at(pane, anchor + np.array([0, 5.0, 0])),
+                         NONE)
+    pane.gumball.end_drag()
+    assert len(_others(pane, obj)) == 1
