@@ -575,10 +575,11 @@ def test_command_option_chips(env):
     proc.click_object(c.id)
     proc.finish_selection()
     chips = dict(proc.option_chips())
-    assert chips == {"Cap": "Yes", "BothSides": "No"}
+    assert chips == {"Cap": "Yes", "BothSides": "No", "KeepOriginal": "Yes"}
     proc.provide_text("BothSides=Yes")        # option text does not advance
     proc.provide_text("cap=n")                # prefix match, case-insensitive
-    assert dict(proc.option_chips()) == {"Cap": "No", "BothSides": "Yes"}
+    assert dict(proc.option_chips()) == {"Cap": "No", "BothSides": "Yes",
+                                         "KeepOriginal": "Yes"}
     assert proc.set_option("Cap")             # click = cycle
     assert dict(proc.option_chips())["Cap"] == "Yes"
     proc.provide_text("10")

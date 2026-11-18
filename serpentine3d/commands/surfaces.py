@@ -105,13 +105,25 @@ def cmd_srfpt(ctx):
     ctx.echo(f"Created {obj.name}.")
 
 
-@command("extrude", aliases=("ext", "extrudecrv"))
+def _extrude_direction(ctx, objs):
+    """A flat surface goes out along its own normal, the rest along the
+    CPlane's, so a standing plane grows sideways rather than up its face."""
+    n = g.flat_normal(objs[0].shape) if objs[0].kind == "surface" else None
+    if n is None:
+        return tuple(ctx.cplane.normal)
+    if float(np.dot(n, ctx.cplane.normal)) < 0:
+        n = tuple(-v for v in n)
+    return tuple(float(v) for v in n)
+
+
+@command("extrude", aliases=("ext", "extrudecrv", "extrudesrf"))
 def cmd_extrude(ctx):
     from ..core.text import TextShape
-    curves = yield SelectReq("Select curves to extrude", kinds=("curve",))
+    curves = yield SelectReq("Select curves or surfaces to extrude",
+                             kinds=("curve", "surface"))
     closed = any(isinstance(c.shape, TextShape) or g.is_closed_curve(c.shape)
                  for c in curves)
-    direction = tuple(ctx.cplane.normal)
+    direction = _extrude_direction(ctx, curves)
 
     def _make(dist, cap):
         both = ctx.opt("BothSides", "No") == "Yes"
@@ -125,18 +137,25 @@ def cmd_extrude(ctx):
         return g.extrude_profiles(shapes, direction,
                                   dist * (2 if both else 1), cap=cap)
 
-    choices = {"BothSides": ["No", "Yes"]}
+    choices = {"BothSides": ["No", "Yes"], "KeepOriginal": ["Yes", "No"]}
     if closed:
         choices = {"Cap": ["Yes", "No"], **choices}
     base = g.centroid(curves[0].shape)
+
+    def _cap():
+        return closed and ctx.opt("Cap", "Yes") == "Yes"
 
     def _dist_of(p):
         return sum((c - b) * d for c, b, d in zip(p, base, direction))
 
     def _preview(p):
         d = _dist_of(p)
-        return g.make_compound(_make(d, cap=False)) if abs(d) > 1e-9 \
-            else None
+        if abs(d) < 1e-9:
+            return None
+        try:
+            return g.make_compound(_make(d, cap=_cap()))
+        except g.GeometryError:
+            return g.make_compound(_make(d, cap=False))
 
     dp = yield PointReq(
         "Extrusion distance (click, or type a number)",
@@ -148,10 +167,14 @@ def cmd_extrude(ctx):
     if abs(dist) < 1e-9:
         ctx.echo("Zero distance — nothing extruded.")
         return
-    cap = closed and ctx.opt("Cap", "Yes") == "Yes"
+    cap = _cap()
     both = ctx.opt("BothSides", "No") == "Yes"
+    keep = ctx.opt("KeepOriginal", "Yes") == "Yes"
     made = [ctx.scene.add(s) for s in _make(dist, cap)]
-    if ctx.scene.record_history and not both:
+    if not keep:
+        for c in curves:
+            ctx.scene.remove(c.id)
+    elif ctx.scene.record_history and not both:
         for result_index, o in enumerate(made):
             ctx.scene.add_record("extrude", [c.id for c in curves], o.id,
                                  direction=list(direction),
