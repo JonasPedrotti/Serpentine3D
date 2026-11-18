@@ -134,7 +134,7 @@ def _wait(predicate, message, seconds=6):
 def _lay_out(window):
     """Use the existing workspace tests' layout, without an offscreen GL view."""
     window.layout().activate()
-    shelf = window._cmd_dock.widget()
+    shelf = window.command_workspace
     shelf.resize(1100, 360)
     for _ in range(2):
         for widget in [shelf, *shelf.findChildren(QWidget)]:
@@ -158,7 +158,7 @@ def _button(root, pattern):
 
 
 def _mode(window, label):
-    shelf = window._cmd_dock.widget()
+    shelf = window.command_workspace
     matches = [button for button in shelf.findChildren(QAbstractButton)
                if button.isVisibleTo(shelf) and button.text().replace("&", "") == label]
     assert len(matches) == 1, f"The workspace needs its explicit {label!r} input choice"

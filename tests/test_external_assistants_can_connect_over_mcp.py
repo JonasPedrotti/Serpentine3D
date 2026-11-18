@@ -36,7 +36,7 @@ def assistant(monkeypatch, tmp_path):
         opened.append(window)
         window.resize(1400, 900)
         panel = window.show_ai_panel()
-        shelf = window._cmd_dock.widget()
+        shelf = window.command_workspace
         shelf.resize(1100, 360)
         for _ in range(2):
             for widget in [shelf, *shelf.findChildren(QWidget)]:

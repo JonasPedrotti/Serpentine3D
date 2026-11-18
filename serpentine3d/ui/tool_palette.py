@@ -18,7 +18,7 @@ it.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import QFrame, QScrollArea, QSizePolicy, QToolButton, QWidget
 
 from .icons import command_icon
@@ -29,6 +29,7 @@ PITCH = BUTTON + GAP   # one tool's worth of column
 ICON = BUTTON - 8
 RULE = 8               # the gap a group break leaves behind
 MARGIN = 3
+TOP_GAP = PITCH        # how far below the top the tools start
 
 
 class ToolPalette(QWidget):
@@ -90,7 +91,7 @@ class ToolPalette(QWidget):
         return list(self._rules)
 
     def set_lead(self, lead: int) -> None:
-        """Start the column this far down, to centre it on something."""
+        """Start the column this far down."""
         if lead != self._lead:
             self._lead = lead
             self.reflow()
@@ -137,42 +138,17 @@ class _Strip(QScrollArea):
     def minimumSizeHint(self) -> QSize:
         return QSize(self.sizeHint().width(), 0)
 
-    _target: QWidget | None = None
-
-    def centre_on(self, target: QWidget) -> None:
-        """Keep the tools level with the middle of ``target``."""
-        self._target = target
-        target.installEventFilter(self)
-        self.recentre()
-
-    def recentre(self) -> None:
+    def place_tools(self) -> None:
+        """Start the tools a little below the top, as room allows."""
         palette = self.widget()
-        view = self.viewport()
-        room = view.height()
-        content = palette.content_height()
-        target = self._target
-        if target is not None and target.isVisible():
-            middle = target.mapToGlobal(QPoint(0, target.height() // 2))
-            centre = view.mapFromGlobal(middle).y()
-        else:
-            centre = room // 2
-        palette.set_lead(max(0, min(centre - content // 2, room - content)))
-
-    def eventFilter(self, watched, event):
-        if watched is self._target and event.type() in (
-                QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.Show):
-            self.recentre()
-        return False
+        spare = self.viewport().height() - palette.content_height()
+        palette.set_lead(max(0, min(TOP_GAP, spare)))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         # A scrollbar coming or going changes how wide we need to be.
         self.updateGeometry()
-        self.recentre()
-
-    def moveEvent(self, event):
-        super().moveEvent(event)
-        self.recentre()
+        self.place_tools()
 
 
 def hydra_button(invoke, parent=None) -> QWidget:
@@ -191,12 +167,9 @@ def hydra_button(invoke, parent=None) -> QWidget:
     return host
 
 
-def tool_strip(groups, invoke, parent=None, centre_on=None) -> QScrollArea:
-    """The palette, in something that will scroll it if it has to.
-
-    With room to spare the tools sit level with the middle of ``centre_on``,
-    or of the strip itself without one.
-    """
+def tool_strip(groups, invoke, parent=None) -> QScrollArea:
+    """The palette, in something that will scroll it if it has to. With
+    room to spare the tools start TOP_GAP below the top of the strip."""
     area = _Strip(parent)
     area.setObjectName("toolStrip")
     area.setFrameShape(QFrame.Shape.NoFrame)
@@ -207,8 +180,6 @@ def tool_strip(groups, invoke, parent=None, centre_on=None) -> QScrollArea:
     # Expanding, or the toolbar hands the strip its height hint and the
     # tools scroll in a window with room to spare.
     area.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-    if centre_on is not None:
-        area.centre_on(centre_on)
     return area
 
 
