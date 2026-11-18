@@ -283,7 +283,12 @@ class ViewPage(QWidget):
                                   theme.PANEL_INSET)
         column.setSpacing(5)
         column.addLayout(_section("Camera", self.locked))
-        column.addLayout(_row(self.projection, self.lens, _muted()))
+        # Shared out over the whole width, so the lens ends where the
+        # glyphs below do.
+        lens_row = _row(self.projection, self.lens)
+        lens_row.setStretch(0, 1)
+        lens_row.setStretch(1, 1)
+        column.addLayout(lens_row)
         camera, target = _captions("Camera", "Target")
         column.addLayout(_row(camera, self.camera_at, self.camera_set,
                               self.camera_lock))

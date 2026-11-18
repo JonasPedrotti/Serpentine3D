@@ -970,6 +970,20 @@ class SubjectHeader(QWidget):
         self.detail.setVisible(bool(subject.detail))
 
 
+class _WidthHoldingScroll(QScrollArea):
+    """Scrolls up and down only, so it asks for the width of what it holds:
+    a panel dragged narrow stops there instead of cutting the page off."""
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        inner = self.widget()
+        if inner is not None:
+            hint.setWidth(max(hint.width(),
+                              inner.minimumSizeHint().width()
+                              + 2 * self.frameWidth()))
+        return hint
+
+
 class PropertiesPanel(QWidget):
     # How long a selection has to sit still before its exact volume and area
     # are worked out. Long enough that clicking through a drawing measures
@@ -1358,11 +1372,11 @@ class PropertiesPanel(QWidget):
         self.pages.addWidget(self.layer_page)
         self.pages.addWidget(self.sheet_page)
         self.pages.addWidget(self.view_page)
-        # Only the page on show counts towards the height, and that page
+        # Only the page on show counts towards the size, and that page
         # scrolls rather than holding the panels below it to its height.
         self.pages.currentChanged.connect(self._fit_pages)
         self._fit_pages()
-        scroll = QScrollArea()
+        scroll = _WidthHoldingScroll()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(
@@ -1394,7 +1408,7 @@ class PropertiesPanel(QWidget):
             page = self.pages.widget(i)
             policy = (QSizePolicy.Policy.Preferred if page is current
                       else QSizePolicy.Policy.Ignored)
-            page.setSizePolicy(QSizePolicy.Policy.Preferred, policy)
+            page.setSizePolicy(policy, policy)
         self.pages.adjustSize()
 
     # -------------------------------------------------------- what is picked

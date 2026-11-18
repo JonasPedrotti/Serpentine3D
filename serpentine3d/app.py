@@ -3684,7 +3684,7 @@ def run_app(app, splash=None):
     # GNOME matches windows to the launcher (icon, grouping, pinning)
     # by this name — must equal the installed serpentine3d.desktop
     app.setDesktopFileName("serpentine3d")
-    app.setStyleSheet(theme.QSS)
+    app.setStyleSheet(theme.stylesheet())
     from .ui import tooltips
     tooltips.install(app)
 

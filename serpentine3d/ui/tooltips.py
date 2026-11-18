@@ -13,6 +13,8 @@ from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QLabel, QProxyStyle, QStyle
 
+from . import fields
+
 WAKE_UP_MS = 250
 _BG = QColor("#1f2023")
 _BORDER = QColor("#3d3e44")
@@ -26,6 +28,10 @@ class _Timing(QProxyStyle):
         if hint == QStyle.StyleHint.SH_ToolTip_WakeUpDelay:
             return WAKE_UP_MS
         return super().styleHint(hint, option, widget, data)
+
+    def polish(self, widget):
+        fields.polish(widget)
+        return super().polish(widget)
 
 
 class _Tip(QLabel):
