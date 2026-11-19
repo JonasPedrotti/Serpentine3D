@@ -1565,7 +1565,9 @@ class PropertiesPanel(QWidget):
             out.append("layers")
         elif self._picked_sheets():
             out.append("sheets")
-        if not out and self._view_pane() is not None:
+        # placing model text shows its tools on the objects page instead
+        if (not out and self._view_pane() is not None
+                and not self._model_text_command_active):
             out.append("view")
         return out
 

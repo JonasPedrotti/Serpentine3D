@@ -70,6 +70,27 @@ def _qapp():
     yield app
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _delete_the_windows_a_file_leaves(_qapp):
+    """Delete every top-level widget a test file made once it is done.
+
+    Nothing else does, and a worker kept tens of thousands of windows
+    alive: memory grew past 9 GB, and every app-wide setStyle or
+    setStyleSheet repolished all of them, one call taking minutes.
+    """
+    from PySide6.QtCore import QEvent
+    from shiboken6 import Shiboken
+    before = {Shiboken.getCppPointer(w)[0] for w in _qapp.topLevelWidgets()}
+    yield
+    _qapp.processEvents()       # timers still due would fire on deleted widgets
+    for w in _qapp.topLevelWidgets():
+        if (Shiboken.isValid(w)
+                and Shiboken.getCppPointer(w)[0] not in before):
+            w.hide()
+            w.deleteLater()
+    _qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 def _deploy_fonts():
     """The offscreen platform loads no system fonts on Windows: the font
     database comes up empty and every family query misses — the monospace
