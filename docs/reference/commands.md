@@ -214,7 +214,7 @@ Commands that need a file open a filtered chooser by default. Append
 | Command | Does |
 |---|---|
 | `audit` | Check every object's geometry for validity. |
-| `block` | Turn a selection into a reusable block definition + one instance. |
+| `block` | Turn a selection into a block definition and one instance in its place: pick the objects, then the base point, then name it. |
 | `blocklist` (`blockmanager`) | Blocklist |
 | `breptomesh` (`meshify`) | Convert BREP objects into lightweight native meshes. |
 | `bringforward` (`bringforwards`) | Nudge the selected objects one step towards the front. |

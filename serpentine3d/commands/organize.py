@@ -3,8 +3,8 @@
 import uuid
 
 from ..core import geometry as g
-from .base import (NumberReq, OptionReq, PointReq, SelectReq,
-                   TextReq, command)
+from .base import (FormField, FormReq, NumberReq, OptionReq, PointReq,
+                   SelectReq, TextReq, command)
 
 
 @command("group")
@@ -137,29 +137,52 @@ def cmd_unlockall(ctx):
 
 # ---------------------------------------------------------------- blocks
 
+# hatches, meshes, pictures and point clouds are not OCC shapes and cannot
+# go into the compound an instance is
+_BLOCK_KINDS = ("curve", "surface", "solid", "point", "compound")
+
+
+def _block_name_form(default: str) -> FormReq:
+    return FormReq("Block name", title="Block", fields=(
+        FormField("name", TextReq("Block name", default=default)),))
+
+
 @command("block")
 def cmd_block(ctx):
-    """Turn a selection into a reusable block definition + one instance."""
-    objs = yield SelectReq("Select objects for the block", min_count=1)
-    name = yield TextReq("Block name",
-                         default=f"Block {len(ctx.scene.block_defs) + 1}")
-    if any(bd["name"].lower() == name.lower()
-           for bd in ctx.scene.block_defs.values()):
-        ctx.echo(f"A block named '{name}' already exists.")
-        return
+    """Turn a selection into a block definition and one instance in its
+    place: pick the objects, then the base point, then name it. The base
+    point is where 'insert' later puts its point."""
+    objs = yield SelectReq("Select objects for the block", min_count=1,
+                           kinds=_BLOCK_KINDS, keep=True)
+    base = yield PointReq("Block base point")
+    defs = ctx.scene.block_defs
+    n = len(defs) + 1
+    while any(bd["name"].lower() == f"block {n}" for bd in defs.values()):
+        n += 1
+    default = f"Block {n}"
+    while True:
+        answers = yield _block_name_form(default)
+        name = str(answers.get("name") or "").strip() or default
+        if not any(bd["name"].lower() == name.lower()
+                   for bd in defs.values()):
+            break
+        ctx.echo(f"A block named '{name}' already exists, choose another.")
+        default = name
+    shapes = [o.shape for o in objs]
+    origin = (-base[0], -base[1], -base[2])
     bid = uuid.uuid4().hex[:8]
-    ctx.scene.block_defs[bid] = {
-        "name": name,
-        "shapes": [o.shape for o in objs],
-    }
     layer_id = objs[0].layer_id
-    compound = g.make_compound([o.shape for o in objs])
-    for o in objs:
-        ctx.scene.remove(o.id)
-    inst = ctx.scene.add(compound, name=f"{name} 01", layer_id=layer_id)
-    ctx.scene.update(inst.id, block_id=bid)
-    ctx.echo(f"Block '{name}' defined ({len(ctx.scene.block_defs[bid]['shapes'])} "
-             "shape(s)). Place more copies with 'insert'.")
+    compound = g.make_compound(shapes)
+    with ctx.scene.batched():
+        defs[bid] = {"name": name,
+                     "shapes": [g.translate(s, origin) for s in shapes]}
+        for o in objs:
+            ctx.scene.remove(o.id)
+        inst = ctx.scene.add(compound, name=f"{name} 01", layer_id=layer_id)
+        ctx.scene.update(inst.id, block_id=bid)
+    ctx.select_result([inst])
+    ctx.echo(f"Block '{name}' defined ({len(shapes)} shape(s)). Place more "
+             "copies with 'insert'.")
 
 
 @command("insert")

@@ -15,16 +15,13 @@ window can ghost what OK would make.
 from __future__ import annotations
 
 import math
-import sys
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox,
-                               QDoubleSpinBox, QFormLayout, QLabel, QLineEdit,
-                               QVBoxLayout)
+from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QFormLayout,
+                               QHBoxLayout, QLabel, QLineEdit, QPushButton,
+                               QSizePolicy)
 
 from ..commands.base import NumberReq, OptionReq
-from .dialogs import untether
+from .card_dialog import CardDialog
 
 
 class _NumberBox(QDoubleSpinBox):
@@ -60,43 +57,54 @@ def _decimals_for(default, minimum) -> int:
     return int(max(2, min(8, 3 - math.floor(math.log10(size)))))
 
 
-class FormDialog(QDialog):
+class FormDialog(CardDialog):
     """One command's form, with a widget per field."""
 
     def __init__(self, form, parent=None, changed=None):
-        super().__init__(parent)
+        super().__init__(parent, form.title or form.prompt or "Options")
         self._changed = changed
-        self.setWindowTitle(form.title or form.prompt or "Options")
-        # No icon beside the title: a few options asked about what is
-        # already on screen are not a second program to be told apart
-        # from the first. An empty icon is not enough on Windows, which
-        # falls back to the window class's own; a tool window has no icon
-        # to fall back to, and its slimmer title bar suits a popup this
-        # small anyway. Linux keeps the plain window `untether` wants,
-        # which is what gets it out of GNOME's attached-dialog grip.
-        self.setWindowIcon(QIcon())
-        if sys.platform.startswith("win"):
-            self.setWindowFlag(Qt.WindowType.Tool, True)
-        untether(self, over=parent)
         self.form = form
         self._widgets: dict = {}
-        outer = QVBoxLayout(self)
-        if form.prompt and form.prompt != form.title:
-            outer.addWidget(QLabel(form.prompt))
+        card, col = self.card, self.column
+        self.heading.setMinimumWidth(260)
+        prompts = {f.req.prompt for f in form.fields}
+        if form.prompt and form.prompt != form.title                 and form.prompt not in prompts:
+            body = QLabel(form.prompt, card)
+            body.setObjectName("body")
+            body.setWordWrap(True)
+            col.addWidget(body)
+        col.addSpacing(8)
         rows = QFormLayout()
-        outer.addLayout(rows)
+        rows.setHorizontalSpacing(12)
+        rows.setVerticalSpacing(8)
+        col.addLayout(rows)
         for field in form.fields:
             widget = self._widget_for(field.req)
             if widget is None:
                 continue
             self._widgets[field.name] = widget
-            rows.addRow(field.req.prompt, widget)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
-                                   | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        outer.addWidget(buttons)
+            label = QLabel(field.req.prompt, card)
+            label.setObjectName("fieldLabel")
+            rows.addRow(label, widget)
+        col.addSpacing(14)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        cancel = QPushButton("Cancel", card)
+        ok = QPushButton("OK", card)
+        ok.setObjectName("primaryButton")
+        ok.setDefault(True)
+        for b in (ok, cancel):
+            b.setSizePolicy(QSizePolicy.Policy.Expanding,
+                            QSizePolicy.Policy.Fixed)
+            row.addWidget(b, 1)
+        col.addLayout(row)
+        ok.clicked.connect(self.accept)
+        cancel.clicked.connect(self.reject)
         self._refresh_enabled()
+        first = next(iter(self._widgets.values()), None)
+        if isinstance(first, QLineEdit):
+            first.selectAll()
+            first.setFocus()
 
     # -- the widgets ------------------------------------------------------
 

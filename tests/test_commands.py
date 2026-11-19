@@ -491,6 +491,7 @@ def test_group_lock_block(env):
     proc.click_object(a.id)
     proc.click_object(b.id)
     proc.finish_selection()
+    proc.provide_text("0,0,0")
     proc.provide_text("Crate")
     assert len(scene.block_defs) == 1
     instances = [o for o in scene.all() if o.block_id]
@@ -512,6 +513,7 @@ def test_block_persistence(env, tmp_path):
     proc.run("block")
     proc.click_object(a.id)
     proc.finish_selection()
+    proc.provide_text("0,0,0")
     proc.provide_text("Unit")
     proc.run("lock")
     proc.click_object(scene.all()[0].id)
