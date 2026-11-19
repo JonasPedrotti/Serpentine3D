@@ -285,7 +285,8 @@ def cmd_detailmode(ctx):
         yield  # pragma: no cover
     mode = yield OptionReq(
         "Display mode",
-        options=["Technical", "Hidden", "Wireframe", "Shaded"],
+        options=["Technical", "Hidden", "Wireframe", "Shaded", "Plaster",
+                 "PlasterColor"],
         default="Hidden")
     detail.display_mode = mode.lower()
     ctx.viewport.layout_view._hlr_cache.pop(detail.id, None)

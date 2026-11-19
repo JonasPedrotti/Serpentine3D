@@ -19,6 +19,8 @@ _MODES = [
     ("shaded", "Shaded"),
     ("ghosted", "Ghosted"),
     ("rendered", "Rendered"),
+    ("plaster", "Plaster"),
+    ("plastercolor", "Plaster Color"),
     ("technical", "Technical"),
     ("zebra", "Zebra"),
     ("curvature", "Curvature"),
@@ -41,7 +43,8 @@ class DisplayPanel(QWidget):
 
         self.iso_box = QCheckBox("Surface isocurves")
         self.iso_box.setToolTip(
-            "The wires across a surface. Off in Rendered by default.")
+            "The wires across a surface. Off in Rendered and Plaster by "
+            "default.")
         self.iso_box.toggled.connect(
             lambda on: self._write(lambda vp: vp.set_isocurves(on)))
 
@@ -50,6 +53,12 @@ class DisplayPanel(QWidget):
             "The outlines of faces. Curves and text are not affected.")
         self.edge_box.toggled.connect(
             lambda on: self._write(lambda vp: vp.set_edges(on)))
+
+        self.ao_box = QCheckBox("Ambient occlusion")
+        self.ao_box.setToolTip(
+            "Soft shading in creases and corners. Plaster modes only.")
+        self.ao_box.toggled.connect(
+            lambda on: self._write(lambda vp: vp.set_ambient_occlusion(on)))
 
         form = QFormLayout()
         form.setContentsMargins(8, 8, 8, 4)
@@ -60,6 +69,7 @@ class DisplayPanel(QWidget):
         box.addLayout(form)
         box.addWidget(self.iso_box)
         box.addWidget(self.edge_box)
+        box.addWidget(self.ao_box)
         box.addStretch(1)
 
         self.refresh()
@@ -81,6 +91,8 @@ class DisplayPanel(QWidget):
                 self.mode_box.setCurrentIndex(i)
             self.iso_box.setChecked(vp.shows_isocurves())
             self.edge_box.setChecked(vp.shows_edges())
+            self.ao_box.setChecked(vp.ambient_occlusion)
+            self.ao_box.setEnabled(vp.display_mode in vp.AO_MODES)
         finally:
             self._loading = False
 

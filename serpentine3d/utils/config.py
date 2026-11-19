@@ -105,8 +105,10 @@ DEFAULTS = {
         "grid_extent": 100,
         "grid_major": 10,
         # What a fresh viewport shows: shaded | wireframe | ghosted | zebra
-        # | curvature | technical | draft | rendered
+        # | curvature | technical | draft | rendered | plaster | plastercolor
         "default_mode": "shaded",
+        # Soft shading in creases and corners, in the plaster modes
+        "ambient_occlusion": True,
         # Point clouds: pixels per point, and how many points a frame
         # draws before a scan's finer levels are left out
         "point_size": 2.0,
@@ -268,7 +270,7 @@ RHINO_MACRO_MAP = {
     # SEIsometric does; the other three corners are not views we have, and
     # pointing them here would put the model the wrong way round
     "setview world seisometric": "isometric",
-    "setdisplaymode arctic": "rendered",
+    "setdisplaymode arctic": "plaster",
     "setdisplaymode rendered": "rendered",
     "setdisplaymode shaded": "shaded",
     "setdisplaymode wireframe": "wireframe",
