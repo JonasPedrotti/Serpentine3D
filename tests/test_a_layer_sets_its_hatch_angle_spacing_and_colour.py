@@ -289,9 +289,9 @@ def test_the_colour_row_offers_ink_and_the_layer_s_colour():
 
 def test_choosing_a_colour_of_its_own(monkeypatch):
     from PySide6.QtGui import QColor
-    from PySide6.QtWidgets import QColorDialog
-    monkeypatch.setattr(QColorDialog, "getColor",
-                        staticmethod(lambda *a, **k: QColor("#4080c0")))
+    from serpentine3d.ui import color_picker
+    monkeypatch.setattr(color_picker, "get_color",
+                        lambda *a, **k: QColor("#4080c0"))
     scene, _h, props, (walls,) = _page("Walls")
     combo = props.layer_hatch_color
     combo.setCurrentIndex(combo.findData("choose"))
@@ -302,9 +302,9 @@ def test_choosing_a_colour_of_its_own(monkeypatch):
 
 def test_a_colour_dialog_closed_without_choosing_changes_nothing(monkeypatch):
     from PySide6.QtGui import QColor
-    from PySide6.QtWidgets import QColorDialog
-    monkeypatch.setattr(QColorDialog, "getColor",
-                        staticmethod(lambda *a, **k: QColor()))
+    from serpentine3d.ui import color_picker
+    monkeypatch.setattr(color_picker, "get_color",
+                        lambda *a, **k: QColor())
     scene, _h, props, (walls,) = _page("Walls")
     combo = props.layer_hatch_color
     combo.setCurrentIndex(combo.findData("choose"))
