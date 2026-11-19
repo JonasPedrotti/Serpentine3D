@@ -86,6 +86,9 @@ class Agent(QObject):
     errorRaised = Signal(str)
     usageUpdated = Signal(int, int)         # input tokens, output tokens
     conversationReset = Signal()
+    # The worker is gone and busy is False. turnFinished comes while it is
+    # still winding down, so anything showing busy has to look again here.
+    idle = Signal()
 
     _invoke = Signal(object)
 
@@ -195,6 +198,7 @@ class Agent(QObject):
                 if reset:
                     self._clear_conversation()
                 self._thread = None
+            self.idle.emit()
             if reset:
                 self.conversationReset.emit()
 
