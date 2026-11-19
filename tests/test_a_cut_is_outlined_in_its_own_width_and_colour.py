@@ -365,9 +365,9 @@ def test_layers_that_disagree_show_a_blank_cut_line():
 
 def test_choosing_a_cut_line_colour_of_its_own(monkeypatch):
     from PySide6.QtGui import QColor
-    from PySide6.QtWidgets import QColorDialog
-    monkeypatch.setattr(QColorDialog, "getColor",
-                        staticmethod(lambda *a, **k: QColor("#4080c0")))
+    from serpentine3d.ui import color_picker
+    monkeypatch.setattr(color_picker, "get_color",
+                        lambda *a, **k: QColor("#4080c0"))
     scene, _h, props, (walls,) = _layer_page("Walls")
     _choose(props.layer_cut_color, "choose")
     assert scene.layers.get(walls.id).cut_line_color == "#4080c0"

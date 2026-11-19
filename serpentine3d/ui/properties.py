@@ -262,8 +262,8 @@ class _TokenColour:
             return
         token = self.combo.itemData(index)
         if token == "choose":
-            from PySide6.QtWidgets import QColorDialog
-            color = QColorDialog.getColor(
+            from .color_picker import get_color
+            color = get_color(
                 QColor.fromRgbF(*(self._start or _INK_SWATCH)), self.combo,
                 self._title)
             if not color.isValid():
@@ -2240,12 +2240,22 @@ class PropertiesPanel(QWidget):
                           lambda i: self.scene.layers.rename(i, text))
 
     def _pick_layer_color(self):
-        from PySide6.QtWidgets import QColorDialog
+        from .color_picker import get_color
         layers = self._picked_layers()
         if not layers:
             return
-        color = QColorDialog.getColor(
-            QColor.fromRgbF(*layers[0].color), self, "Layer colour")
+        before = {layer.id: layer.color for layer in layers}
+
+        def show(live):
+            with self.scene.batched():
+                for layer_id, old in before.items():
+                    self.scene.layers.set_color(
+                        layer_id, old if live is None else
+                        (live.redF(), live.greenF(), live.blueF()))
+                self.scene.notify()
+
+        color = get_color(
+            QColor.fromRgbF(*layers[0].color), self, "Layer colour", show)
         if color.isValid():
             rgb = (color.redF(), color.greenF(), color.blueF())
             self._edit_layers("layer colour",
@@ -3056,9 +3066,9 @@ class PropertiesPanel(QWidget):
         if obj is None:
             return
         from PySide6.QtGui import QColor
-        from PySide6.QtWidgets import QColorDialog
+        from .color_picker import get_color
         current = QColor.fromRgbF(*self._ink_of(obj))
-        color = QColorDialog.getColor(current, self, "Object colour")
+        color = get_color(current, self, "Object colour")
         if color.isValid():
             self._set_color((color.redF(), color.greenF(), color.blueF()))
 

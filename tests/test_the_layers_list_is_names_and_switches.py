@@ -38,9 +38,9 @@ def _no_colour_dialog(monkeypatch):
     waits for a person the test run does not have. Stand in for it with a
     cancelled dialog, unless a test says otherwise."""
     from PySide6.QtGui import QColor
-    from PySide6.QtWidgets import QColorDialog
-    monkeypatch.setattr(QColorDialog, "getColor",
-                        staticmethod(lambda *args: QColor()))
+    from serpentine3d.ui import color_picker
+    monkeypatch.setattr(color_picker, "get_color",
+                        lambda *args: QColor())
 
 
 def _panel():
@@ -182,10 +182,10 @@ def test_a_layer_under_a_locked_parent_says_so():
 
 def test_the_colour_still_opens_from_its_swatch(monkeypatch):
     from PySide6.QtGui import QColor
-    from PySide6.QtWidgets import QColorDialog
+    from serpentine3d.ui import color_picker
     scene, _h, panel, (a, _b, _c) = _panel()
-    monkeypatch.setattr(QColorDialog, "getColor",
-                        staticmethod(lambda *args: QColor(255, 0, 0)))
+    monkeypatch.setattr(color_picker, "get_color",
+                        lambda *args: QColor(255, 0, 0))
 
     _click(panel, a, COLOR_COL)
 

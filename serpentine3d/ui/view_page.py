@@ -10,12 +10,12 @@ import os
 from PySide6.QtCore import QEvent, QSignalBlocker, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QIcon
 from PySide6.QtWidgets import (
-    QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox, QFileDialog,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
     QHBoxLayout, QLabel, QListWidget, QMenu, QPushButton, QSizePolicy,
     QToolButton, QVBoxLayout, QWidget,
 )
 
-from . import icons, theme
+from . import color_picker, icons, theme
 
 PROJECTIONS = (("Perspective", "perspective"), ("Parallel", "parallel"))
 WALLPAPER_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff)"
@@ -474,8 +474,8 @@ class ViewPage(QWidget):
         if vp is None:
             return
         rgb = getattr(vp.background, which)
-        color = QColorDialog.getColor(QColor.fromRgbF(*rgb), self,
-                                      "Background colour")
+        color = color_picker.get_color(QColor.fromRgbF(*rgb), self,
+                                       "Background colour")
         if color.isValid():
             self._set_background(**{which: (color.redF(), color.greenF(),
                                             color.blueF())})

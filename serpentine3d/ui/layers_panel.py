@@ -8,11 +8,12 @@ from PySide6.QtCore import (QEvent, QItemSelectionModel, QPointF, QRect,
                             QRectF, Qt, QTimer, Signal)
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QColorDialog,
+    QAbstractItemView, QApplication,
     QHeaderView, QMenu, QStyle, QStyledItemDelegate,
     QStyleOptionViewItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from . import color_picker
 from ..core import clipping
 from ..core import layout as _layout
 from . import icons, theme
@@ -648,8 +649,16 @@ class LayersPanel(QWidget):
         layer_id = self._layer_id(item)
         if column == _COLOR_COL:
             layer = self.scene.layers.get(layer_id)
-            color = QColorDialog.getColor(
-                QColor.fromRgbF(*layer.color), self, "Layer colour")
+            before = layer.color
+
+            def show(live):
+                self.scene.layers.set_color(
+                    layer_id, before if live is None else
+                    (live.redF(), live.greenF(), live.blueF()))
+                self.scene.notify()
+
+            color = color_picker.get_color(
+                QColor.fromRgbF(*layer.color), self, "Layer colour", show)
             if color.isValid():
                 self.history.checkpoint("layer colour")
                 self.scene.layers.set_color(
