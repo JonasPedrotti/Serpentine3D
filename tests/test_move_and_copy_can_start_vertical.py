@@ -255,7 +255,7 @@ def test_native_macro_text_keeps_literal_bang_and_underscore_characters(env, ali
     obj = _box(scene)
     selection.set([obj.id])
     name = "nativetextpresetguard"
-    macro = "block !_vertical"
+    macro = "block 0,0,0 !_vertical"
     if alias:
         commands.add_alias(name, macro)
     try:
@@ -271,6 +271,7 @@ def test_a_gui_text_answer_keeps_literal_bang_and_underscore_characters(window):
     obj = _box(window.scene)
     window.selection.set([obj.id])
     window.command_line.run_command("block")
+    window.command_line.run_command("0,0,0")
     assert isinstance(window.processor.request, TextReq)
 
     window.command_line.run_command("!_vertical")

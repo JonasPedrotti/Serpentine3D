@@ -61,10 +61,13 @@ def cmd_camera(ctx):
             ctx.echo(f"The camera's {action.lower()} is locked; unlock it "
                      "in Properties first.")
             return
+        # the line of sight, from the end that stays to the one being moved
         if action == "Position":
-            eye = yield PointReq("Camera position")
+            eye = yield PointReq("Camera position",
+                                 rubber_from=tuple(map(float, target)))
         else:
-            target = yield PointReq("Camera target")
+            target = yield PointReq("Camera target",
+                                    rubber_from=tuple(map(float, eye)))
         if not cam.look_from(eye, target):
             ctx.echo("Camera and target coincide.")
             return
