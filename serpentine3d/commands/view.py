@@ -601,6 +601,22 @@ def cmd_rendered(ctx):
     yield from ()
 
 
+@command("plaster", aliases=("clay", "arctic"), mutates=False)
+def cmd_plaster(ctx):
+    """Every surface in matte white under soft light, like a plaster model."""
+    _vp(ctx).set_display_mode("plaster")
+    ctx.echo("Plaster display.")
+    yield from ()
+
+
+@command("plastercolor", aliases=("claycolor",), mutates=False)
+def cmd_plastercolor(ctx):
+    """Plaster's soft light, with every object in its own colour."""
+    _vp(ctx).set_display_mode("plastercolor")
+    ctx.echo("Plaster Color display.")
+    yield from ()
+
+
 @command("technical", aliases=("tech",), mutates=False)
 def cmd_technical(ctx):
     """Hidden-line technical display (parallel projection linework)."""

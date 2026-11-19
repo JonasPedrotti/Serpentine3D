@@ -1298,6 +1298,10 @@ class MainWindow(QMainWindow):
                      lambda: self.run_command("ghosted"))
         self._action(m_view, "Rendered", None,
                      lambda: self.run_command("rendered"))
+        self._action(m_view, "Plaster", None,
+                     lambda: self.run_command("plaster"))
+        self._action(m_view, "Plaster Color", None,
+                     lambda: self.run_command("plastercolor"))
         self._action(m_view, "Technical", None,
                      lambda: self.run_command("technical"))
         m_view.addSeparator()

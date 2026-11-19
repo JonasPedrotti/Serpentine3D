@@ -1102,7 +1102,7 @@ def export_layout_dxf(window, layout, path: str):
 
     lv = window.viewport.layout_view
     for detail in layout.details:
-        if detail.display_mode in ("shaded", "ghosted"):
+        if detail.display_mode in ("shaded", "ghosted", "plaster", "plastercolor"):
             continue
         data = lv._detail_hlr(detail)
         cx = detail.x + detail.w / 2

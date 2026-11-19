@@ -35,7 +35,7 @@ ZOOM_PAD = 1.05                         # air around what a zoom was asked for
 # The modes that draw the model itself rather than a hidden-line pass over
 # it. Named, because anything that wants what the hidden-line pass worked
 # out has to skip the same details, or it makes the pass happen anyway.
-MODES_3D = ("wireframe", "shaded", "ghosted")
+MODES_3D = ("wireframe", "shaded", "ghosted", "plaster", "plastercolor")
 
 
 # How far a locked sheet item's ink goes towards the paper, on screen only,

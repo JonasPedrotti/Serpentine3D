@@ -190,7 +190,7 @@ TOOLS: list[dict] = [
         "description": (
             "Adjust the view. view: top/front/right/left/back/bottom/"
             "isometric/perspective. "
-            "display_mode: wireframe/shaded/ghosted/rendered. "
+            "display_mode: wireframe/shaded/ghosted/rendered/plaster/plastercolor. "
             "zoom_extents fits everything in view."),
         "input_schema": _s(view={"type": "string"},
                            display_mode={"type": "string"},

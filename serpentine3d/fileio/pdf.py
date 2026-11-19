@@ -72,7 +72,7 @@ def _paint_layout(painter: QPainter, window, layout, k: float):
     lv = window.viewport.layout_view
 
     for detail in layout.details:
-        if detail.display_mode in ("shaded", "ghosted"):
+        if detail.display_mode in ("shaded", "ghosted", "plaster", "plastercolor"):
             _paint_detail_raster(painter, window, detail, layout, k)
         else:
             _paint_detail_vector(painter, lv, detail, layout, k)

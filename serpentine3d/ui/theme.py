@@ -11,6 +11,14 @@ GRID_MINOR = (1.0, 1.0, 1.0, 0.055)
 GRID_MAJOR = (1.0, 1.0, 1.0, 0.11)
 GRID_AXIS_X = (0.75, 0.33, 0.32, 0.85)
 GRID_AXIS_Y = (0.38, 0.65, 0.36, 0.85)
+# Plaster display: every surface one matte white, as a plaster model is,
+# on a light ground of its own, so the grid turns dark to stay visible.
+PLASTER_FILL = (0.93, 0.93, 0.92)
+PLASTER_EDGE = (0.42, 0.42, 0.44, 1.0)
+PLASTER_BG_TOP = (0.97, 0.97, 0.98)
+PLASTER_BG_BOTTOM = (0.84, 0.85, 0.87)
+PLASTER_GRID_MINOR = (0.0, 0.0, 0.0, 0.06)
+PLASTER_GRID_MAJOR = (0.0, 0.0, 0.0, 0.12)
 SELECTION_COLOR = (1.0, 0.78, 0.25)          # warm gold
 # The selection while Properties shows something else, a picked layer say:
 # still selected, still gold, but about half way back towards the background,

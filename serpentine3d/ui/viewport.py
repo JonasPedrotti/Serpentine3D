@@ -269,6 +269,7 @@ uniform int uRendered;      // 1 = environment-lit rendered mode
 uniform float uMetallic;
 uniform float uRoughness;
 uniform int uFlat;          // 1 = a flat mark (a solid hatch): no lighting
+uniform int uPlaster;       // 1 = soft overcast light on matte white
 out vec4 frag;
 void main() {
     if (uFlat == 1) {
@@ -334,6 +335,19 @@ void main() {
                        + vec3(0.25, 0.28, 0.34) * df)
                  + spec_c * spec_i + vec3(fres);
         frag = vec4(c, uAlpha);
+        return;
+    }
+    if (uPlaster == 1) {
+        // a bright sky over a grey floor, in world space so faces keep their
+        // tone as the view turns, a gentle key from the camera, and faces
+        // seen edge-on darkened a little the way occlusion darkens creases
+        float up = (gl_FrontFacing ? vWorldZ : -vWorldZ) * 0.5 + 0.5;
+        float sky = mix(0.58, 0.86, up);
+        vec3 key = normalize(vec3(-0.35, 0.45, 0.82));
+        float dk = max(dot(n, key), 0.0);
+        float facing = mix(0.80, 1.0, smoothstep(0.0, 0.6, diff));
+        vec3 c = uColor * min(sky + 0.22 * dk, 1.05) * facing;
+        frag = vec4(min(c, vec3(1.0)), uAlpha);
         return;
     }
     vec3 base = uColor * (0.30 + 0.70 * diff);
@@ -786,7 +800,11 @@ def uploadable(mesh, local, anchor):
 
 # The display modes that fill faces solidly, and so close a cut solid with
 # a cap. Wireframe has no faces to close, and ghosted ones are see-through.
-CAP_MODES = ("shaded", "zebra", "curvature", "draft", "rendered")
+CAP_MODES = ("shaded", "zebra", "curvature", "draft", "rendered", "plaster",
+             "plastercolor")
+# Soft light on a light ground: plaster in white, and in the objects' own
+# colours.
+PLASTER_MODES = ("plaster", "plastercolor")
 
 
 class DrawTarget(NamedTuple):
@@ -1570,6 +1588,14 @@ class Viewport(QOpenGLWidget):
         self._bound_width = -1.0
         self._bg_vao = 0
         self._paint_failed = False          # a frame threw; see paintGL
+        # Ambient occlusion: wanted or not, its GL side once made, and the
+        # opaque face draws of the frame being drawn, replayed into its depth
+        self.ambient_occlusion = bool(
+            config.get("display", "ambient_occlusion", default=True)
+            if config else True)
+        self._ao = None
+        self._ao_failed = False
+        self._ao_draws = None
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         scene.add_listener(self.update)
@@ -1613,6 +1639,8 @@ class Viewport(QOpenGLWidget):
         # every GPU-side cache from the old context is stale, drop it all
         self._drop_gpu_cache()
         self._grid = None
+        self._ao = None
+        self._ao_failed = False
         self._mesh_prog = _compile(MESH_VERT, MESH_FRAG)
         self._line_prog = _compile(LINE_VERT, LINE_FRAG)
         self._thick_prog = _compile(THICK_VERT, LINE_FRAG)
@@ -1787,7 +1815,8 @@ class Viewport(QOpenGLWidget):
 
         self._refresh_camera_bounds()
         view = self.camera.view_matrix()
-        mvp64 = self.camera.proj_matrix(w, h) @ view
+        proj = self.camera.proj_matrix(w, h)
+        mvp64 = proj @ view
         self._frame_anchor = view_anchor(self.camera.target)
         # One float32 matrix for every overlay, the frame anchor folded
         # in, and each overlay rebases what it uploads to match, so the
@@ -1818,7 +1847,14 @@ class Viewport(QOpenGLWidget):
         if self.grid_visible:
             self._draw_grid(mvp64)
         self._sync_gpu()
-        self._draw_objects(mvp64, view)
+        occlude = self.shows_ambient_occlusion()
+        self._ao_draws = [] if occlude else None
+        try:
+            self._draw_objects(mvp64, view)
+        finally:
+            draws, self._ao_draws = self._ao_draws, None
+        if occlude and draws:
+            self._draw_ambient_occlusion(draws, proj, self._ao_ground(mvp))
         if parallel:
             GL.glDepthFunc(GL.GL_LEQUAL)
         self._draw_image_planes(mvp)
@@ -1840,12 +1876,109 @@ class Viewport(QOpenGLWidget):
         self._paint_dots(w, h)
         self._paint_marker_labels(w, h)
 
+    def _ground_z(self) -> float:
+        """The height plaster stands its model on: z=0, or lower when
+        something reaches below it, so nothing sinks into the ground."""
+        box = self.camera.drawing_bounds
+        return min(0.0, float(box[0][2])) if box is not None else 0.0
+
+    def _ground_rect(self):
+        """(x0, x1, y0, y1, z) of the occlusion's ground: the drawing's
+        footprint and a margin round it as wide as the shading can reach."""
+        box = self.camera.drawing_bounds
+        if box is None:
+            return None
+        lo, hi = np.asarray(box[0], float), np.asarray(box[1], float)
+        mid = (lo + hi) / 2
+        half = float(np.max(hi - lo)) * 0.75 + 1.0
+        return (mid[0] - half, mid[0] + half, mid[1] - half, mid[1] + half,
+                self._ground_z())
+
+    def _ao_ground(self, mvp):
+        """The ground as triangles for the occlusion's depth only, so a
+        model darkens what it stands on, with the matrix they go through.
+        None from below: the ground would hide the model from its own
+        shading."""
+        ground = self._ground_rect()
+        if ground is None:
+            return None
+        x0, x1, y0, y1, z = ground
+        cam = self.camera
+        if cam.projection == "parallel":
+            if (np.asarray(cam.target, float) - cam.position)[2] > -1e-6:
+                return None
+        elif cam.position[2] <= z:
+            return None
+        tris = np.array([(x0, y0, z), (x1, y0, z), (x1, y1, z),
+                         (x0, y0, z), (x1, y1, z), (x0, y1, z)])
+        return rebased(tris, self._frame_anchor), mvp
+
+    def _draw_ambient_occlusion(self, draws, proj, ground=None):
+        """Replay the frame's opaque faces into a depth of our own and
+        darken the picture by what that depth says is hidden from the sky.
+        A driver that cannot do it loses the shading, not the frame."""
+        target = int(GL.glGetIntegerv(GL.GL_DRAW_FRAMEBUFFER_BINDING))
+        viewport = [int(v) for v in GL.glGetIntegerv(GL.GL_VIEWPORT)]
+        clip_count = 0
+        try:
+            if self._ao is None:
+                from .ambient_occlusion import AmbientOcclusion
+                self._ao = AmbientOcclusion()
+            self._ao.begin_depth(viewport[2], viewport[3])
+            GL.glEnable(GL.GL_DEPTH_TEST)
+            GL.glDisable(GL.GL_BLEND)
+            prog = self._line_prog
+            self._use(prog)
+            bound = None
+            for vao, count, mvp, clips in draws:
+                if clips is not bound:
+                    for i in range(len(clips), clip_count):
+                        GL.glDisable(GL.GL_CLIP_DISTANCE0 + i)
+                    for i in range(clip_count, len(clips)):
+                        GL.glEnable(GL.GL_CLIP_DISTANCE0 + i)
+                    clip_count = len(clips)
+                    self._set_clip_uniforms(prog, clips)
+                    bound = clips
+                self._set_mvp(prog, mvp)
+                GL.glBindVertexArray(vao)
+                GL.glDrawElements(GL.GL_TRIANGLES, count,
+                                  GL.GL_UNSIGNED_INT, ctypes.c_void_p(0))
+            for i in range(clip_count):
+                GL.glDisable(GL.GL_CLIP_DISTANCE0 + i)
+            clip_count = 0
+            self._set_clip_uniforms(prog, [])
+            if ground is not None:
+                tris, mvp = ground
+                self._preview.update(tris)
+                self._set_mvp(prog, mvp)
+                GL.glBindVertexArray(self._preview.vao)
+                GL.glDrawArrays(GL.GL_TRIANGLES, 0, len(tris))
+            self._ao.apply(target, viewport, proj, self.devicePixelRatioF())
+        except Exception:                                       # noqa: BLE001
+            self._ao_failed = True
+            traceback.print_exc()
+            print("serp3d: ambient occlusion is off in this viewport after "
+                  "the error above.", file=sys.stderr)
+            for i in range(clip_count):
+                GL.glDisable(GL.GL_CLIP_DISTANCE0 + i)
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target)
+            GL.glViewport(*viewport)
+            GL.glEnable(GL.GL_BLEND)
+            GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+            GL.glEnable(GL.GL_DEPTH_TEST)
+            GL.glDepthMask(True)
+        GL.glBindVertexArray(0)
+        self._reset_gl_state()
+
     def _paint_background(self, w: int, h: int, model: bool = True):
         """The pane's background: its colour or gradient, and its wallpaper
         over that. A sheet keeps the theme's, since paper is drawn on it."""
         bg = self.background if model else None
         top, bottom = (bg.colors() if bg is not None else
                        (theme.VIEWPORT_BG_TOP, theme.VIEWPORT_BG_BOTTOM))
+        if model and self.display_mode in PLASTER_MODES:
+            bg = None
+            top, bottom = theme.PLASTER_BG_TOP, theme.PLASTER_BG_BOTTOM
         GL.glClearColor(*bottom, 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         GL.glDisable(GL.GL_DEPTH_TEST)
@@ -2399,8 +2532,11 @@ class Viewport(QOpenGLWidget):
         # depth could only ever turn it away, as it did a grid clamped to
         # the back of a parallel view's slab (see _paint_frame).
         GL.glDisable(GL.GL_DEPTH_TEST)
-        self._draw_lines(self._grid["minor"], mvp, theme.GRID_MINOR)
-        self._draw_lines(self._grid["major"], mvp, theme.GRID_MAJOR)
+        light = self.display_mode in PLASTER_MODES
+        self._draw_lines(self._grid["minor"], mvp, theme.PLASTER_GRID_MINOR
+                         if light else theme.GRID_MINOR)
+        self._draw_lines(self._grid["major"], mvp, theme.PLASTER_GRID_MAJOR
+                         if light else theme.GRID_MAJOR)
         if self.grid_axes_visible:
             self._draw_lines(self._grid["axis_x"], mvp, theme.GRID_AXIS_X)
             self._draw_lines(self._grid["axis_y"], mvp, theme.GRID_AXIS_Y)
@@ -2686,7 +2822,8 @@ class Viewport(QOpenGLWidget):
         georeferenced model away as soon as it was zoomed in on.
         """
         key = (self.scene.revision, self.scene.showing_only,
-               self._grid_params, self.grid_visible)
+               self._grid_params, self.grid_visible,
+               self.shows_ambient_occlusion())
         if self._cam_bounds_key == key:
             return
         self._cam_bounds_key = key
@@ -2700,6 +2837,14 @@ class Viewport(QOpenGLWidget):
             else:
                 box = (tuple(min(a, b) for a, b in zip(box[0], grid[0])),
                        tuple(max(a, b) for a, b in zip(box[1], grid[1])))
+        ground = self._ground_rect()
+        if ground is not None and box is not None                 and self.shows_ambient_occlusion():
+            # The far plane has to clear the occlusion's ground, or it cuts
+            # the ground off where depth is too coarse to shade, and the cut
+            # shows as a dark line along the horizon.
+            x0, x1, y0, y1, z = ground
+            box = (tuple(min(a, b) for a, b in zip(box[0], (x0, y0, z))),
+                   tuple(max(a, b) for a, b in zip(box[1], (x1, y1, z))))
         self.camera.scene_bounds = box
 
     def _curvature_range(self) -> float:
@@ -2834,7 +2979,11 @@ class Viewport(QOpenGLWidget):
         mode = mode_override or self.display_mode
         fill_alpha = {"shaded": 1.0, "ghosted": 0.35, "wireframe": 0.0,
                       "zebra": 1.0, "curvature": 1.0, "draft": 1.0,
-                      "rendered": 1.0}[mode]
+                      "rendered": 1.0, "plaster": 1.0,
+                      "plastercolor": 1.0}[mode]
+        plaster = mode in PLASTER_MODES
+        if plaster:
+            light_background = True     # lines go dark on its light ground
         curv_range = self._curvature_range() if mode == "curvature" else 0.0
         show_isos = self.shows_isocurves(mode)
         show_edges = self.shows_edges(mode)
@@ -2896,6 +3045,8 @@ class Viewport(QOpenGLWidget):
         GL.glUniform1f(self._uloc(self._mesh_prog, "uCurvRange"), curv_range)
         GL.glUniform1i(self._uloc(self._mesh_prog, "uRendered"),
                        1 if mode == "rendered" else 0)
+        GL.glUniform1i(self._uloc(self._mesh_prog, "uPlaster"),
+                       1 if plaster else 0)
         from ..core.text_object import TextShape
         for obj in objects:
             if isinstance(obj, _Batch):
@@ -2967,6 +3118,11 @@ class Viewport(QOpenGLWidget):
             # one leaves nothing to shade. Lift the fill only — edges keep the
             # object's real colour, so black stays black in wireframe.
             fill_color = theme.shaded_fill(surface)
+            if plaster and not selected and not locked and (
+                    mode == "plaster" or max(surface) <= 0.0):
+                # Plaster Color shows pure black as plaster: black is what
+                # most models are left in, not a colour anyone chose.
+                fill_color = theme.PLASTER_FILL
             if light_background and not selected and not own_ink:
                 # dark linework on paper-white detail backgrounds
                 line_color = (min(color[0], 0.3), min(color[1], 0.3),
@@ -3035,6 +3191,11 @@ class Viewport(QOpenGLWidget):
                                   GL.GL_UNSIGNED_INT, ctypes.c_void_p(0))
                 GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
                 GL.glDepthMask(True)
+                if (self._ao_draws is not None and not flat_fill
+                        and opacity >= 1.0 and mode != "ghosted"
+                        and obj.clip_plane is None):
+                    self._ao_draws.append(
+                        (gpu.tri_vao, gpu.tri_count, omvp, oclips))
 
             # `not gpu.tri_count` is a curve, a point cloud, an annotation:
             # something whose lines are the object rather than the outline
@@ -3045,6 +3206,8 @@ class Viewport(QOpenGLWidget):
                     edge_color = (*color, 1.0)    # gold, or lit by a flash
                 elif obj.kind in ("curve", "hatch"):
                     edge_color = (*line_color, 1.0)
+                elif plaster and gpu.tri_count and not locked:
+                    edge_color = theme.PLASTER_EDGE
                 else:
                     # face edges: darkened object colour
                     edge_color = (line_color[0] * 0.35, line_color[1] * 0.35,
@@ -3242,7 +3405,13 @@ class Viewport(QOpenGLWidget):
             line[0] * 0.35, line[1] * 0.35, line[2] * 0.35, 1.0)
         iso = (*color, 0.55) if mode == "wireframe" else (
             color[0] * 0.30, color[1] * 0.30, color[2] * 0.30, 0.8)
-        return (theme.shaded_fill(color), edge,
+        fill = theme.shaded_fill(color)
+        if mode in PLASTER_MODES and not locked:
+            if mode == "plaster" or max(color) <= 0.0:
+                fill = theme.PLASTER_FILL
+            if obj.kind != "curve":
+                edge = theme.PLASTER_EDGE
+        return (fill, edge,
                 self.scene.screen_width_of(obj), iso)
 
     def _draw_batch(self, batch, mvp, view, fill_alpha, show_edges, show_isos):
@@ -3265,6 +3434,8 @@ class Viewport(QOpenGLWidget):
             GL.glDrawElements(GL.GL_TRIANGLES, gpu.tri_count,
                               GL.GL_UNSIGNED_INT, ctypes.c_void_p(0))
             GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
+            if self._ao_draws is not None and fill_alpha >= 1.0:
+                self._ao_draws.append((gpu.tri_vao, gpu.tri_count, mvp, []))
         if gpu.line_count and (show_edges or not gpu.tri_count):
             self._draw_edges(gpu, mvp, edge, width)
         if gpu.iso_count and show_isos:
@@ -3351,6 +3522,8 @@ class Viewport(QOpenGLWidget):
             return (grey, grey, grey)
         if mode == "rendered":
             return self.scene.render_color_of(obj)
+        if mode == "plaster":
+            return theme.PLASTER_FILL
         return color
 
     def _count_into_stencil(self, mvp, plane, gpus):
@@ -3598,6 +3771,11 @@ class Viewport(QOpenGLWidget):
         # real one back
         self._set_color4(self._line_prog, (0.02, 0.02, 0.03, 0.30))
         GL.glDepthMask(False)
+        # The picture's alpha stays opaque: Qt lays the pane over the window
+        # by it, and a stamp that thinned it let the window show through as
+        # a pale patch.
+        GL.glBlendFuncSeparate(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA,
+                               GL.GL_ZERO, GL.GL_ONE)
         for obj in objects:
             gpu = self._gpu.get(obj.id)
             if gpu is None or not gpu.tri_count:
@@ -3612,6 +3790,7 @@ class Viewport(QOpenGLWidget):
             GL.glDrawElements(GL.GL_TRIANGLES, gpu.tri_count,
                               GL.GL_UNSIGNED_INT, ctypes.c_void_p(0))
         GL.glDepthMask(True)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
 
     def _draw_text_background(self, text, mvp, anchor, light: bool):
         """The patch of drawing colour text sits on, hiding what lies
@@ -4691,7 +4870,8 @@ class Viewport(QOpenGLWidget):
         return True
 
     DISPLAY_MODES = ("shaded", "wireframe", "ghosted", "zebra",
-                     "curvature", "technical", "draft", "rendered")
+                     "curvature", "technical", "draft", "rendered", "plaster",
+                     "plastercolor")
 
     def set_display_mode(self, mode: str):
         if mode not in self.DISPLAY_MODES:
@@ -4711,10 +4891,10 @@ class Viewport(QOpenGLWidget):
 
     # -- what the mode draws, and what the user says instead --
 
-    #: Modes that leave surface isocurves off unless asked. Only rendered:
-    #: a render showing the wire cage of every surface is not a render, and
-    #: it is what GitHub #5 was looking at.
-    _ISO_OFF_MODES = ("rendered",)
+    #: Modes that leave surface isocurves off unless asked. Rendered: a
+    #: render showing the wire cage of every surface is not a render, and
+    #: it is what GitHub #5 was looking at. Plaster, for the same reason.
+    _ISO_OFF_MODES = ("rendered", "plaster", "plastercolor")
 
     def shows_isocurves(self, mode: str | None = None) -> bool:
         """Whether surface isocurves are drawn in this pane.
@@ -4731,6 +4911,18 @@ class Viewport(QOpenGLWidget):
         """Whether surface and mesh edges are drawn in this pane. Every mode
         wants them; the override is there for the odd render that doesn't."""
         return True if self._edge_override is None else self._edge_override
+
+    #: Modes shaded with ambient occlusion while it is switched on.
+    AO_MODES = PLASTER_MODES
+
+    def shows_ambient_occlusion(self, mode: str | None = None) -> bool:
+        return (self.ambient_occlusion and not self._ao_failed
+                and (mode or self.display_mode) in self.AO_MODES)
+
+    def set_ambient_occlusion(self, on: bool):
+        self.ambient_occlusion = bool(on)
+        self.displayModeChanged.emit()
+        self.update()
 
     def set_isocurves(self, on: bool | None):
         """True or False to overrule the mode, None to follow it again."""
