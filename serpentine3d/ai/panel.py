@@ -319,6 +319,7 @@ class AiPanel(QWidget):
             self.agent.turnFinished.connect(self._on_finished)
             self.agent.errorRaised.connect(self._on_error)
             self.agent.usageUpdated.connect(self._on_usage)
+            self.agent.idle.connect(self.composerStateChanged)
             # Always queue the reset acknowledgement so older queued worker
             # updates are discarded before this new conversation is enabled.
             self.agent.conversationReset.connect(
