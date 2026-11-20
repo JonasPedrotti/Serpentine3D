@@ -17,6 +17,7 @@ from ezdxf import units as ezdxf_units
 import numpy as np
 
 from ..core import geometry, linetype
+from ..core.layers import PATH_SEPARATOR
 from ..core.dimension import DimensionShape
 from ..core.layout import measured_text
 from ..core.tessellate import tessellate
@@ -70,16 +71,42 @@ def _dxf_linetype(doc, name: str) -> str | None:
     return key
 
 
+def dxf_layer_names(layers) -> dict:
+    """The name each layer goes by in a DXF, by id.
+
+    DXF layers are flat and their names are one regardless of case, so
+    two nested layers sharing a name, 2D::KOTEN and 3D::KOTEN, cannot both
+    be KOTEN. Those go by their whole path joined with $, as Rhino writes
+    them; a name no other layer has stays as it is. Default is DXF's 0.
+    """
+    every = layers.all()
+    count: dict = {}
+    for layer in every:
+        key = layer.name.upper()
+        count[key] = count.get(key, 0) + 1
+    names = {}
+    for layer in every:
+        if layer.name == "Default":
+            names[layer.id] = "0"
+        elif count[layer.name.upper()] > 1:
+            names[layer.id] = layers.full_path(layer.id).replace(
+                PATH_SEPARATOR, "$")
+        else:
+            names[layer.id] = layer.name
+    return names
+
+
 def export_dxf(scene, path: str, only_ids: list | None = None):
     # Told, or ezdxf labels the drawing metres whatever it holds (#101).
     doc = ezdxf.new("R2010", units=_INSUNITS[scene.units])
     msp = doc.modelspace()
+    names = dxf_layer_names(scene.layers)
     for layer in scene.layers.all():
         if layer.name == "Default":
             continue
         # The layer's look, as the import reads it back: its colour, its
         # print width as a lineweight, its linetype and its switches.
-        dxf_layer = doc.layers.add(layer.name)
+        dxf_layer = doc.layers.add(names[layer.id])
         dxf_layer.rgb = tuple(round(c * 255) for c in layer.color)
         dxf_layer.dxf.lineweight = _lineweight(layer.print_width)
         kind = _dxf_linetype(doc, layer.linetype)
@@ -94,10 +121,7 @@ def export_dxf(scene, path: str, only_ids: list | None = None):
     if only_ids:
         objs = [o for o in objs if o.id in only_ids]
     for obj in objs:
-        layer_name = scene.layers.get(obj.layer_id).name
-        if layer_name == "Default":
-            layer_name = "0"
-        attribs = {"layer": layer_name}
+        attribs = {"layer": names[obj.layer_id]}
         if obj.color is not None:
             attribs["true_color"] = _true_color(obj.color)
         if obj.print_width is not None:

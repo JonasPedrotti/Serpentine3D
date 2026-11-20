@@ -412,6 +412,10 @@ class CommandContext:
                 bucket = "face"
             elif kind == "edge":
                 bucket = "segment" if obj.kind == "curve" else "edge"
+            elif kind == "vertex":
+                # a curve's corner bends the segments meeting there; a
+                # solid's is a corner its faces lean to follow
+                bucket = "curve_point" if obj.kind == "curve" else "point"
             else:
                 continue
             parts.setdefault(bucket, {}).setdefault(obj_id, []).append(

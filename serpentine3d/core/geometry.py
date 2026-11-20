@@ -333,6 +333,51 @@ def edges_of(shape) -> list:
     return out
 
 
+def vertices_of(shape) -> list:
+    """The shape's corners, each once, in a stable order: what a
+    Ctrl+Shift click on a point of a curve, a surface or a solid holds by
+    its index. None for a mesh, as edges_of gives none."""
+    if not isinstance(shape, TopoDS_Shape):
+        return []
+    out, seen = [], set()
+    exp = TopExp_Explorer(shape, occ.VERTEX)
+    while exp.More():
+        vertex = occ.to_vertex(exp.Current())
+        key = hash(vertex)
+        if key not in seen:
+            seen.add(key)
+            out.append(vertex)
+        exp.Next()
+    return out
+
+
+def vertex_points(shape) -> list:
+    """Where each of `vertices_of(shape)` is."""
+    return [pnt_tuple(occ.point_of_vertex(v)) for v in vertices_of(shape)]
+
+
+def curve_points(shape) -> list:
+    """A curve's points a click can hold: its corners (vertex_points),
+    then the kinks inside its edges, where a polyline kept as one edge of
+    degree 1 turns. Held by index in this order."""
+    out = vertex_points(shape)
+    seen = {tuple(round(c, 9) for c in p) for p in out}
+    for edge in edges_of(shape):
+        try:
+            bs = _bspline_of_edge(edge)
+        except Exception:                                   # noqa: BLE001
+            continue
+        if bs.Degree() != 1:
+            continue
+        for j in range(2, bs.NbPoles()):
+            p = pnt_tuple(bs.Pole(j))
+            key = tuple(round(c, 9) for c in p)
+            if key not in seen:
+                seen.add(key)
+                out.append(p)
+    return out
+
+
 def faces_of(shape) -> list:
     """The shape's faces; none for a mesh, a point cloud or a picture, as
     edges_of gives none."""
@@ -2350,8 +2395,10 @@ def move_edge(shape, edge_index: int, delta: Point) -> TopoDS_Shape:
     return out
 
 
-def move_parts(shape, faces, edges, delta: Point) -> TopoDS_Shape:
-    """Move a set of faces and edges of a solid together by `delta`.
+def move_parts(shape, faces, edges, delta: Point,
+               vertices=()) -> TopoDS_Shape:
+    """Move a set of faces, edges and corners of a solid together by
+    `delta`.
 
     Moving the parts one after another double counts: moving one tilts
     the faces beside it, which carries the next held part some of the way
@@ -2374,13 +2421,17 @@ def move_parts(shape, faces, edges, delta: Point) -> TopoDS_Shape:
     _unit(d)                                  # "Distance is zero"
     flist = faces_of(shape)
     elist = edges_of(shape)
+    corners_at = vertex_points(shape)
     held_f = {int(i) for i in faces}
     held_e = {int(i) for i in edges}
+    held_v = {int(i) for i in vertices}
     if any(not (0 <= i < len(flist)) for i in held_f):
         raise GeometryError("Face index out of range")
     if any(not (0 <= i < len(elist)) for i in held_e):
         raise GeometryError("Edge index out of range")
-    if not held_f and not held_e:
+    if any(not (0 <= i < len(corners_at)) for i in held_v):
+        raise GeometryError("Point index out of range")
+    if not held_f and not held_e and not held_v:
         raise GeometryError("Nothing held to move")
     if len(held_f) == len(flist):
         return translate(shape, d)
@@ -2402,6 +2453,8 @@ def move_parts(shape, faces, edges, delta: Point) -> TopoDS_Shape:
         moving.update(key(p) for p in corners(flist[i]))
     for i in held_e:
         moving.update(key(p) for p in corners(elist[i]))
+    for i in held_v:
+        moving.add(key(corners_at[i]))
 
     drafts = []                               # (n, hinge, axis, n2, near)
     offsets = {}                              # face index -> distance
@@ -3565,10 +3618,12 @@ def _wire_bsplines(shape) -> list:
     return [bs for _edge, bs in _wire_runs(shape)]
 
 
-def transform_segments(shape, indices, fn) -> TopoDS_Shape:
-    """The curve with the segments at `indices` (in edges_of order) put
-    through the point map `fn`, and the segments beside them stretched so
-    the curve stays in one piece.
+def transform_segments(shape, indices, fn, vertices=()) -> TopoDS_Shape:
+    """The curve with the segments at `indices` (in edges_of order) and the
+    corners at `vertices` (in vertices_of order) put through the point map
+    `fn`, and the segments beside them stretched so the curve stays in one
+    piece. A held corner takes the ends of both segments meeting there and
+    nothing else of them.
 
     Rhino's sub-object gumball on a polycurve: drag one side of a rectangle
     and the rectangle resizes, because the two sides it meets follow their
@@ -3580,8 +3635,14 @@ def transform_segments(shape, indices, fn) -> TopoDS_Shape:
     import numpy as np
     edges = edges_of(shape)
     held = sorted(set(int(i) for i in indices))
-    if not held or any(not (0 <= i < len(edges)) for i in held):
+    corners = curve_points(shape)
+    held_v = sorted(set(int(i) for i in vertices))
+    if not held and not held_v:
+        raise GeometryError("Nothing held to move")
+    if any(not (0 <= i < len(edges)) for i in held):
         raise GeometryError("Segment index out of range")
+    if any(not (0 <= i < len(corners)) for i in held_v):
+        raise GeometryError("Point index out of range")
     runs = _wire_runs(to_wire(shape))
     n = len(runs)
     at = []                                    # walking position of each held edge
@@ -3598,6 +3659,8 @@ def transform_segments(shape, indices, fn) -> TopoDS_Shape:
         return gp_Pnt(float(q[0]), float(q[1]), float(q[2]))
 
     splines = [bs for _e, bs in runs]
+    ends = [(pnt_tuple(bs.StartPoint()), pnt_tuple(bs.EndPoint()))
+            for bs in splines]
     for k in held_pos:
         bs = splines[k]
         for j in range(1, bs.NbPoles() + 1):
@@ -3613,6 +3676,20 @@ def transform_segments(shape, indices, fn) -> TopoDS_Shape:
             if after is not None and after not in held_pos:
                 nb = splines[after]
                 nb.SetPole(1, splines[k].EndPoint())
+    targets = [corners[i] for i in held_v]
+    for k, bs in enumerate(splines):
+        if k in held_pos:
+            continue                      # moved whole, its ends with it
+        start, end = ends[k]
+        if any(_d3(start, t) <= tol() for t in targets):
+            bs.SetPole(1, moved(gp_Pnt(*start)))
+        if any(_d3(end, t) <= tol() for t in targets):
+            bs.SetPole(bs.NbPoles(), moved(gp_Pnt(*end)))
+        if bs.Degree() == 1:
+            for j in range(2, bs.NbPoles()):
+                p = pnt_tuple(bs.Pole(j))
+                if any(_d3(p, t) <= tol() for t in targets):
+                    bs.SetPole(j, moved(gp_Pnt(*p)))
     return _curve_from_splines(splines)
 
 

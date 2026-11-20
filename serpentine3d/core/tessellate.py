@@ -448,9 +448,40 @@ def _smooth_normals(verts: np.ndarray, tris: np.ndarray) -> np.ndarray:
 CURVE_ANGLE = math.radians(1.0)
 
 
+def _polyline_of_degree_one(adaptor) -> np.ndarray | None:
+    """An edge of degree 1 drawn as what it is, the polygon through its
+    knots, or None for any other curve.
+
+    Sampled by deflection, a long polyline kept as one edge, as Rhino
+    keeps one, lost its kinks: the sampler stepped over them, and the
+    line drawn ran metres from the points it was made of."""
+    from OCP.GeomAbs import GeomAbs_CurveType
+    if adaptor.GetType() != GeomAbs_CurveType.GeomAbs_BSplineCurve:
+        return None
+    bs = adaptor.BSpline()
+    if bs.Degree() != 1:
+        return None
+    first, last = adaptor.FirstParameter(), adaptor.LastParameter()
+    span = max(abs(last - first), 1e-12)
+    params = [first]
+    for k in range(1, bs.NbKnots() + 1):
+        u = bs.Knot(k)
+        if first + span * 1e-12 < u < last - span * 1e-12:
+            params.append(u)
+    params.append(last)
+    pts = np.empty((len(params), 3), np.float64)
+    for i, u in enumerate(params):
+        p = adaptor.Value(u)
+        pts[i] = (p.X(), p.Y(), p.Z())
+    return pts
+
+
 def _edge_polyline(edge, deflection: float) -> np.ndarray | None:
     try:
         adaptor = occ.edge_adaptor(edge)
+        exact = _polyline_of_degree_one(adaptor)
+        if exact is not None:
+            return exact
         disc = GCPnts_TangentialDeflection(adaptor, CURVE_ANGLE, deflection,
                                            2)
         n = disc.NbPoints()

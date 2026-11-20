@@ -716,9 +716,7 @@ def _face_from_edge_loops(rface, surf, table: dict):
     distinct edges at all, and no amount of joining them end to end closes
     it. Only the trim's own direction tells the two passes apart.
     """
-    from OCP.BRepBuilderAPI import (BRepBuilderAPI_MakeFace,
-                                    BRepBuilderAPI_MakeWire)
-    from OCP.ShapeFix import ShapeFix_Face
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
     from OCP.TopoDS import TopoDS
 
     loops = rface.Loops
@@ -755,6 +753,36 @@ def _face_from_edge_loops(rface, surf, table: dict):
     # the complement runs on to the surface's natural edge.
     lo, hi = geometry.bbox(outer)
     want = float(np.linalg.norm(np.subtract(hi, lo)))
+    best = _trim_by_loops(surf, outer, inner, want)
+    if best is None:
+        # A flat face Rhino keeps as a surface measured in survey
+        # coordinates has parameters in the millions, where its edges no
+        # longer project onto it cleanly. Its plane takes the same trim.
+        plane = _plane_of(surf)
+        if plane is not None:
+            best = _trim_by_loops(plane, outer, inner, want)
+    return best
+
+
+def _plane_of(surf):
+    """The exact plane of a flat surface that is not one already, or None."""
+    from OCP.Geom import Geom_Plane
+    from OCP.GeomLib import GeomLib_IsPlanarSurface
+    if isinstance(surf, Geom_Plane):
+        return None
+    try:
+        flat = GeomLib_IsPlanarSurface(surf, 1e-7)
+        return Geom_Plane(flat.Plan()) if flat.IsPlanar() else None
+    except Exception:                                           # noqa: BLE001
+        return None
+
+
+def _trim_by_loops(surf, outer, inner, want):
+    """`surf` trimmed by an outer wire and holes, on whichever side of the
+    outer gives a face as wide as `want`, or None."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.ShapeFix import ShapeFix_Face
+    from OCP.TopoDS import TopoDS
     best = None
     for flip in (False, True):
         try:

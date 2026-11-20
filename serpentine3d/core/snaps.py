@@ -710,7 +710,7 @@ class SnapIndex:
     def find(self, camera, px: float, py: float, width: int, height: int,
              radius_px: float = 12.0, base_point=None, pending_points=None,
              picked_points=None, clip=(), exclude_ids=None, extra_points=None,
-             on_curve=None):
+             on_curve=None, hidden=None):
         """Best snap near the pixel. Returns (point, kind) or None.
 
         `on_curve` is a curve the point being picked has to lie on, as the
@@ -721,7 +721,10 @@ class SnapIndex:
         what they take away is out of sight, so nothing on it snaps.
         `exclude_ids` leaves objects out, and `extra_points` puts (point,
         kind) candidates in: what a drag is moving cannot be snapped to where
-        it is going, but the rest of the shape it was can."""
+        it is going, but the rest of the shape it was can.
+
+        `hidden` says of a point whether something in front of it covers
+        it on screen: what cannot be seen is not snapped to."""
         if not self.enabled:
             return None
         objects = self.scene.visible_objects()
@@ -794,25 +797,27 @@ class SnapIndex:
         kinds = np.concatenate([np.array(head_kinds, object), fixed_kinds,
                                 np.array(kinds, object)])
         best = None
-        best_score = None
         if len(arr):
             scr = camera.project(arr, width, height)
             d2 = (scr[:, 0] - px) ** 2 + (scr[:, 1] - py) ** 2
             d2[scr[:, 2] <= 0] = np.inf
             if clip:
                 d2[pending:][~in_sight(arr[pending:], clip)] = np.inf
-            in_range = d2 < radius_px ** 2
-            for i in np.nonzero(in_range)[0]:
-                score = (_PRIORITY[kinds[i]], d2[i], scr[i, 2])
-                if best_score is None or score < best_score:
-                    best_score = score
-                    best = (tuple(arr[i]), kinds[i])
+            in_range = np.nonzero(d2 < radius_px ** 2)[0]
+            ranked = sorted(in_range, key=lambda i: (
+                _PRIORITY[kinds[i]], d2[i], scr[i, 2]))
+            for i in ranked:
+                # what is being drawn sits over the model, never behind it
+                if i >= pending and hidden is not None and hidden(arr[i]):
+                    continue
+                best = (tuple(arr[i]), kinds[i])
+                break
 
         if best is None and self.types.get("near"):
             # what reaches the cursor: over empty space, which is when this
             # runs, every edge in the drawing was looked at on every move
             near = self._near(close, camera, px, py, width, height,
-                              radius_px, clip)
+                              radius_px, clip, hidden)
             if near is not None:
                 best = (near, "near")
         return best
@@ -838,13 +843,12 @@ class SnapIndex:
         return feet
 
     def _near(self, objects, camera, px, py, width, height, radius_px,
-              clip=()):
+              clip=(), hidden=None):
         """Closest point on any curve's tessellation, in screen space.
 
         Not on a mesh: its edges are every triangle of a terrain or a scan,
         and Near on them caught the cursor wherever it went."""
-        best = None
-        best_d2 = radius_px ** 2
+        found = []
         cursor = np.array([px, py])
         for obj in objects:
             if obj.kind == "mesh":
@@ -872,11 +876,12 @@ class SnapIndex:
             d2 = np.einsum("ij,ij->i", d, d)
             d2[~valid] = np.inf
             i = int(np.argmin(d2))
-            if d2[i] < best_d2:
-                best_d2 = d2[i]
-                world = a3[i] + (b3[i] - a3[i]) * t[i]
-                best = tuple(world)
-        return best
+            if d2[i] < radius_px ** 2:
+                found.append((d2[i], tuple(a3[i] + (b3[i] - a3[i]) * t[i])))
+        for _d2, world in sorted(found, key=lambda f: f[0]):
+            if hidden is None or not hidden(world):
+                return world
+        return None
 
 
 # kept for backward compatibility with existing tests

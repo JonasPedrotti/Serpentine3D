@@ -183,6 +183,15 @@ VIEW_SETTLE = 0.5
 # ARROW_COUNT is how many go on a curve, and roughly how many on each face of
 # a surface: enough to see the run at a glance, few enough to see through.
 ARROW_PX = 22.0
+# What has points a Ctrl+Shift click can hold: a point object is its point,
+# and a picture's corners or a hatch's are not something to drag about.
+PICKED_POINT_KINDS = ("curve", "surface", "solid", "compound", "mesh")
+# How close on the screen two points of different objects must be drawn for
+# a Ctrl+Shift click to ask which was meant.
+STACK_PX = 3.0
+# What a clipping plane leaves an edge on where it cuts: everything with
+# faces, which a picture, a hatch or lettering is not.
+CUT_EDGE_KINDS = ("solid", "surface", "mesh", "compound")
 # A clipping plane's own arrow, longer than a direction arrow so it reads as
 # a property of the whole plane rather than of the edge it happens to start
 # near, and fixed on the glass for the same reason theirs is.
@@ -1668,6 +1677,7 @@ class Viewport(QOpenGLWidget):
         self._ao = None
         self._ao_failed = False
         self._ao_draws = None
+        self._ao_caps = None
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         scene.add_listener(self.update)
@@ -1923,13 +1933,15 @@ class Viewport(QOpenGLWidget):
                 self._draw_grid(mvp64)
             occlude = self.shows_ambient_occlusion()
             self._ao_draws = [] if occlude else None
+            self._ao_caps = [] if occlude else None
             try:
                 self._draw_objects(mvp64, view)
             finally:
                 draws, self._ao_draws = self._ao_draws, None
+                caps, self._ao_caps = self._ao_caps, None
             if occlude and draws:
                 self._draw_ambient_occlusion(draws, proj,
-                                             self._ao_ground(mvp))
+                                             self._ao_ground(mvp), caps)
             if parallel:
                 GL.glDepthFunc(GL.GL_LEQUAL)
             self._draw_image_planes(mvp)
@@ -1938,6 +1950,7 @@ class Viewport(QOpenGLWidget):
             GL.glDepthFunc(GL.GL_LEQUAL)
         self._draw_pending(mvp)
         self._draw_control_points(mvp)
+        self._draw_held_points(mvp)
         self._draw_combs(mvp)
         self._draw_direction_arrows(mvp)
         self._draw_clip_normals(mvp)
@@ -1991,7 +2004,7 @@ class Viewport(QOpenGLWidget):
                          (x0, y0, z), (x1, y1, z), (x0, y1, z)])
         return rebased(tris, self._frame_anchor), mvp
 
-    def _draw_ambient_occlusion(self, draws, proj, ground=None):
+    def _draw_ambient_occlusion(self, draws, proj, ground=None, caps=()):
         """Replay the frame's opaque faces into a depth of our own and
         darken the picture by what that depth says is hidden from the sky.
         A driver that cannot do it loses the shading, not the frame."""
@@ -2025,6 +2038,23 @@ class Viewport(QOpenGLWidget):
                 GL.glDisable(GL.GL_CLIP_DISTANCE0 + i)
             clip_count = 0
             self._set_clip_uniforms(prog, [])
+            # The caps too: without them the occlusion was worked out from
+            # the inside of every cut solid, and shaded what was cut away.
+            if caps:
+                GL.glEnable(GL.GL_STENCIL_TEST)
+                try:
+                    for (cmvp, plane, gpus, others, style, ppu,
+                         extent) in caps:
+                        self._count_into_stencil(cmvp, plane, gpus)
+                        self._lay_cap(cmvp, plane, others, style, ppu,
+                                      extent)
+                finally:
+                    GL.glDisable(GL.GL_STENCIL_TEST)
+                    for k in range(_caps.MAX_PLANES):
+                        GL.glDisable(GL.GL_CLIP_DISTANCE0 + k)
+                    GL.glDepthMask(True)
+                    GL.glEnable(GL.GL_DEPTH_TEST)
+                self._use(prog)
             if ground is not None:
                 tris, mvp = ground
                 self._preview.update(tris)
@@ -3114,6 +3144,7 @@ class Viewport(QOpenGLWidget):
             # after a failed upload makes its shaders' unwritten distances
             # undefined, so release them even when an object cannot draw.
             self._end_clips(clips)
+            self._nudge_curves(False)
 
     @contextmanager
     def _into_detail(self, width: float, height: float, ratio: float,
@@ -3408,9 +3439,7 @@ class Viewport(QOpenGLWidget):
                 elif plaster and gpu.tri_count and not locked:
                     edge_color = theme.PLASTER_EDGE
                 else:
-                    # face edges: darkened object colour
-                    edge_color = (line_color[0] * 0.35, line_color[1] * 0.35,
-                                  line_color[2] * 0.35, 1.0)
+                    edge_color = face_edge_color(line_color, obj.kind)
                 lw = self.scene.screen_width_of(obj)
                 self._draw_edges(gpu, omvp, edge_color,
                                  2.2 if selected else lw)
@@ -3600,8 +3629,8 @@ class Viewport(QOpenGLWidget):
         if light_background:
             line = (min(color[0], 0.3), min(color[1], 0.3),
                     min(color[2], 0.33))
-        edge = (*line, 1.0) if obj.kind == "curve" else (
-            line[0] * 0.35, line[1] * 0.35, line[2] * 0.35, 1.0)
+        edge = ((*line, 1.0) if obj.kind == "curve"
+                else face_edge_color(line, obj.kind))
         iso = (*color, 0.55) if mode == "wireframe" else (
             color[0] * 0.30, color[1] * 0.30, color[2] * 0.30, 0.8)
         fill = theme.shaded_fill(color)
@@ -3641,7 +3670,9 @@ class Viewport(QOpenGLWidget):
                               GL.GL_UNSIGNED_INT, ctypes.c_void_p(0))
             GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
             if self._ao_draws is not None and fill_alpha >= 1.0:
-                self._ao_draws.append((gpu.tri_vao, gpu.tri_count, mvp, []))
+                self._ao_draws.append((gpu.tri_vao, gpu.tri_count, mvp,
+                                       anchored_clips(list(clips),
+                                                      gpu.anchor)))
         if gpu.line_count and (show_edges or not gpu.tri_count):
             self._draw_edges(gpu, mvp, edge, width)
         if gpu.iso_count and show_isos:
@@ -3653,7 +3684,8 @@ class Viewport(QOpenGLWidget):
     def _draw_section_caps(self, mvp, view, clips, objects, locked_layers,
                            mode):
         """Close every solid a live clipping plane cuts with a cap, in its
-        section's fill (see ui/section_caps.py for how).
+        section's fill (see ui/section_caps.py for how), and edge every
+        solid, surface and mesh it cuts in the plane's own colour.
 
         After the objects, so a cap is hidden behind whatever is in front
         of it; on the stencil, so only the inside of a solid is capped.
@@ -3661,18 +3693,20 @@ class Viewport(QOpenGLWidget):
         if not self._cap_prog or self._cap_quad is None:
             return
         planes = _caps.cap_planes(self._clip_frames())
-        solids = []
+        faced = []
         for obj in objects:
             gpu = self._gpu.get(obj.id)
-            if (obj.kind == "solid" and gpu is not None and gpu.tri_count
+            if (obj.kind in CUT_EDGE_KINDS and obj.clip_plane is None
+                    and gpu is not None and gpu.tri_count
                     and obj.mesh_ready and obj.mesh.bounds() is not None):
-                solids.append((obj, gpu))
-        if not planes or not solids:
+                faced.append((obj, gpu))
+        if not planes or not faced:
             self._cut_lines.end_frame()
             return
-        boxes = [obj.mesh.bounds() for obj, _gpu in solids]
+        boxes = [obj.mesh.bounds() for obj, _gpu in faced]
         lows = np.array([b[0] for b in boxes], float)
         highs = np.array([b[1] for b in boxes], float)
+        colors = self._clip_plane_colors()
         # Measured in the picture being made, along its own right: a
         # detail's, not the pane's or the model camera's.
         target = self._draw_target()
@@ -3683,29 +3717,18 @@ class Viewport(QOpenGLWidget):
             for i, plane in enumerate(planes):
                 through = _caps.straddling(lows, highs, plane.origin,
                                            plane.normal)
-                cut = [solids[k] for k in np.flatnonzero(through)]
-                if not cut:
+                crossed = [faced[k] for k in np.flatnonzero(through)]
+                if not crossed:
                     continue
+                cut = [(obj, gpu) for obj, gpu in crossed
+                       if obj.kind == "solid"]
                 others = [p.equation for j, p in enumerate(planes) if j != i]
-                ppu = _caps.pixels_per_unit(mvp, plane.origin, right,
-                                            width, height)
-                reach = max(float(np.linalg.norm(
-                    np.asarray(corner, float) - np.asarray(plane.origin)))
-                    for obj, _gpu in cut for corner in obj.mesh.bounds())
-                by_id = {obj.id: (obj, gpu) for obj, gpu in cut}
-                fills = {obj.id: self.scene.section_fill_of(obj)
-                         for obj, _gpu in cut}
-                looks = [(obj.id, _caps.cap_style(
-                    fills[obj.id],
-                    self._cap_color(obj, locked_layers, mode)))
-                    for obj, _gpu in cut]
-                for style, ids in _caps.group_by_style(looks):
-                    self._count_into_stencil(
-                        mvp, plane, [by_id[oid][1] for oid in ids])
-                    self._lay_cap(mvp, plane, others, style, ppu,
-                                  reach * 1.5 + 1.0)
-                self._draw_cut_lines(mvp, plane, others,
-                                     [(obj, fills[obj.id]) for obj, _ in cut])
+                if cut:
+                    self._cap_solids(mvp, plane, others, cut, right,
+                                     (width, height), locked_layers, mode)
+                edge = colors.get((tuple(plane.origin), tuple(plane.normal)),
+                                  theme.CLIP_NORMAL)
+                self._draw_cut_lines(mvp, plane, others, crossed, edge)
         finally:
             self._cut_lines.end_frame()
             GL.glDisable(GL.GL_STENCIL_TEST)
@@ -3717,6 +3740,29 @@ class Viewport(QOpenGLWidget):
             for k in range(_caps.MAX_PLANES):
                 (GL.glEnable if k < len(clips) else GL.glDisable)(
                     GL.GL_CLIP_DISTANCE0 + k)
+
+    def _cap_solids(self, mvp, plane, others, cut, right, size,
+                    locked_layers, mode):
+        """The caps one plane lays over the solids it cuts: a stencil pass
+        for every look they share. `right` is the picture's own, which the
+        hatch's spacing is measured along."""
+        ppu = _caps.pixels_per_unit(mvp, plane.origin, right, *size)
+        reach = max(float(np.linalg.norm(
+            np.asarray(corner, float) - np.asarray(plane.origin)))
+            for obj, _gpu in cut for corner in obj.mesh.bounds())
+        extent = reach * 1.5 + 1.0
+        by_id = {obj.id: (obj, gpu) for obj, gpu in cut}
+        looks = [(obj.id, _caps.cap_style(
+            self.scene.section_fill_of(obj),
+            self._cap_color(obj, locked_layers, mode)))
+            for obj, _gpu in cut]
+        for style, ids in _caps.group_by_style(looks):
+            gpus = [by_id[oid][1] for oid in ids]
+            self._count_into_stencil(mvp, plane, gpus)
+            self._lay_cap(mvp, plane, others, style, ppu, extent)
+            if self._ao_caps is not None:
+                self._ao_caps.append((mvp, plane, gpus, others, style, ppu,
+                                      extent))
 
     def _cap_color(self, obj, locked_layers, mode):
         """The colour a cap shades from: the object's, greyed on a locked
@@ -3806,11 +3852,13 @@ class Viewport(QOpenGLWidget):
         self._cap_quad.draw(extent)
         GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
 
-    def _draw_cut_lines(self, mvp, plane, others, cut):
-        """The line round every cap one plane lays, where the plane meets
-        each solid's faces, in the width and colour the solid's section
-        says (#82). `cut` is (object, section fill) for every solid the
-        plane passes through.
+    def _draw_cut_lines(self, mvp, plane, others, cut, color):
+        """The edge one plane leaves on everything it cuts, where it meets
+        each object's faces, in the plane's own `color`: a solid's in the
+        width its section says (#82), in the colour it says if it says one,
+        and none where the width is none; a surface's or a mesh's in the
+        width a section has by default. `cut` is (object, gpu) for every
+        object the plane passes through.
 
         Not on the stencil: half the line's width lies outside the cap.
         Cut by every other plane, as the cap is, but not by this one: the
@@ -3823,8 +3871,15 @@ class Viewport(QOpenGLWidget):
         """
         groups: dict = {}
         px_per_mm = self._draw_target().px_per_mm
-        for obj, fill in cut:
+        for obj, _gpu in cut:
+            fill = (self.scene.section_fill_of(obj) if obj.kind == "solid"
+                    else None)
             style = _caps.cut_line_style(fill, px_per_mm)
+            if style is not None and (fill is None
+                                      or fill.cut_line_color is None):
+                # ink, the default, is the plane's colour; a colour the
+                # section names is its own
+                style = ((*(float(c) for c in color[:3]), 1.0), style[1])
             if self._looks_selected(obj.id):
                 # A picked solid shows where it is cut, in gold: on a
                 # sheet the cut can be all there is to see of it, and its
@@ -4050,7 +4105,24 @@ class Viewport(QOpenGLWidget):
 
     def _draw_edges(self, gpu, mvp, color, width: float):
         """Object edges at a given pixel width. Wide lines fall back to a
-        screen-space quad shader where GL_LINES are capped (llvmpipe)."""
+        screen-space quad shader where GL_LINES are capped (llvmpipe).
+
+        A curve, whose lines are all there is of it, is drawn a hair
+        nearer than it is: lying exactly on a mesh's edge or a face's, the
+        two fought for the same depth and the curve came and went. A
+        touch, so a face a real distance in front still hides it."""
+        self._nudge_curves(not getattr(gpu, "tri_count", 0))
+        self._draw_edge_lines(gpu, mvp, color, width)
+
+    def _nudge_curves(self, on: bool):
+        """Draw what follows a hair nearer (a curve) or as it is. Switched
+        only when it changes: set per object, it was two GL calls each."""
+        if getattr(self, "_curves_nudged", False) == on:
+            return
+        GL.glDepthRange(0.0, 1.0 - CURVE_DEPTH_NUDGE if on else 1.0)
+        self._curves_nudged = on
+
+    def _draw_edge_lines(self, gpu, mvp, color, width: float):
         if width <= self._max_line_width + 0.25 or not gpu.thick_count:
             self._set_line_uniforms(mvp, color)
             self._line_width(width)
@@ -4327,6 +4399,41 @@ class Viewport(QOpenGLWidget):
                                  theme.CONTROL_POINT_EDGE, 1.5)
         GL.glEnable(GL.GL_DEPTH_TEST)
 
+    def _draw_held_points(self, mvp):
+        """The points a Ctrl+Shift click holds, as a held control point is
+        drawn: a gold square the same size on the glass wherever it is."""
+        held = [(oid, i) for oid, kind, i in self.selection.subobjects
+                if kind == "vertex"]
+        pointed = getattr(self, "_hover_point", None)
+        if not held and pointed is None:
+            return
+        at = [] if pointed is None else [np.asarray(pointed, float)]
+        for oid, i in held:
+            obj = self.scene.get(oid)
+            if obj is None:
+                continue
+            pts = self.held_points(obj)
+            if 0 <= i < len(pts):
+                at.append(pts[i])
+        if not at:
+            return
+        at = np.asarray(at, float)
+        w, h = self.width(), self.height()
+        right, up = self.camera.right_up()
+        half = cv_marker_size(at, self.camera, w, h, CV_HELD_PX)
+        if pointed is not None:
+            half[0] *= 1.6                 # the one the list is pointing at
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        quads = cv_marker_quads(at, right, up, half)
+        self._preview.update(rebased(quads, self._frame_anchor))
+        self._set_line_uniforms(mvp, theme.SELECTION_COLOR + (1.0,))
+        GL.glBindVertexArray(self._preview.vao)
+        GL.glDrawArrays(GL.GL_TRIANGLES, 0, len(quads))
+        edge = cv_marker_outline(at, right, up, half)
+        self._preview.update(rebased(edge, self._frame_anchor))
+        self._draw_lines(self._preview, mvp, theme.CONTROL_POINT_EDGE, 1.5)
+        GL.glEnable(GL.GL_DEPTH_TEST)
+
     def _draw_combs(self, mvp):
         """Curvature combs: quills perpendicular to the curve, length
         proportional to curvature."""
@@ -4411,6 +4518,20 @@ class Viewport(QOpenGLWidget):
             self._draw_lines(self._preview, mvp, theme.DIRECTION_ARROW, 1.5)
         GL.glEnable(GL.GL_DEPTH_TEST)
 
+    def _clip_frames_in_sight(self) -> list:
+        """The shown clipping planes whose middle is in sight: not cut away
+        by another plane, and not covered by a face in front. A plane out
+        of sight takes its arrow with it."""
+        cutting = [(np.asarray(o, float), np.asarray(n, float))
+                   for o, n, on in self._clip_frames() if on][:4]
+        frames = [f for f in self._clip_frames(shown=True)
+                  if not _cut_away_by_another(f, cutting)]
+        hidden = self._cover_test(self.camera, self.display_mode,
+                                  self._clip_vectors()) if frames else None
+        if hidden is None:
+            return frames
+        return [f for f in frames if not hidden(f[0])]
+
     def _draw_clip_normals(self, mvp):
         """One arrow per clipping plane, pointing toward the visible side.
 
@@ -4418,10 +4539,11 @@ class Viewport(QOpenGLWidget):
         both sides, so until this was drawn there was nothing on screen that
         said which half of the model the plane was about to take. Drawn over
         the top of everything, because a plane lying flat against a face is
-        exactly when you need to be told. Seen head on, a ring with a cross
-        or a dot stands in for the arrow (`clip_end_on_marks`).
+        exactly when you need to be told, unless an object in front hides
+        the plane (`_clip_frames_in_sight`). Seen head on, a ring with a
+        cross or a dot stands in for the arrow (`clip_end_on_marks`).
         """
-        frames = self._clip_frames(shown=True)
+        frames = self._clip_frames_in_sight()
         if not frames:
             return
         w, h = self.width(), self.height()
@@ -4624,13 +4746,14 @@ class Viewport(QOpenGLWidget):
         cache = getattr(self, "_clip_frames_cache", None)
         if cache is None or cache[0] != key:
             visible = {o.id for o in self.scene.visible_objects()}
-            every, shown_frames = [], []
+            every, shown_frames, owners = [], [], []
             for plane in (o for o in self.scene.all() if o.clip_plane):
                 frame = _plane_frames([plane])      # one read a plane
                 every.extend(frame)
+                owners.extend((plane, f[1], f[2]) for f in frame)
                 if plane.id in visible:
                     shown_frames.extend(frame)
-            cache = (key, every, shown_frames, {})
+            cache = (key, every, shown_frames, {}, owners)
             self._clip_frames_cache = cache
         view = self._view_drawn() if view is None else view
         frames = cache[3].get((view, shown))
@@ -4639,6 +4762,13 @@ class Viewport(QOpenGLWidget):
                       for setting, o, n in cache[2 if shown else 1]]
             cache[3][(view, shown)] = frames
         return frames
+
+    def _clip_plane_colors(self) -> dict:
+        """Each clipping plane's colour, by its (origin, normal): asked
+        afresh, since a layer's colour changes without a revision."""
+        self._clip_frames()
+        return {(o, n): self.scene.color_of(plane)
+                for plane, o, n in self._clip_frames_cache[4]}
 
     def _clip_vectors(self, view: str | None = None) -> list:
         """vec4 clip equations from the planes that cut `view`, the one
@@ -5430,6 +5560,107 @@ class Viewport(QOpenGLWidget):
             return False
         return self.space == "model" or self._drawing_through() is not None
 
+    def snap_hider(self, clip=(), exclude_ids=None):
+        """A test of whether a snap point is covered by a face in front of
+        it, or None where nothing covers anything: wireframe and ghosted
+        show every edge, so every edge snaps."""
+        return self._cover_test(self._eye(), self._pick_mode(), clip,
+                                exclude_ids)
+
+    def _occluders(self) -> tuple:
+        """The objects whose faces hide what lies behind them, with their
+        boxes as (N, 2, 3), kept until the scene, what is shown or the
+        meshes that have arrived change. Only objects already meshed: one
+        still on its way is drawn as a box, and meshing every object here
+        froze the window on a large drawing."""
+        key = (self.scene.revision, self._tess_epoch, self._visible_layers(),
+               self.scene.showing_only, self.space,
+               id(self.layout_view._entered()) if self.space != "model"
+               else None)
+        held = getattr(self, "_occluders_held", None)
+        if (held is None or held[0] != key
+                or any(o.mesh_ready for o in held[3])):
+            objs, boxes, waiting = [], [], []
+            for obj in self._shown_here():
+                if (obj.clip_plane is not None
+                        or (obj.material or {}).get("opacity", 1.0) < 1.0):
+                    continue
+                if not obj.mesh_ready:
+                    waiting.append(obj)
+                    continue
+                mesh = obj.mesh
+                if mesh.is_cloud or not mesh.has_faces:
+                    continue
+                bounds = mesh.bounds()
+                if bounds is None:
+                    continue
+                objs.append(obj)
+                boxes.append(bounds)
+            held = (key, objs, np.asarray(boxes, float).reshape(-1, 2, 3),
+                    waiting)
+            self._occluders_held = held
+        return held[1], held[2]
+
+    def _cover_test(self, eye, mode, clip=(), exclude_ids=None):
+        if mode in ("wireframe", "ghosted"):
+            return None
+        from ..core.snaps import in_sight
+        w, h = self.width(), self.height()
+        found = []
+
+        def occluders():
+            # asked for at the first point, after the snaps have meshed
+            # what they look at
+            if not found:
+                objs, boxes = self._occluders()
+                if exclude_ids:
+                    keep = [i for i, o in enumerate(objs)
+                            if o.id not in exclude_ids]
+                    objs, boxes = [objs[i] for i in keep], boxes[keep]
+                found.append((objs, boxes))
+            return found[0]
+
+        def hidden(point) -> bool:
+            objs, boxes = occluders()
+            if not objs:
+                return False
+            p = np.asarray(point, float)
+            px, py, depth = eye.project(p[None, :], w, h)[0]
+            if depth <= 0:
+                return False
+            origin, direction = eye.ray_through(px, py, w, h)
+            direction = np.asarray(direction, float)
+            direction = direction / (np.linalg.norm(direction) or 1.0)
+            reach = float(np.dot(p - origin, direction))
+            # a face the point lies on, or a facet a few pixels off the true
+            # surface, does not cover it
+            right = np.asarray(eye.right_up()[0], float)
+            step = eye.project((p + right * reach * 1e-3)[None, :], w, h)[0]
+            pixels = math.hypot(step[0] - px, step[1] - py)
+            per_pixel = reach * 1e-3 / pixels if pixels > 1e-9 else 0.0
+            slack = max(4.0 * per_pixel, same_place_tolerance(reach))
+            for i in _boxes_on_ray(boxes, origin, direction, reach):
+                mesh = objs[i].mesh
+                tris, _ = self._near_triangles(mesh, px - 1, py - 1,
+                                               px + 1, py + 1, w, h)
+                if not len(tris):
+                    continue
+                t = ray_triangle_hits(origin - mesh.origin, direction,
+                                      mesh.local[tris[:, 0]].astype(float),
+                                      mesh.local[tris[:, 1]].astype(float),
+                                      mesh.local[tris[:, 2]].astype(float))
+                t = t[t < reach - slack]
+                if not len(t):
+                    continue
+                if not clip:
+                    return True
+                hits = origin[None, :] + t[:, None] * direction[None, :]
+                if in_sight(hits, clip).any():
+                    return True
+            return False
+
+        return hidden
+
     def _point_at(self, px: float, py: float):
         if self.space != "model":
             self._active_snap = None
@@ -5447,7 +5678,8 @@ class Viewport(QOpenGLWidget):
                     pending_points=self.pending_points,
                     picked_points=self.picked_points,
                     clip=self._clip_vectors(entered.id),
-                    on_curve=self.snap_on)
+                    on_curve=self.snap_on,
+                    hidden=self.snap_hider(self._clip_vectors(entered.id)))
                 if snap is not None:
                     self._active_snap = snap
                     return snap[0]
@@ -5497,7 +5729,9 @@ class Viewport(QOpenGLWidget):
                                    pending_points=self.pending_points,
                                    picked_points=self.picked_points,
                                    clip=self._clip_vectors(self.view_key),
-                                   on_curve=self.snap_on)
+                                   on_curve=self.snap_on,
+                                   hidden=self.snap_hider(
+                                       self._clip_vectors(self.view_key)))
             if snap is not None:
                 self._active_snap = snap
                 t = float(np.dot(np.asarray(snap[0], float) - base, unit))
@@ -5516,7 +5750,9 @@ class Viewport(QOpenGLWidget):
                                pending_points=self.pending_points,
                                picked_points=self.picked_points,
                                clip=self._clip_vectors(self.view_key),
-                               on_curve=self.snap_on)
+                               on_curve=self.snap_on,
+                               hidden=self.snap_hider(
+                                   self._clip_vectors(self.view_key)))
         if snap is not None:
             self._active_snap = snap
             return snap[0]
@@ -5777,6 +6013,43 @@ class Viewport(QOpenGLWidget):
         except Exception:                                   # noqa: BLE001
             return None                 # a mesh, a cloud: no exact point
 
+    def _pick_clip(self, obj=None) -> list:
+        """The clip equations what is picked here is cut by: what a
+        clipping plane took away is not there to click on. A plane itself
+        is never cut, so it stays reachable."""
+        if obj is not None and obj.clip_plane is not None:
+            return []
+        view = self.clip_view()
+        return self._clip_vectors(view) if view is not None else []
+
+    @staticmethod
+    def _cut_hits(t, origin, direction, clip):
+        """Ray hits `t`, those landing where a plane cut away put out of
+        reach (np.inf)."""
+        if not clip or not len(t):
+            return t
+        from ..core.snaps import in_sight
+        t = np.array(t, float)
+        hit = np.isfinite(t)
+        if hit.any():
+            at = (np.asarray(origin, float)[None, :]
+                  + t[hit, None] * np.asarray(direction, float)[None, :])
+            seen = in_sight(at, clip)
+            t[np.flatnonzero(hit)[~seen]] = np.inf
+        return t
+
+    @staticmethod
+    def _cut_segments(pts, clip):
+        """World segment ends (2N, 3) cut back to what is in sight, and a
+        mask of the segments with anything left."""
+        if not clip:
+            return pts, np.ones(len(pts) // 2, bool)
+        from ..core.snaps import _clipped_segments
+        a, b, keep = _clipped_segments(pts[0::2], pts[1::2], clip)
+        out = np.empty((2 * len(a), 3))
+        out[0::2], out[1::2] = a, b
+        return out, keep
+
     def pick_objects(self, px: float, py: float) -> list[str]:
         """Every object under the pixel, nearest first."""
         return [obj_id for _depth, obj_id in self.pick_hits(px, py)]
@@ -5806,6 +6079,7 @@ class Viewport(QOpenGLWidget):
             mesh = obj.mesh
             depth = np.inf
             hit = False
+            cut = self._pick_clip(obj)
             if mesh.is_cloud:
                 # Nearest point within the pick radius, over an even
                 # sample of the cloud: a box test would select a room-sized
@@ -5829,6 +6103,7 @@ class Viewport(QOpenGLWidget):
                                       mesh.local[tris[:, 0]].astype(float),
                                       mesh.local[tris[:, 1]].astype(float),
                                       mesh.local[tris[:, 2]].astype(float))
+                t = self._cut_hits(t, origin, direction, cut)
                 tmin = t.min() if len(t) else np.inf
                 if np.isfinite(tmin):
                     depth = tmin
@@ -5839,6 +6114,7 @@ class Viewport(QOpenGLWidget):
                 box = obj.shape.frame_box()
                 t = ray_triangle_hits(np.asarray(origin, float), direction,
                                       box[[0, 0]], box[[1, 2]], box[[2, 3]])
+                t = self._cut_hits(t, origin, direction, cut)
                 if np.isfinite(t.min()):
                     depth = float(t.min())
                     hit = True
@@ -5854,12 +6130,13 @@ class Viewport(QOpenGLWidget):
             if len(mesh.local_edges) and edges_on_show:
                 segs, _ = self._near_segments_local(mesh, px - r, py - r,
                                                     px + r, py + r, w, h)
-                pts = mesh.to_world(segs.reshape(-1, 3))
+                pts, kept = self._cut_segments(
+                    mesh.to_world(segs.reshape(-1, 3)).astype(float), cut)
                 scr = eye.project(pts, w, h)
                 a, b = scr[0::2], scr[1::2]
                 d2 = _point_segment_dist2(np.array([px, py]), a[:, :2],
                                           b[:, :2])
-                near = d2 < PICK_RADIUS_PX ** 2
+                near = (d2 < PICK_RADIUS_PX ** 2) & kept
                 if near.any():
                     seg_depth = np.minimum(a[near, 2], b[near, 2]).min()
                     if seg_depth > 0:
@@ -5869,9 +6146,13 @@ class Viewport(QOpenGLWidget):
                             depth = seg_depth
                         hit = True
             if len(mesh.local_points):
-                scr = eye.project(mesh.points.astype(float), w, h)
+                pts = mesh.points.astype(float)
+                scr = eye.project(pts, w, h)
                 d2 = ((scr[:, 0] - px) ** 2 + (scr[:, 1] - py) ** 2)
                 near = d2 < PICK_RADIUS_PX ** 2
+                if cut:
+                    from ..core.snaps import in_sight
+                    near &= in_sight(pts, cut)
                 if near.any():
                     pt_depth = scr[near, 2].min()
                     if pt_depth > 0:
@@ -5924,17 +6205,79 @@ class Viewport(QOpenGLWidget):
             return None
         return float(scr[near, 2].min())
 
+    def held_points(self, obj) -> np.ndarray:
+        """Where each point a Ctrl+Shift click can hold on `obj` is, by the
+        index it is held by: a curve's, a surface's or a solid's corners
+        (geometry.vertices_of), a mesh's points once each (welded, as its
+        parts are moved). Kept until the shape changes."""
+        cache = self.__dict__.setdefault("_held_point_cache", {})
+        shape = obj.shape
+        entry = cache.get(obj.id)
+        if entry is not None and entry[0] is shape:
+            return entry[1]
+        from ..core import geometry as g
+        from ..core.mesh import MeshShape, _weld
+        if isinstance(shape, MeshShape):
+            pts = np.asarray(_weld(shape.vertices)[0], float)
+        elif obj.kind == "curve":
+            try:
+                pts = np.asarray(g.curve_points(shape), float)
+            except Exception:                                   # noqa: BLE001
+                pts = np.zeros((0, 3))
+        else:
+            try:
+                pts = np.asarray(g.vertex_points(shape), float)
+            except Exception:                                   # noqa: BLE001
+                pts = np.zeros((0, 3))
+        pts = pts.reshape(-1, 3)
+        cache[obj.id] = (shape, pts)
+        return pts
+
+    def _pick_point(self, objects, px, py, w, h):
+        """(obj_id, "vertex", index) of the point nearest the pixel within
+        the pick radius, one in sight and not cut away, or None. Points
+        come before edges and faces: the smallest target, and the one a
+        click this close to a corner means."""
+        eye = self._eye()
+        clip = self._pick_clip()
+        hidden = self.snap_hider(clip)
+        found = []
+        for obj in objects:
+            if obj.kind not in PICKED_POINT_KINDS:
+                continue
+            pts = self.held_points(obj)
+            if not len(pts):
+                continue
+            scr = eye.project(pts, w, h)
+            d2 = (scr[:, 0] - px) ** 2 + (scr[:, 1] - py) ** 2
+            near = (scr[:, 2] > 0) & (d2 <= PICK_RADIUS_PX ** 2)
+            cut = self._pick_clip(obj)
+            if cut:
+                from ..core.snaps import in_sight
+                near &= in_sight(pts, cut)
+            for i in np.flatnonzero(near):
+                found.append((float(d2[i]), float(scr[i, 2]), obj.id, int(i)))
+        for _d2, _depth, oid, i in sorted(found):
+            obj = self.scene.get(oid)
+            if hidden is not None and hidden(self.held_points(obj)[i]):
+                continue
+            return (oid, "vertex", i)
+        return None
+
     def pick_subobject(self, px: float, py: float):
-        """(obj_id, "edge"|"face", index) under the pixel, or None."""
+        """(obj_id, "vertex"|"edge"|"face", index) under the pixel, or None."""
         w, h = self.width(), self.height()
         eye = self._eye()
         origin, direction = eye.ray_through(px, py, w, h)
-        # edges first (they are the smaller target)
         r = PICK_RADIUS_PX
         selectable = [obj for obj in self._shown_here()
                       if self.scene.is_selectable(obj.id)]
         near_cursor = self._pick_candidates(selectable, px - r, py - r,
                                             px + r, py + r, w, h)
+        point = self._pick_point(near_cursor, px, py, w, h)
+        if point is not None:
+            return point
+        # then edges (they are the smaller target)
         # Every segment under the cursor, gathered before anything is chosen:
         # which edge wins depends on how close the closest one came, and that
         # is not known until all the objects have been looked at.
@@ -5947,11 +6290,14 @@ class Viewport(QOpenGLWidget):
                                             px + r, py + r, w, h)
             if not len(segs):
                 continue
-            scr = eye.project(segs.reshape(-1, 3), w, h)
+            pts, kept = self._cut_segments(segs.reshape(-1, 3).astype(float),
+                                           self._pick_clip(obj))
+            scr = eye.project(pts, w, h)
             a, b = scr[0::2], scr[1::2]
             d2 = _point_segment_dist2(np.array([px, py]), a[:, :2],
                                       b[:, :2])
-            near = (a[:, 2] > 0) & (b[:, 2] > 0) & (d2 <= PICK_RADIUS_PX ** 2)
+            near = ((a[:, 2] > 0) & (b[:, 2] > 0) & kept
+                    & (d2 <= PICK_RADIUS_PX ** 2))
             if not near.any():
                 continue
             # Sorted by how close to the cursor, so the band below is a slice.
@@ -5996,6 +6342,8 @@ class Viewport(QOpenGLWidget):
                     mesh.vertices[tris[:, 0]].astype(float),
                     mesh.vertices[tris[:, 1]].astype(float),
                     mesh.vertices[tris[:, 2]].astype(float))
+                t = self._cut_hits(t, origin, direction,
+                                   self._pick_clip(obj))
                 i = int(np.argmin(t))
                 if np.isfinite(t[i]) and t[i] < best_t:
                     best_t = t[i]
@@ -6003,6 +6351,28 @@ class Viewport(QOpenGLWidget):
                         i = int(sub[i])      # back to the mesh's own numbering
                     best_face = (obj.id, "face",
                                  int(mesh.face_of_triangle[i]))
+        # What cannot be picked can still be in the way: a locked object
+        # in front hides the edge or face behind it as much as any other.
+        hidden = self.snap_hider(self._pick_clip())
+
+        def seen_at_depth(depth):
+            if hidden is None:
+                return True
+            z0 = float(eye.project(np.asarray([origin], float), w, h)[0, 2])
+            z1 = float(eye.project(np.asarray([origin + direction], float),
+                                   w, h)[0, 2])
+            if abs(z1 - z0) < 1e-12:
+                return True
+            return not hidden(origin + direction * ((depth - z0) / (z1 - z0)))
+
+        if best_face is not None:
+            hit = origin + direction * best_t
+            face_depth = float(eye.project(np.asarray([hit], float),
+                                           w, h)[0, 2])
+            if hidden is not None and hidden(hit):
+                best_face = None
+        if best_edge is not None and not seen_at_depth(best_edge_depth):
+            best_edge = None
         if best_edge is None:
             return best_face
         if best_face is None:
@@ -6010,9 +6380,7 @@ class Viewport(QOpenGLWidget):
         # Both are under the cursor, so the nearer one wins. The two are
         # measured differently — the edge by how far in front of the camera
         # it projects, the face by how far along the ray it was struck — so
-        # put the hit point through the same projection before comparing.
-        hit = origin + direction * best_t
-        face_depth = float(eye.project(np.asarray([hit], float), w, h)[0, 2])
+        # the hit point went through the same projection above.
         if best_edge_depth * EDGE_PICK_BIAS <= face_depth:
             return best_edge
         return best_face
@@ -6426,6 +6794,116 @@ class Viewport(QOpenGLWidget):
         # without moving lands in the gap rather than on the first row.
         menu.popup(self.mapToGlobal(pos.toPoint()) + QPoint(13, 11))
 
+    def _points_with(self, hit) -> list:
+        """Every point in sight drawn where `hit` is, within STACK_PX on
+        the screen, one per object, `hit` first: points that only a list
+        can tell apart. On the screen, not in the model: two ends a few
+        millimetres apart are one place to the eye, and a model distance
+        cannot know how far the view is zoomed."""
+        oid, _kind, index = hit
+        w, h = self.width(), self.height()
+        eye = self._eye()
+        at = self.held_points(self.scene.get(oid))[index]
+        sx, sy, _ = eye.project(np.asarray([at], float), w, h)[0]
+        hidden = self.snap_hider(self._pick_clip())
+        r = STACK_PX
+        selectable = [o for o in self._shown_here()
+                      if o.id != oid and o.kind in PICKED_POINT_KINDS
+                      and self.scene.is_selectable(o.id)]
+        out = [hit]
+        for obj in self._pick_candidates(selectable, sx - r, sy - r,
+                                         sx + r, sy + r, w, h):
+            pts = self.held_points(obj)
+            if not len(pts):
+                continue
+            scr = eye.project(pts, w, h)
+            d2 = (scr[:, 0] - sx) ** 2 + (scr[:, 1] - sy) ** 2
+            d2[scr[:, 2] <= 0] = np.inf
+            i = int(np.argmin(d2))
+            if d2[i] <= r * r and (hidden is None or not hidden(pts[i])):
+                out.append((obj.id, "vertex", i))
+        return out
+
+    def _offer_the_points(self, stacked, pos):
+        """Points of several objects in one place: which object's? Pointing
+        at a row lights its object, so you can see whose point it is."""
+        from .object_chooser import ChoiceRow, ObjectChooser, kind_label
+        rows, by_id = [], {}
+        for entry in stacked:
+            obj = self.scene.get(entry[0])
+            rows.append(ChoiceRow(obj_id=obj.id, name=obj.name,
+                                  kind=f"Point of {kind_label(obj.kind).lower()}",
+                                  color=self.scene.color_of(obj)))
+            by_id[obj.id] = entry
+        self._press_pos = None
+        menu = ObjectChooser(rows, self)
+        self._chooser = menu
+
+        def hover(obj_id):
+            self._hover_point = (self._point_at_entry(by_id[obj_id])
+                                 if obj_id in by_id else None)
+            self.set_choice_hover(obj_id)
+            self.update()
+
+        menu.rowHovered.connect(hover)
+
+        def take(obj_id):
+            self.selection.toggle_subobject(*by_id[obj_id])
+            self.update()
+
+        menu.objectChosen.connect(take)
+        menu.aboutToHide.connect(self._chooser_closed)
+        menu.popup(self.mapToGlobal(pos.toPoint()) + QPoint(13, 11))
+
+    def _part_or_whole(self, hit, pos) -> bool:
+        """For a part of an object in a group, take the object or offer the
+        choice; False to hold the part as before.
+
+        A click on a member of a group otherwise takes the whole group, so
+        Ctrl+Shift is the way to one of its objects as well as to a part of
+        one. Where the part is the whole object, the one segment of a curve
+        or the one face of a surface, there is nothing to choose and the
+        object is taken; otherwise a list asks which was meant.
+        """
+        obj_id, kind, index = hit
+        obj = self.scene.get(obj_id)
+        if obj is None or not obj.group_id:
+            return False
+        if kind != "vertex" and _is_its_only_part(obj, kind):
+            self.selection.toggle(obj_id)
+            self.update()
+            return True
+        from .object_chooser import ChoiceRow, ObjectChooser, kind_label
+        color = self.scene.color_of(obj)
+        rows = [ChoiceRow(obj_id="part", name=_part_name(obj, kind),
+                          kind=obj.name, color=color),
+                ChoiceRow(obj_id="whole",
+                          name=f"Whole {kind_label(obj.kind).lower()}",
+                          kind=obj.name, color=color)]
+        self._press_pos = None
+        menu = ObjectChooser(rows, self)
+        self._chooser = menu
+        def hover(which):
+            self._hover_point = (self._point_at_entry(hit)
+                                 if which == "part" and kind == "vertex"
+                                 else None)
+            self.set_choice_hover(obj_id if which == "whole" else None)
+            self.update()
+
+        menu.rowHovered.connect(hover)
+
+        def take(which):
+            if which == "whole":
+                self.selection.toggle(obj_id)
+            else:
+                self.selection.toggle_subobject(*hit)
+            self.update()
+
+        menu.objectChosen.connect(take)
+        menu.aboutToHide.connect(self._chooser_closed)
+        menu.popup(self.mapToGlobal(pos.toPoint()) + QPoint(13, 11))
+        return True
+
     def _choices_in_the_same_place(self, hits) -> list[str]:
         """The ids a plain click has to ask about, or an empty list.
 
@@ -6440,7 +6918,16 @@ class Viewport(QOpenGLWidget):
                    for i in together}
         return together if len(answers) > 1 else []
 
+    def _point_at_entry(self, entry):
+        """Where a held-point entry (obj_id, "vertex", index) is, or None."""
+        obj = self.scene.get(entry[0])
+        if obj is None:
+            return None
+        pts = self.held_points(obj)
+        return pts[entry[2]] if 0 <= entry[2] < len(pts) else None
+
     def _chooser_closed(self):
+        self._hover_point = None
         self._chooser = None
         self.set_choice_hover(None)
 
@@ -6695,7 +7182,12 @@ class Viewport(QOpenGLWidget):
             if (mods & Qt.KeyboardModifier.ControlModifier
                     and mods & Qt.KeyboardModifier.ShiftModifier):
                 hit = self.pick_subobject(pos.x(), pos.y())
-                if hit is not None:
+                if hit is not None and hit[1] == "vertex":
+                    stacked = self._points_with(hit)
+                    if len(stacked) > 1:
+                        self._offer_the_points(stacked, pos)
+                        return
+                if hit is not None and not self._part_or_whole(hit, pos):
                     self.selection.toggle_subobject(*hit)
                     self.update()
                 return
@@ -6722,14 +7214,19 @@ class Viewport(QOpenGLWidget):
                       if self.scene.is_selectable(obj.id)
                       and self.selection.filter_allows(obj.kind)]
         faces_shown = self._pick_mode() != "wireframe"
+        from ..core.snaps import in_sight
         for obj in self._pick_candidates(selectable, *rect, w, h):
             mesh = obj.mesh
+            cut = self._pick_clip(obj)
             if crossing and (len(mesh.local_edges) or len(mesh.triangles)):
-                if self._band_touches(mesh, rect, eye, w, h, faces_shown):
+                if self._band_touches(mesh, rect, eye, w, h, faces_shown,
+                                      cut):
                     picked.append(obj.id)
                 continue
             if len(mesh.local_edges):
-                pts = mesh.edge_segments.reshape(-1, 3)
+                pts, kept = self._cut_segments(
+                    mesh.edge_segments.reshape(-1, 3).astype(float), cut)
+                pts = pts.reshape(-1, 2, 3)[kept].reshape(-1, 3)
             elif len(mesh.points):
                 # A point has no edge to cross and no triangle to fall
                 # inside. All of it is where it is, which answers both
@@ -6740,6 +7237,10 @@ class Viewport(QOpenGLWidget):
             elif len(mesh.vertices):
                 pts = mesh.vertices
             else:
+                continue
+            if cut and not len(mesh.local_edges):
+                pts = pts[in_sight(pts, cut)]
+            if not len(pts):
                 continue
             scr = eye.project(pts.astype(float), w, h)
             valid = scr[:, 2] > 0
@@ -6756,7 +7257,8 @@ class Viewport(QOpenGLWidget):
                     picked.append(obj.id)
         return picked
 
-    def _band_touches(self, mesh, rect, eye, w, h, faces_shown) -> bool:
+    def _band_touches(self, mesh, rect, eye, w, h, faces_shown,
+                      clip=()) -> bool:
         """Whether a crossing band touches the object anywhere.
 
         Its ends inside are not enough: a long line passes through a small
@@ -6766,9 +7268,10 @@ class Viewport(QOpenGLWidget):
         if len(mesh.local_edges):
             segs, _ = self._near_segments(mesh, *rect, w, h)
             if len(segs):
-                scr = eye.project(segs.reshape(-1, 3).astype(float),
-                                  w, h).reshape(-1, 2, 3)
-                ok = (scr[:, :, 2] > 0).all(axis=1)
+                pts, kept = self._cut_segments(
+                    segs.reshape(-1, 3).astype(float), clip)
+                scr = eye.project(pts, w, h).reshape(-1, 2, 3)
+                ok = (scr[:, :, 2] > 0).all(axis=1) & kept
                 if (ok & _segments_touch_rect(scr[:, 0, :2], scr[:, 1, :2],
                                               rect)).any():
                     return True
@@ -6778,10 +7281,30 @@ class Viewport(QOpenGLWidget):
         if not len(tris):
             return False
         vid, inv = np.unique(tris, return_inverse=True)
-        scr = eye.project(mesh.vertices[vid].astype(float), w, h)
+        corners = mesh.vertices[vid].astype(float)
+        scr = eye.project(corners, w, h)
         tri = scr[inv.reshape(tris.shape)]
         ok = (tri[:, :, 2] > 0).all(axis=1)
-        return bool((ok & _triangles_touch_rect(tri[:, :, :2], rect)).any())
+        touch = ok & _triangles_touch_rect(tri[:, :, :2], rect)
+        if not clip:
+            return bool(touch.any())
+        from ..core.snaps import in_sight
+        seen = in_sight(corners, clip)[inv.reshape(tris.shape)]
+        if (touch & seen.all(axis=1)).any():
+            return True
+        # a triangle the plane cuts through counts by the part it leaves
+        world = corners[inv.reshape(tris.shape)]
+        for i in np.flatnonzero(touch & seen.any(axis=1)
+                                & ~seen.all(axis=1)):
+            poly = _clip_polygon(world[i], clip)
+            if len(poly) < 3:
+                continue
+            flat = eye.project(poly, w, h)
+            fan = np.stack([np.repeat(flat[:1], len(flat) - 2, axis=0),
+                            flat[1:-1], flat[2:]], axis=1)
+            if _triangles_touch_rect(fan[:, :, :2], rect).any():
+                return True
+        return False
 
     def _band_pick(self, x0, y0, x1, y1, crossing, modifiers):
         """What a rubber band caught: object ids, or None if it took points.
@@ -6925,7 +7448,28 @@ class Viewport(QOpenGLWidget):
                     which = _wholly(mesh.face_of_triangle, owner,
                                     ok & corners_in.all(axis=1))
                 caught.extend((obj.id, "face", int(i)) for i in which)
+            caught.extend(self._points_in_band(obj, rect, eye, w, h))
         return caught
+
+    def _points_in_band(self, obj, rect, eye, w, h) -> list:
+        """The points of `obj` a band holds, window or crossing alike: a
+        point is either inside it or not. Only the ones in sight."""
+        if obj.kind not in PICKED_POINT_KINDS:
+            return []
+        pts = self.held_points(obj)
+        if not len(pts):
+            return []
+        scr = eye.project(pts, w, h)
+        inside = ((scr[:, 2] > 0) & (scr[:, 0] >= rect[0])
+                  & (scr[:, 0] <= rect[2]) & (scr[:, 1] >= rect[1])
+                  & (scr[:, 1] <= rect[3]))
+        cut = self._pick_clip(obj)
+        if cut:
+            from ..core.snaps import in_sight
+            inside &= in_sight(pts, cut)
+        hidden = self.snap_hider(cut)
+        return [(obj.id, "vertex", int(i)) for i in np.flatnonzero(inside)
+                if hidden is None or not hidden(pts[i])]
 
     # -------------------------------------------------------- control points
 
@@ -7360,6 +7904,101 @@ def _segments_touch_rect(a: np.ndarray, b: np.ndarray, rect) -> np.ndarray:
         t0 = np.where(enters, np.maximum(t0, t), t0)
         t1 = np.where(leaves, np.minimum(t1, t), t1)
     return alive & (t0 <= t1)
+
+
+def _cut_away_by_another(frame, cutting) -> bool:
+    """Whether a plane's middle lies on the side another plane takes away.
+
+    In doubles off the frames rather than through the shader's float32
+    equations, which at survey coordinates are off by more than a plane
+    lying on another needs."""
+    at = np.asarray(frame[0], float)
+    own = np.asarray(frame[1], float)
+    for o, n in cutting:
+        if np.allclose(o, at) and np.allclose(n, own):
+            continue
+        size = float(np.linalg.norm(n)) or 1.0
+        tol = 1e-9 * max(1.0, float(np.abs(at).max()), float(np.abs(o).max()))
+        if np.dot(at - o, n) / size > tol:
+            return True
+    return False
+
+
+def _boxes_on_ray(boxes, origin, direction, reach) -> np.ndarray:
+    """Indices of the boxes (N, 2, 3) the ray passes through before
+    `reach`, nearest first."""
+    if not len(boxes):
+        return np.zeros(0, int)
+    d = np.where(np.abs(direction) < 1e-12, 1e-12, direction)
+    t0 = (boxes[:, 0, :] - origin) / d
+    t1 = (boxes[:, 1, :] - origin) / d
+    near = np.minimum(t0, t1).max(axis=1)
+    far = np.maximum(t0, t1).min(axis=1)
+    pad = 1e-9 * max(abs(reach), 1.0)
+    hit = np.flatnonzero((near <= far + pad) & (far >= 0) & (near < reach))
+    return hit[np.argsort(near[hit])]
+
+
+# How much of the depth range a curve is drawn nearer than it is, so that
+# lying on an edge it wins the tie (see Viewport._draw_edges).
+CURVE_DEPTH_NUDGE = 2e-5
+# The least grey a mesh's edges are drawn in: darkened from a black mesh's
+# own colour they were black on black, and its triangles could not be told
+# apart.
+MESH_EDGE_FLOOR = 0.32
+
+
+def face_edge_color(color, kind) -> tuple:
+    """The colour the edges of a face are drawn in: the object's own,
+    darkened, and for a mesh never darker than a mid grey."""
+    edge = [c * 0.35 for c in color[:3]]
+    if kind == "mesh":
+        edge = [max(c, MESH_EDGE_FLOOR) for c in edge]
+    return (*edge, 1.0)
+
+
+def _is_its_only_part(obj, kind) -> bool:
+    """Is a held part of `obj` all there is of it: the one segment of a
+    curve, the one face of a surface or the one triangle of a mesh?"""
+    from ..core import geometry as g
+    from ..core.mesh import MeshShape
+    shape = obj.shape
+    if isinstance(shape, MeshShape):
+        return kind == "face" and len(shape.triangles) == 1
+    if kind == "edge" and obj.kind == "curve":
+        return len(g.edges_of(shape)) == 1
+    if kind == "face":
+        return len(g.faces_of(shape)) == 1
+    return False
+
+
+def _part_name(obj, kind) -> str:
+    """What a held part is called in front of a person."""
+    if kind == "vertex":
+        return "Point"
+    if obj.kind == "mesh":
+        return "Triangle" if kind == "face" else "Mesh edge"
+    if kind == "edge":
+        return "Segment" if obj.kind == "curve" else "Edge"
+    return "Face"
+
+
+def _clip_polygon(poly, clip) -> np.ndarray:
+    """A convex polygon (N, 3) cut back to what the clip equations keep."""
+    pts = [np.asarray(p, float) for p in poly]
+    for eq in clip:
+        eq = np.asarray(eq, float)
+        out = []
+        for a, b in zip(pts, pts[1:] + pts[:1]):
+            da, db = a @ eq[:3] + eq[3], b @ eq[:3] + eq[3]
+            if da >= 0:
+                out.append(a)
+            if (da >= 0) != (db >= 0):
+                out.append(a + (b - a) * (da / (da - db)))
+        pts = out
+        if len(pts) < 3:
+            break
+    return np.asarray(pts, float).reshape(-1, 3)
 
 
 def _triangles_touch_rect(tri: np.ndarray, rect) -> np.ndarray:

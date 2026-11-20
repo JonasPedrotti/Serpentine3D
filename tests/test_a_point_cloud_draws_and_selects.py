@@ -76,6 +76,17 @@ def painting():
     QApplication.processEvents()
 
 
+def _paint(vp):
+    """Draw a frame as Qt does: with the widget's own context current.
+    Called bare, paintGL drew into whichever context was current, which on
+    Windows after show() is not this one, and its buffers are not there."""
+    vp.makeCurrent()
+    try:
+        vp.paintGL()
+    finally:
+        vp.doneCurrent()
+
+
 # --- what does not need a card ---------------------------------------------
 
 def test_zoom_extents_includes_a_point_cloud():
@@ -167,7 +178,7 @@ def test_an_offscreen_draw_of_a_million_point_cloud_does_not_raise(painting):
     obj = scene.add(_cloud(1_000_000), name="Scan")
     vp = painting(scene)
     vp.zoom_extents()
-    vp.paintGL()
+    _paint(vp)
     assert not vp.paint_failed
     gpu = vp._gpu.get(obj.id)
     assert gpu is not None and gpu.cloud_count == 1_000_000
@@ -175,7 +186,7 @@ def test_an_offscreen_draw_of_a_million_point_cloud_does_not_raise(painting):
     assert vp.cloud_lod_note() == ""
     for mode in ("wireframe", "ghosted", "rendered", "technical"):
         vp.set_display_mode(mode)
-        vp.paintGL()
+        _paint(vp)
         assert not vp.paint_failed, mode
 
 
@@ -186,7 +197,7 @@ def test_three_million_points_are_thinned_to_the_budget_and_say_so(painting):
                   name=f"Scan {i}")
     vp = painting(scene)
     vp.zoom_extents()
-    vp.paintGL()
+    _paint(vp)
     assert not vp.paint_failed
     level, drawn, total = vp.cloud_lod
     assert total == 3_000_000
@@ -201,7 +212,7 @@ def test_clicking_on_a_point_cloud_selects_it_and_clicking_beside_it_does_not(pa
     obj = scene.add(_cloud(200_000), name="Scan")
     vp = painting(scene)
     vp.zoom_extents()
-    vp.paintGL()
+    _paint(vp)
     assert vp.pick_object(400, 300) == obj.id
     assert vp.pick_object(3, 3) is None
     assert vp._box_pick(0, 0, 800, 600, True) == [obj.id]
@@ -213,7 +224,7 @@ def test_a_selected_cloud_still_draws(painting):
     vp = painting(scene)
     vp.selection.set([obj.id])
     vp.zoom_extents()
-    vp.paintGL()
+    _paint(vp)
     assert not vp.paint_failed
 
 
@@ -222,6 +233,6 @@ def test_a_far_cloud_draws_with_an_anchor(painting):
     obj = scene.add(_cloud(10_000, offset=FAR), name="Far scan")
     vp = painting(scene)
     vp.zoom_extents()
-    vp.paintGL()
+    _paint(vp)
     assert not vp.paint_failed
     assert vp._gpu[obj.id].anchor is not None
