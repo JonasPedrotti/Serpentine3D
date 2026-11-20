@@ -5898,6 +5898,43 @@ class Viewport(QOpenGLWidget):
         except Exception:                                   # noqa: BLE001
             return None                 # a mesh, a cloud: no exact point
 
+    def _pick_clip(self, obj=None) -> list:
+        """The clip equations what is picked here is cut by: what a
+        clipping plane took away is not there to click on. A plane itself
+        is never cut, so it stays reachable."""
+        if obj is not None and obj.clip_plane is not None:
+            return []
+        view = self.clip_view()
+        return self._clip_vectors(view) if view is not None else []
+
+    @staticmethod
+    def _cut_hits(t, origin, direction, clip):
+        """Ray hits `t`, those landing where a plane cut away put out of
+        reach (np.inf)."""
+        if not clip or not len(t):
+            return t
+        from ..core.snaps import in_sight
+        t = np.array(t, float)
+        hit = np.isfinite(t)
+        if hit.any():
+            at = (np.asarray(origin, float)[None, :]
+                  + t[hit, None] * np.asarray(direction, float)[None, :])
+            seen = in_sight(at, clip)
+            t[np.flatnonzero(hit)[~seen]] = np.inf
+        return t
+
+    @staticmethod
+    def _cut_segments(pts, clip):
+        """World segment ends (2N, 3) cut back to what is in sight, and a
+        mask of the segments with anything left."""
+        if not clip:
+            return pts, np.ones(len(pts) // 2, bool)
+        from ..core.snaps import _clipped_segments
+        a, b, keep = _clipped_segments(pts[0::2], pts[1::2], clip)
+        out = np.empty((2 * len(a), 3))
+        out[0::2], out[1::2] = a, b
+        return out, keep
+
     def pick_objects(self, px: float, py: float) -> list[str]:
         """Every object under the pixel, nearest first."""
         return [obj_id for _depth, obj_id in self.pick_hits(px, py)]
@@ -5927,6 +5964,7 @@ class Viewport(QOpenGLWidget):
             mesh = obj.mesh
             depth = np.inf
             hit = False
+            cut = self._pick_clip(obj)
             if mesh.is_cloud:
                 # Nearest point within the pick radius, over an even
                 # sample of the cloud: a box test would select a room-sized
@@ -5950,6 +5988,7 @@ class Viewport(QOpenGLWidget):
                                       mesh.local[tris[:, 0]].astype(float),
                                       mesh.local[tris[:, 1]].astype(float),
                                       mesh.local[tris[:, 2]].astype(float))
+                t = self._cut_hits(t, origin, direction, cut)
                 tmin = t.min() if len(t) else np.inf
                 if np.isfinite(tmin):
                     depth = tmin
@@ -5960,6 +5999,7 @@ class Viewport(QOpenGLWidget):
                 box = obj.shape.frame_box()
                 t = ray_triangle_hits(np.asarray(origin, float), direction,
                                       box[[0, 0]], box[[1, 2]], box[[2, 3]])
+                t = self._cut_hits(t, origin, direction, cut)
                 if np.isfinite(t.min()):
                     depth = float(t.min())
                     hit = True
@@ -5975,12 +6015,13 @@ class Viewport(QOpenGLWidget):
             if len(mesh.local_edges) and edges_on_show:
                 segs, _ = self._near_segments_local(mesh, px - r, py - r,
                                                     px + r, py + r, w, h)
-                pts = mesh.to_world(segs.reshape(-1, 3))
+                pts, kept = self._cut_segments(
+                    mesh.to_world(segs.reshape(-1, 3)).astype(float), cut)
                 scr = eye.project(pts, w, h)
                 a, b = scr[0::2], scr[1::2]
                 d2 = _point_segment_dist2(np.array([px, py]), a[:, :2],
                                           b[:, :2])
-                near = d2 < PICK_RADIUS_PX ** 2
+                near = (d2 < PICK_RADIUS_PX ** 2) & kept
                 if near.any():
                     seg_depth = np.minimum(a[near, 2], b[near, 2]).min()
                     if seg_depth > 0:
@@ -5990,9 +6031,13 @@ class Viewport(QOpenGLWidget):
                             depth = seg_depth
                         hit = True
             if len(mesh.local_points):
-                scr = eye.project(mesh.points.astype(float), w, h)
+                pts = mesh.points.astype(float)
+                scr = eye.project(pts, w, h)
                 d2 = ((scr[:, 0] - px) ** 2 + (scr[:, 1] - py) ** 2)
                 near = d2 < PICK_RADIUS_PX ** 2
+                if cut:
+                    from ..core.snaps import in_sight
+                    near &= in_sight(pts, cut)
                 if near.any():
                     pt_depth = scr[near, 2].min()
                     if pt_depth > 0:
@@ -6068,11 +6113,14 @@ class Viewport(QOpenGLWidget):
                                             px + r, py + r, w, h)
             if not len(segs):
                 continue
-            scr = eye.project(segs.reshape(-1, 3), w, h)
+            pts, kept = self._cut_segments(segs.reshape(-1, 3).astype(float),
+                                           self._pick_clip(obj))
+            scr = eye.project(pts, w, h)
             a, b = scr[0::2], scr[1::2]
             d2 = _point_segment_dist2(np.array([px, py]), a[:, :2],
                                       b[:, :2])
-            near = (a[:, 2] > 0) & (b[:, 2] > 0) & (d2 <= PICK_RADIUS_PX ** 2)
+            near = ((a[:, 2] > 0) & (b[:, 2] > 0) & kept
+                    & (d2 <= PICK_RADIUS_PX ** 2))
             if not near.any():
                 continue
             # Sorted by how close to the cursor, so the band below is a slice.
@@ -6117,6 +6165,8 @@ class Viewport(QOpenGLWidget):
                     mesh.vertices[tris[:, 0]].astype(float),
                     mesh.vertices[tris[:, 1]].astype(float),
                     mesh.vertices[tris[:, 2]].astype(float))
+                t = self._cut_hits(t, origin, direction,
+                                   self._pick_clip(obj))
                 i = int(np.argmin(t))
                 if np.isfinite(t[i]) and t[i] < best_t:
                     best_t = t[i]
@@ -6843,14 +6893,19 @@ class Viewport(QOpenGLWidget):
                       if self.scene.is_selectable(obj.id)
                       and self.selection.filter_allows(obj.kind)]
         faces_shown = self._pick_mode() != "wireframe"
+        from ..core.snaps import in_sight
         for obj in self._pick_candidates(selectable, *rect, w, h):
             mesh = obj.mesh
+            cut = self._pick_clip(obj)
             if crossing and (len(mesh.local_edges) or len(mesh.triangles)):
-                if self._band_touches(mesh, rect, eye, w, h, faces_shown):
+                if self._band_touches(mesh, rect, eye, w, h, faces_shown,
+                                      cut):
                     picked.append(obj.id)
                 continue
             if len(mesh.local_edges):
-                pts = mesh.edge_segments.reshape(-1, 3)
+                pts, kept = self._cut_segments(
+                    mesh.edge_segments.reshape(-1, 3).astype(float), cut)
+                pts = pts.reshape(-1, 2, 3)[kept].reshape(-1, 3)
             elif len(mesh.points):
                 # A point has no edge to cross and no triangle to fall
                 # inside. All of it is where it is, which answers both
@@ -6861,6 +6916,10 @@ class Viewport(QOpenGLWidget):
             elif len(mesh.vertices):
                 pts = mesh.vertices
             else:
+                continue
+            if cut and not len(mesh.local_edges):
+                pts = pts[in_sight(pts, cut)]
+            if not len(pts):
                 continue
             scr = eye.project(pts.astype(float), w, h)
             valid = scr[:, 2] > 0
@@ -6877,7 +6936,8 @@ class Viewport(QOpenGLWidget):
                     picked.append(obj.id)
         return picked
 
-    def _band_touches(self, mesh, rect, eye, w, h, faces_shown) -> bool:
+    def _band_touches(self, mesh, rect, eye, w, h, faces_shown,
+                      clip=()) -> bool:
         """Whether a crossing band touches the object anywhere.
 
         Its ends inside are not enough: a long line passes through a small
@@ -6887,9 +6947,10 @@ class Viewport(QOpenGLWidget):
         if len(mesh.local_edges):
             segs, _ = self._near_segments(mesh, *rect, w, h)
             if len(segs):
-                scr = eye.project(segs.reshape(-1, 3).astype(float),
-                                  w, h).reshape(-1, 2, 3)
-                ok = (scr[:, :, 2] > 0).all(axis=1)
+                pts, kept = self._cut_segments(
+                    segs.reshape(-1, 3).astype(float), clip)
+                scr = eye.project(pts, w, h).reshape(-1, 2, 3)
+                ok = (scr[:, :, 2] > 0).all(axis=1) & kept
                 if (ok & _segments_touch_rect(scr[:, 0, :2], scr[:, 1, :2],
                                               rect)).any():
                     return True
@@ -6899,10 +6960,30 @@ class Viewport(QOpenGLWidget):
         if not len(tris):
             return False
         vid, inv = np.unique(tris, return_inverse=True)
-        scr = eye.project(mesh.vertices[vid].astype(float), w, h)
+        corners = mesh.vertices[vid].astype(float)
+        scr = eye.project(corners, w, h)
         tri = scr[inv.reshape(tris.shape)]
         ok = (tri[:, :, 2] > 0).all(axis=1)
-        return bool((ok & _triangles_touch_rect(tri[:, :, :2], rect)).any())
+        touch = ok & _triangles_touch_rect(tri[:, :, :2], rect)
+        if not clip:
+            return bool(touch.any())
+        from ..core.snaps import in_sight
+        seen = in_sight(corners, clip)[inv.reshape(tris.shape)]
+        if (touch & seen.all(axis=1)).any():
+            return True
+        # a triangle the plane cuts through counts by the part it leaves
+        world = corners[inv.reshape(tris.shape)]
+        for i in np.flatnonzero(touch & seen.any(axis=1)
+                                & ~seen.all(axis=1)):
+            poly = _clip_polygon(world[i], clip)
+            if len(poly) < 3:
+                continue
+            flat = eye.project(poly, w, h)
+            fan = np.stack([np.repeat(flat[:1], len(flat) - 2, axis=0),
+                            flat[1:-1], flat[2:]], axis=1)
+            if _triangles_touch_rect(fan[:, :, :2], rect).any():
+                return True
+        return False
 
     def _band_pick(self, x0, y0, x1, y1, crossing, modifiers):
         """What a rubber band caught: object ids, or None if it took points.
@@ -7514,6 +7595,24 @@ def _boxes_on_ray(boxes, origin, direction, reach) -> np.ndarray:
     pad = 1e-9 * max(abs(reach), 1.0)
     hit = np.flatnonzero((near <= far + pad) & (far >= 0) & (near < reach))
     return hit[np.argsort(near[hit])]
+
+
+def _clip_polygon(poly, clip) -> np.ndarray:
+    """A convex polygon (N, 3) cut back to what the clip equations keep."""
+    pts = [np.asarray(p, float) for p in poly]
+    for eq in clip:
+        eq = np.asarray(eq, float)
+        out = []
+        for a, b in zip(pts, pts[1:] + pts[:1]):
+            da, db = a @ eq[:3] + eq[3], b @ eq[:3] + eq[3]
+            if da >= 0:
+                out.append(a)
+            if (da >= 0) != (db >= 0):
+                out.append(a + (b - a) * (da / (da - db)))
+        pts = out
+        if len(pts) < 3:
+            break
+    return np.asarray(pts, float).reshape(-1, 3)
 
 
 def _triangles_touch_rect(tri: np.ndarray, rect) -> np.ndarray:
