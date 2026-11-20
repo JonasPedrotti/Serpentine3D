@@ -242,19 +242,34 @@ def default_deflection(shape) -> float:
     return _deflection_for(shape)
 
 
-def merged(meshes) -> DisplayMesh:
+def merged(meshes, origin=None) -> DisplayMesh:
     """One mesh holding all of `meshes`, to be drawn in a single call.
 
-    For meshes near home, whose offsets are already world coordinates: a
-    far mesh's are measured from an origin of its own. Only what a draw
-    reads comes across, so nothing is picked or measured on the result.
+    Offsets are measured from `origin`, or are world coordinates when it
+    is None, as they are for meshes near home. A far mesh's own offsets
+    are from an origin of its own, so they are moved across in float64:
+    meshes near one another share an origin and still draw true. Only
+    what a draw reads comes across, so nothing is picked or measured on
+    the result.
     """
     mesh = DisplayMesh()
+    if origin is not None:
+        mesh.origin = np.asarray(origin, np.float64)
+        mesh._far = True
+
+    def moved(m, pts):
+        held = np.asarray(m.origin, np.float64) if m.far else 0.0
+        target = mesh.origin if origin is not None else 0.0
+        if not m.far and origin is None:
+            return pts
+        shift = held - target
+        return (np.asarray(pts, np.float64) + shift).astype(np.float32)
+
     faced = [m for m in meshes if m.has_faces]
     if faced:
         starts = np.cumsum([0] + [len(m.local) for m in faced[:-1]],
                            dtype=np.uint32)
-        mesh.local = np.concatenate([m.local for m in faced])
+        mesh.local = np.concatenate([moved(m, m.local) for m in faced])
         mesh.normals = np.concatenate(
             [np.asarray(m.normals, np.float32) for m in faced])
         mesh.triangles = np.concatenate(
@@ -264,7 +279,8 @@ def merged(meshes) -> DisplayMesh:
             [m.curvature if len(m.curvature) == len(m.local)
              else np.zeros(len(m.local), np.float32) for m in faced])
     for name in ("local_edges", "local_isos"):
-        parts = [getattr(m, name) for m in meshes if len(getattr(m, name))]
+        parts = [moved(m, getattr(m, name)) for m in meshes
+                 if len(getattr(m, name))]
         if parts:
             setattr(mesh, name, np.concatenate(parts))
     return mesh

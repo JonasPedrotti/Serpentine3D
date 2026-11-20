@@ -59,6 +59,7 @@ from .progress import Progress
 # platforms without fork each fills it in for itself. The layer and material
 # tables come with it: a worker resolves an object's colour itself.
 _MODEL = None
+_PATH = None
 _LAYERS: dict = {}
 _MATERIALS: dict = {}
 _BLOCKS: dict = {}
@@ -214,8 +215,12 @@ _DOWNCAST = None
 def _encode(shape):
     """A shape as something pickle can carry."""
     from ..core.hatch import HatchShape
+    from ..core.picture import PictureShape
+    if isinstance(shape, PictureShape):
+        return ("picture", shape.to_bytes(), None, None)
     if isinstance(shape, MeshShape):
-        return ("mesh", shape.vertices, shape.triangles, shape.normals)
+        return ("mesh", shape.vertices, shape.triangles,
+                (shape.normals, shape.faceted))
     if isinstance(shape, HatchShape):
         # its pattern and frame, which BinTools knows nothing of
         return ("hatch", shape.to_bytes(), None, None)
@@ -228,7 +233,10 @@ def _encode(shape):
 def _decode(payload):
     kind, first, second, third = payload
     if kind == "mesh":
-        return MeshShape(first, second, third)
+        return MeshShape(first, second, *third)
+    if kind == "picture":
+        from ..core.picture import PictureShape
+        return PictureShape.from_bytes(first)
     if kind == "hatch":
         from ..core.hatch import HatchShape
         return HatchShape.from_bytes(first)
@@ -253,8 +261,10 @@ def _decode(payload):
 
 def _init_worker(path: str):
     """Fill in the model only where fork did not hand one over."""
-    global _MODEL, _LAYERS, _MATERIALS, _BLOCKS
+    global _MODEL, _LAYERS, _MATERIALS, _BLOCKS, _PATH
     from . import rhino
+
+    _PATH = path
 
     if _MODEL is None:
         _MODEL = r3.File3dm.Read(path)
@@ -265,6 +275,8 @@ def _init_worker(path: str):
     _BLOCKS = rhino.read_blocks(_MODEL)
     rhino._HATCH_PATTERNS = rhino.read_hatch_patterns(path)
     rhino._DIM_STYLES = rhino.read_dim_styles(_MODEL)
+    rhino._CLIPPING = rhino.read_clipping_planes(_MODEL, path)
+    rhino._GROUPS = rhino.read_groups(_MODEL)
 
 
 def _convert(indices: list[int]):
@@ -301,6 +313,15 @@ def _convert(indices: list[int]):
             out.append((i, [], None))
             continue
         meta = rhino.object_appearance(attrs, _LAYERS, _MATERIALS)
+        clip = rhino.clipping_plane(attrs, geo, meta)
+        if clip is not None:
+            out.append((i, [(clip[0], meta, [_encode(clip[1])])], None))
+            continue
+        picture = rhino.picture_frame(attrs, geo, _MODEL)
+        if picture is not None:
+            out.append((i, [(attrs.Name or "", meta, [_encode(picture)])],
+                        None))
+            continue
         if rhino.worth_deferring(geo, meta):
             # Nothing to convert and so nothing to send back: the object
             # index and the kind the file claims are enough for the parent
@@ -333,7 +354,7 @@ def _convert(indices: list[int]):
                             for part_name, shape, part_meta in parts], None))
             continue
         try:
-            shapes = rhino.object_to_shapes(geo)
+            shapes = rhino.object_to_shapes(geo, source=(_PATH, i))
         except Exception:                                       # noqa: BLE001
             shapes = []
         encoded = [_encode(s) for s in shapes
@@ -423,6 +444,12 @@ def _convert_in_pool(path: str, workers: int, cancel=None,
     total = len(_MODEL.Objects)
     yield ("total", total)
     yield ("units", _MODEL.Settings.ModelUnitSystem.name)
+    from . import rhino
+    if pages_in is not None and pages_in.startswith("adopt:"):
+        # the pages in the file's own units, as the parent takes them
+        pages_in = rhino.adopted_units(_MODEL.Settings.ModelUnitSystem.name,
+                                       pages_in[len("adopt:"):], {})
+    yield ("cameras", rhino.read_cameras(_MODEL))
     batches = _batches(total)
     if not batches:
         return
@@ -453,7 +480,8 @@ def _convert_in_pool(path: str, workers: int, cancel=None,
                     rows.append((index, parts))
             yield ("batch", done, total, rows)
         if deferred:
-            yield from _share_out(pool, deferred, done, total, workers, cancel)
+            yield from _share_out(pool, deferred, done, total, workers,
+                                  cancel, path)
 
 
 def _pages_as_json(path: str, units: str) -> list:
@@ -467,7 +495,7 @@ def _pages_as_json(path: str, units: str) -> list:
     return layouts_to_json(read_pages(_MODEL, units, path))
 
 
-def _share_out(pool, deferred, done, total, workers, cancel):
+def _share_out(pool, deferred, done, total, workers, cancel, path=None):
     """Read the objects too big for one worker across the whole pool.
 
     They are left till last because nothing knows an object's size until a
@@ -481,7 +509,19 @@ def _share_out(pool, deferred, done, total, workers, cancel):
     limit = split_vertices()
     flimit = split_faces()
     jobs, held = [], {}
-    for index, (_, _meta, size) in deferred.items():
+    for index, (name, meta, size) in list(deferred.items()):
+        if size[0] == "mesh" and path is not None:
+            # its record in one go, in double precision where it has it,
+            # rather than a vertex at a time across the pool
+            from . import rhino
+            from .rhino_mesh_records import mesh_arrays_at
+            arrays = mesh_arrays_at(path, index)
+            if arrays is not None and len(arrays[0]) == size[1]                     and len(arrays[1]) == size[2]:
+                del deferred[index]
+                done += 1
+                yield ("batch", done, total, [(index, [(
+                    name, meta, [_encode(rhino._mesh_shape(*arrays))])])])
+                continue
         if size[0] == "mesh":
             _, vertices, faces = size
             parts = _piece_count(vertices, workers, limit)
@@ -513,7 +553,8 @@ def _share_out(pool, deferred, done, total, workers, cancel):
             if kind == "mesh":
                 encoded = [_encode(MeshShape(
                     np.concatenate([piece[0] for piece in pieces]),
-                    np.concatenate([piece[1] for piece in pieces])))]
+                    np.concatenate([piece[1] for piece in pieces]),
+                    faceted=True))]
             else:
                 # Sewing wants every face at once, and it is cheap next to
                 # converting them — about a second for 19k faces — so the
@@ -578,7 +619,8 @@ def _is_deferred(payload) -> bool:
 
 def _assemble(messages, report, opening: str = "", path: str = "",
               units: str = "mm", notes: list | None = None,
-              pages: list | None = None) -> list[tuple[str, object, dict]]:
+              pages: list | None = None, cameras: dict | None = None,
+              adopt: dict | None = None) -> list[tuple[str, object, dict]]:
     """Turn the reader's message stream into what import_3dm returns.
 
     Shapes are decoded as they land rather than at the end, so the bytes are
@@ -589,7 +631,7 @@ def _assemble(messages, report, opening: str = "", path: str = "",
     bytes, and is turned into a `DeferredShape` at the end, once the count
     of them is known and they can share one reopening of the file.
     """
-    total, rows, file_units = None, [], None
+    total, rows, file_units, found_cameras = None, [], None, {}
     # What to repaint between messages. The bar must not creep while the
     # helper is thinking, so a heartbeat repeats the last real update rather
     # than inventing one.
@@ -617,6 +659,9 @@ def _assemble(messages, report, opening: str = "", path: str = "",
             total = message[1]
         elif kind == "units":
             file_units = message[1]
+            units = rhino_module().adopted_units(file_units, units, adopt)
+        elif kind == "cameras":
+            found_cameras = message[1]
         elif kind == "pages":
             if pages is not None:
                 from ..core.layout import layouts_from_json
@@ -652,6 +697,9 @@ def _assemble(messages, report, opening: str = "", path: str = "",
                     shape = rhino_module()._deferred_from_file(
                         pending, shape[1], shape[2])
                 out.append((name or f"3dm object {counter:02d}", shape, meta))
+    if cameras is not None:
+        cameras.update(rhino_module().scaled_cameras(found_cameras,
+                                                     file_units, units))
     return rhino_module().in_units(out, file_units, units, notes)
 
 
@@ -665,7 +713,9 @@ def rhino_module():
 def import_3dm_parallel(path: str, progress=None,
                         workers: int | None = None, units: str = "mm",
                         notes: list | None = None,
-                        pages: list | None = None
+                        pages: list | None = None,
+                        cameras: dict | None = None,
+                        adopt: dict | None = None
                         ) -> list[tuple[str, object, dict]]:
     """import_3dm's answer, converted across processes.
 
@@ -686,7 +736,9 @@ def import_3dm_parallel(path: str, progress=None,
     # app dies outright the pipe breaks under the reader's next send.
     proc = ctx.Process(target=_read_file,
                        args=(path, worker_count(workers), sender, cancel,
-                             units if pages is not None else None))
+                             None if pages is None
+                             else f"adopt:{units}" if adopt is not None
+                             else units))
     proc.start()
     sender.close()          # or the parent never sees the pipe close
     finished = False
@@ -695,7 +747,7 @@ def import_3dm_parallel(path: str, progress=None,
         # reader closing the pipe — so a normal return means it got to the end.
         items = _assemble(_messages(receiver), report,
                           f"Reading {os.path.basename(path)}…", path,
-                          units, notes, pages)
+                          units, notes, pages, cameras, adopt)
         finished = True
         return items
     finally:

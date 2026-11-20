@@ -221,3 +221,37 @@ def test_a_drop_offering_move_still_copies_the_source(window, tmp_path):
     assert drop.dropAction() == Qt.DropAction.CopyAction
     assert path.exists()
     assert len(window.scene.all()) == 1
+
+
+def _metre_3dm(path):
+    import rhino3dm
+    model = rhino3dm.File3dm()
+    model.Settings.ModelUnitSystem = rhino3dm.UnitSystem.Meters
+    box = rhino3dm.Box(rhino3dm.BoundingBox(0, 0, 0, 1, 1, 1))
+    model.Objects.AddBrep(rhino3dm.Brep.CreateFromBox(box))
+    model.Write(str(path), 7)
+    return path
+
+
+def test_a_rhino_file_dropped_on_an_empty_drawing_opens_in_its_units(
+        window, tmp_path):
+    pytest.importorskip("rhino3dm")
+    path = _metre_3dm(tmp_path / "site.3dm")
+
+    _drag(window, _urls(path))
+
+    assert window.scene.units == "m"
+    lo, hi = window.scene.all()[0].bbox()
+    assert hi[0] - lo[0] == pytest.approx(1.0, rel=1e-6)
+
+
+def test_a_rhino_file_dropped_on_work_is_added_and_converted(window,
+                                                             tmp_path):
+    pytest.importorskip("rhino3dm")
+    window.scene.add(g.make_box((0, 0, 0), 1, 1, 1), name="Earlier work")
+    path = _metre_3dm(tmp_path / "site.3dm")
+
+    _drag(window, _urls(path))
+
+    assert window.scene.units == "mm"
+    assert len(window.scene.all()) == 2

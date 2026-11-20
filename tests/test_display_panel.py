@@ -94,8 +94,13 @@ def _controls(settings):
 
 # -- what each mode asks for by itself --
 
-def test_a_shaded_view_shows_isocurves(vp):
+def test_a_shaded_view_leaves_isocurves_off(vp):
     vp.set_display_mode("shaded")
+    assert not vp.shows_isocurves()
+
+
+def test_a_wireframe_view_shows_isocurves(vp):
+    vp.set_display_mode("wireframe")
     assert vp.shows_isocurves()
 
 
@@ -150,9 +155,10 @@ def test_each_pane_answers_for_itself(win):
     """Four panes, four display modes already. The toggle is the same kind
     of per-pane thing and must not leak across."""
     a, b = win.viewport, win.aux_viewports[0]
-    a.set_isocurves(False)
-    assert not a.shows_isocurves()
-    assert b.shows_isocurves()
+    b.set_display_mode("shaded")
+    a.set_isocurves(True)
+    assert a.shows_isocurves()
+    assert not b.shows_isocurves()
 
 
 # -- the drawing, which cannot be run here: it is GL --
@@ -175,10 +181,10 @@ def test_the_panel_reads_its_viewport_without_changing_it(vp):
     assert panel.mode() == "rendered"
     assert not panel.isocurves_checked()
     assert not panel.edges_checked()
-    vp.set_display_mode("shaded")
+    vp.set_display_mode("wireframe")
     assert vp.shows_isocurves(), "reading the default must not create an override"
     panel.refresh()
-    assert panel.mode() == "shaded"
+    assert panel.mode() == "wireframe"
     assert panel.isocurves_checked()
     assert not panel.edges_checked()
 

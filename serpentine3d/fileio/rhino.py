@@ -241,14 +241,17 @@ def _r3_mesh_to_shape(mesh: r3.Mesh, as_mesh: bool = True, report=None,
         # import spent on shading. They are worked out from the geometry
         # instead — see mesh_to_display, which welds by position and keeps the
         # edges the modeller made hard.
-        return MeshShape(verts, np.asarray(tris, np.uint32))
+        return MeshShape(verts, np.asarray(tris, np.uint32), faceted=True)
     return _shell_from_triangles(verts, tris)
 
 
 def _mesh_shape(verts: np.ndarray, quads: np.ndarray):
-    """A MeshShape from a mesh's vertices and its (M, 4) faces."""
+    """A MeshShape from a mesh's vertices and its (M, 4) faces, drawn
+    faceted: a Rhino mesh is a modelled or measured surface whose every
+    triangle is meant, not a smooth one approximated."""
     from ..core.mesh import MeshShape
-    return MeshShape(verts, _split_quads(quads).astype(np.uint32))
+    return MeshShape(verts, _split_quads(quads).astype(np.uint32),
+                     faceted=True)
 
 
 def _split_quads(quads: np.ndarray) -> np.ndarray:
@@ -1404,7 +1407,60 @@ def object_appearance(attrs, layers: dict, materials: dict,
             "visible": visible,
             # the object's own; a piece of a block is given its block's
             # as well by instance_to_objects
-            "user_text": user_text_of(attrs)}
+            "user_text": user_text_of(attrs),
+            "group": group_of(attrs)}
+
+
+# The file's groups, each as the outermost group it sits in (read_groups).
+_GROUPS: dict = {}
+
+
+def read_groups(model) -> dict:
+    """{group index: the outermost group holding it}, as a key.
+
+    Groups here are flat, one per object, and grouping groups merges them,
+    the way a click in Rhino selects a nested group's outermost one. So
+    every group that shares an object with another is one: in a file whose
+    groups nest, that is the outermost.
+    """
+    parent = {}
+
+    def root(g):
+        while parent.setdefault(g, g) != g:
+            parent[g] = parent[parent[g]]
+            g = parent[g]
+        return g
+
+    for obj in model.Objects:
+        groups = list(obj.Attributes.GetGroupList() or [])
+        for g in groups[1:]:
+            a, b = root(groups[0]), root(g)
+            if a != b:
+                parent[max(a, b)] = min(a, b)
+        if groups:
+            root(groups[0])
+    return {g: f"3dm-group-{root(g)}" for g in parent}
+
+
+def group_of(attrs) -> str | None:
+    groups = attrs.GetGroupList()
+    if not groups or not _GROUPS:
+        return None
+    return _GROUPS.get(groups[0])
+
+
+def fresh_groups(items: list) -> list:
+    """`items` with the file's group keys swapped for ids of this import's
+    own, so the same file brought in twice does not merge its groups."""
+    import uuid
+    fresh = {}
+    for _name, _shape, meta in items:
+        key = meta.get("group")
+        if key is not None:
+            if key not in fresh:
+                fresh[key] = uuid.uuid4().hex[:12]
+            meta["group"] = fresh[key]
+    return items
 
 
 def user_text_of(attrs) -> dict:
@@ -1571,13 +1627,15 @@ def _says_what_it_said(shape, placed):
 _HATCH_PATTERNS: dict = {}
 
 
-def object_to_shapes(geo, report=None, patterns=None) -> list:
+def object_to_shapes(geo, report=None, patterns=None, source=None) -> list:
     """The shapes one .3dm object converts to, by geometry type.
 
     Split out of the import loop so the parallel importer converts objects by
     exactly the same rules — the two paths disagreeing would be worse than
     either being wrong. `patterns` is the file's hatch pattern table, the
-    one being read if not given.
+    one being read if not given. `source`, the file's path and the
+    object's index, lets a mesh be read from its record, in double
+    precision where Rhino kept it.
     """
     step = report or Progress()
     shapes = []
@@ -1616,7 +1674,11 @@ def object_to_shapes(geo, report=None, patterns=None) -> list:
         except Exception:
             shapes = []
     elif isinstance(geo, r3.Mesh):
-        shape = _r3_mesh_to_shape(geo, report=step)
+        arrays = None
+        if source is not None:
+            from .rhino_mesh_records import mesh_arrays_at
+            arrays = mesh_arrays_at(*source)
+        shape = _r3_mesh_to_shape(geo, report=step, arrays=arrays)
         shapes = [shape] if shape is not None else []
     return shapes
 
@@ -1624,6 +1686,158 @@ def object_to_shapes(geo, report=None, patterns=None) -> list:
 # The file's dimension styles by id, read with the file as its hatch
 # patterns are.
 _DIM_STYLES: dict = {}
+# The file's clipping planes by object id (`read_clipping_planes`).
+_CLIPPING: dict = {}
+
+# Rhino's four standard views by name, as the panes here are keyed.
+_VIEW_KEYS = {"perspective": "perspective", "top": "top",
+              "front": "front", "right": "right"}
+
+
+def read_clipping_planes(model, path: str) -> dict:
+    """{object id: (origin, normal Rhino keeps, clip_plane setting)}.
+
+    Rhino names the views a plane cuts by viewport id; each is matched to
+    the pane of the same name. A view this app has no pane for is dropped.
+    """
+    from .rhino_clipping import clipping_planes
+    found = clipping_planes(path)
+    if not found:
+        return {}
+    keys = {}
+    for view in model.Views:
+        key = _VIEW_KEYS.get((view.Name or "").strip().lower())
+        if key:
+            keys[str(view.Viewport.Id)] = key
+    out = {}
+    for number, (object_id, plane) in enumerate(found.items(), 1):
+        on_in = []
+        for vid in plane["viewports"]:
+            key = keys.get(vid)
+            if key and key not in on_in:
+                on_in.append(key)
+        out[object_id] = (plane["origin"], plane["normal"],
+                          {"enabled": plane["enabled"], "on_in": on_in},
+                          f"Clipping Plane {number:02d}")
+    return out
+
+
+def clipping_plane(attrs, geo, meta: dict):
+    """(name, face) for a Rhino clipping plane, its setting put in `meta`;
+    None for anything else.
+
+    The face lies on the plane Rhino cuts with, which can sit apart from
+    the rectangle Rhino draws, and faces the side it cuts away, as a plane
+    drawn here does; Rhino's own normal points at the side it keeps.
+    """
+    found = _CLIPPING.get(str(attrs.Id))
+    if found is None or not isinstance(geo, r3.Surface):
+        return None
+    origin, keep, setting, name = found
+    n = np.asarray(keep, float)
+    n /= np.linalg.norm(n) or 1.0
+    o = np.asarray(origin, float)
+    try:
+        u, v = geo.Domain(0), geo.Domain(1)
+        corners = []
+        for a, b in ((u.T0, v.T0), (u.T1, v.T0), (u.T1, v.T1), (u.T0, v.T1)):
+            p = geo.PointAt(a, b)
+            p = np.array([p.X, p.Y, p.Z])
+            corners.append(tuple(p - np.dot(p - o, n) * n))
+        face = geometry.planar_face(geometry.make_polyline(corners,
+                                                           closed=True))
+        if np.dot(geometry.face_normal(face), n) > 0:
+            face = face.Reversed()
+    except Exception:                                           # noqa: BLE001
+        return None
+    meta["clip_plane"] = setting
+    return attrs.Name or name, face
+
+
+# Image bytes by texture path, read once however many frames show them.
+_IMAGES: dict = {}
+
+
+def picture_frame(attrs, geo, model):
+    """A PictureShape for a Rhino picture frame, or None.
+
+    Rhino's Picture command makes a one-face rectangular brep wearing a
+    material whose bitmap is the image, kept embedded in the file as well
+    as named by path. The image maps across the face's parameters, its
+    bottom left at the surface's start.
+    """
+    if not isinstance(geo, r3.Brep) or len(geo.Faces) != 1 \
+            or len(geo.Edges) != 4:
+        return None
+    path = _texture_path(attrs, model)
+    if not path:
+        return None
+    try:
+        srf = geo.Surfaces[0]
+        if not srf.IsPlanar():
+            return None
+        u, v = srf.Domain(0), srf.Domain(1)
+        corner = [srf.PointAt(a, b) for a, b in
+                  ((u.T0, v.T0), (u.T1, v.T0), (u.T0, v.T1), (u.T1, v.T1))]
+        o, pu, pv, far = (np.array([p.X, p.Y, p.Z]) for p in corner)
+    except Exception:                                           # noqa: BLE001
+        return None
+    if not np.allclose(o + (pu - o) + (pv - o), far,
+                       atol=1e-6 * (np.linalg.norm(pu - o) + 1.0)):
+        return None                    # not a parallelogram: not a frame
+    data = _image_bytes(path, model)
+    if data is None:
+        return None
+    from ..core.picture import PictureShape
+    return PictureShape({"path": path, "origin": o.tolist(),
+                         "u": (pu - o).tolist(), "v": (pv - o).tolist(),
+                         "alpha": 1.0, "image_data": data})
+
+
+def _texture_path(attrs, model) -> str | None:
+    if int(attrs.MaterialSource) != _MATERIAL_FROM_OBJECT:
+        return None
+    index = attrs.MaterialIndex
+    if not 0 <= index < len(model.Materials):
+        return None
+    texture = model.Materials[index].GetBitmapTexture()
+    return texture.FileName if texture is not None and texture.FileName \
+        else None
+
+
+def _image_bytes(path: str, model) -> bytes | None:
+    """The image as the file embeds it, or from disk if it does not."""
+    if path in _IMAGES:
+        return _IMAGES[path]
+    data = None
+    want = os.path.normcase(os.path.normpath(path))
+    for embedded in model.EmbeddedFiles:
+        name = embedded.Filename or ""
+        if os.path.normcase(os.path.normpath(name)) != want:
+            continue
+        import tempfile
+        fd, temp = tempfile.mkstemp(suffix=os.path.splitext(path)[1])
+        os.close(fd)
+        try:
+            if embedded.Write(temp):
+                with open(temp, "rb") as f:
+                    data = f.read() or None
+        except OSError:
+            data = None
+        finally:
+            try:
+                os.remove(temp)
+            except OSError:
+                pass
+        break
+    if data is None:
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            data = None
+    _IMAGES[path] = data
+    return data
 
 
 def read_dim_styles(model) -> dict:
@@ -1739,6 +1953,60 @@ def _written_look(said: str, measured: float) -> dict:
     return look
 
 
+def _hatch_faces(brep, plane) -> list | None:
+    """A hatch's regions as flat faces on its plane, or None to fall back.
+
+    A hatch is flat by definition, so each region is built straight on the
+    plane from its loops: no surface to trim and no ShapeFix_Face, which
+    never returned on one hatch of a survey drawing.
+    """
+    from OCP.BRepBuilderAPI import (BRepBuilderAPI_MakeFace,
+                                    BRepBuilderAPI_MakeWire)
+    from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
+    from OCP.TopoDS import TopoDS
+
+    o, z = plane.Origin, plane.ZAxis
+    pln = gp_Pln(gp_Pnt(o.X, o.Y, o.Z), gp_Dir(z.X, z.Y, z.Z))
+    table = _brep_edge_table(brep)
+    faces = []
+    try:
+        for fi in range(len(brep.Faces)):
+            outer, holes = None, []
+            for loop in brep.Faces[fi].Loops:
+                mk = BRepBuilderAPI_MakeWire()
+                for ti in range(loop.TrimCount):
+                    edge = table.get(loop.Trims[ti].EdgeIndex)
+                    if edge is None:
+                        return None
+                    mk.Add(geometry.occ.to_edge(edge))
+                if not mk.IsDone():
+                    return None
+                region = BRepBuilderAPI_MakeFace(pln, mk.Wire(), True)
+                if not region.IsDone():
+                    return None
+                if "Outer" in str(loop.LoopType):
+                    if outer is not None:
+                        return None
+                    outer = region.Face()
+                else:
+                    holes.append(region.Face())
+            if outer is None:
+                return None
+            if not holes:
+                faces.append(outer)
+                continue
+            mk = BRepBuilderAPI_MakeFace(outer)
+            for hole in holes:
+                mk.Add(TopoDS.Wire_s(BRepTools.OuterWire_s(hole).Reversed()))
+            if not mk.IsDone():
+                return None
+            faces.append(mk.Face())
+    except Exception:                                           # noqa: BLE001
+        return None
+    return faces
+
+
 def hatch_to_shapes(geo, patterns: dict) -> list:
     """A Rhino hatch as hatch objects, drawn with the lines Rhino draws it
     with (#92): one for each piece of region its boundary makes.
@@ -1755,12 +2023,14 @@ def hatch_to_shapes(geo, patterns: dict) -> list:
     brep = r3.Brep.TryConvertBrep(geo)
     if brep is None:
         return []
-    faces = []
-    for shape in _import_brep(brep):
-        if hasattr(shape, "ShapeType"):
-            faces.extend(geometry.faces_of(shape))
-    pattern = patterns.get(geo.PatternIndex)
     plane = geo.Plane
+    faces = _hatch_faces(brep, plane)
+    if faces is None:
+        faces = []
+        for shape in _import_brep(brep):
+            if hasattr(shape, "ShapeType"):
+                faces.extend(geometry.faces_of(shape))
+    pattern = patterns.get(geo.PatternIndex)
     frame = np.eye(4)
     frame[:3, 0] = (plane.XAxis.X, plane.XAxis.Y, plane.XAxis.Z)
     frame[:3, 1] = (plane.YAxis.X, plane.YAxis.Y, plane.YAxis.Z)
@@ -1913,6 +2183,119 @@ def _deferred_from_file(pending: PendingFile, index: int, kind: str):
     return DeferredShape(build, kind=kind)
 
 
+def adopted_units(file_units: str | None, units: str,
+                  adopt: dict | None) -> str:
+    """The units the import comes in at: the file's own when `adopt` is
+    given and the drawing has a name for them, said in `adopt["units"]`,
+    and `units` otherwise."""
+    if adopt is None:
+        return units
+    ours = _OUR_UNITS.get(file_units or "")
+    if ours is None:
+        return units
+    adopt["units"] = ours
+    return ours
+
+
+def unit_factor(file_units: str | None, units: str) -> float | None:
+    """What a length in the file's unit system is multiplied by to be in
+    `units`; None when nothing needs scaling."""
+    if file_units in (None, "None", "Unset", "CustomUnits"):
+        return None
+    system = getattr(r3.UnitSystem, file_units)
+    factor = (r3.UnitSystem.UnitScale(system, r3.UnitSystem.Millimeters)
+              / TO_MM[units])
+    if not np.isfinite(factor) or factor <= 0 or np.isclose(factor, 1.0,
+                                                           rtol=1e-12):
+        return None
+    return factor
+
+
+def read_cameras(model) -> dict:
+    """{pane key: camera state} for Rhino's Perspective, Top, Front and
+    Right views, in the file's units (`scaled_cameras`).
+
+    A parallel view keeps how much it shows: Rhino's frustum height is the
+    height of the view, which a parallel pane here gets from its distance.
+    """
+    import math
+
+    from ..ui.camera import Camera
+    default_fov = Camera().fov
+    out = {}
+    for view in model.Views:
+        key = _VIEW_KEYS.get((view.Name or "").strip().lower())
+        if key is None or key in out:
+            continue
+        try:
+            state = _camera_state(view.Viewport, default_fov, math)
+        except Exception:                                       # noqa: BLE001
+            state = None
+        if state is not None:
+            out[key] = state
+    return out
+
+
+def _camera_state(vp, default_fov: float, math):
+    loc = vp.CameraLocation
+    loc = np.array([loc.X, loc.Y, loc.Z], float)
+    d = vp.CameraDirection
+    d = np.array([d.X, d.Y, d.Z], float)
+    if np.linalg.norm(d) < 1e-12:
+        return None
+    d /= np.linalg.norm(d)
+    up = vp.CameraUp
+    up = np.array([up.X, up.Y, up.Z], float)
+    t = vp.TargetPoint
+    along = float(np.dot(np.array([t.X, t.Y, t.Z]) - loc, d))
+    frustum = vp.GetFrustum()
+    parallel = bool(vp.IsParallelProjection)
+    if parallel:
+        fov = default_fov
+        half_h = abs(frustum["top"] - frustum["bottom"]) / 2.0
+        distance = half_h / math.tan(math.radians(fov) / 2.0)
+        if along <= 0:
+            along = distance
+        target = loc + d * along
+    else:
+        near = frustum["near"]
+        if near <= 0:
+            return None
+        fov = math.degrees(2.0 * math.atan(
+            abs(frustum["top"] - frustum["bottom"]) / 2.0 / near))
+        if along <= 1e-9:
+            along = float(vp.TargetDistance(True)) if hasattr(
+                vp, "TargetDistance") else 0.0
+        if along <= 1e-9:
+            return None
+        target = loc + d * along
+        distance = along
+    back = -d                                  # target to eye
+    elevation = math.asin(float(np.clip(back[2], -1.0, 1.0)))
+    if abs(math.cos(elevation)) < 1e-3:
+        # looking straight up or down: the up vector says which way round
+        sign = 1.0 if back[2] > 0 else -1.0
+        azimuth = math.atan2(-up[1] * sign, -up[0] * sign)
+    else:
+        azimuth = math.atan2(back[1], back[0])
+    return {"target": target.tolist(), "distance": float(distance),
+            "azimuth": float(azimuth), "elevation": float(elevation),
+            "fov": float(fov),
+            "projection": "parallel" if parallel else "perspective"}
+
+
+def scaled_cameras(cameras: dict, file_units: str | None,
+                   units: str) -> dict:
+    """`read_cameras`' answer in the drawing's `units`."""
+    factor = unit_factor(file_units, units)
+    if factor is None:
+        return cameras
+    return {key: {**state,
+                  "target": [c * factor for c in state["target"]],
+                  "distance": state["distance"] * factor}
+            for key, state in cameras.items()}
+
+
 def in_units(items: list, file_units: str | None, units: str,
               notes: list | None = None) -> list:
     """Importer `items` with their shapes scaled from the file's unit system,
@@ -1921,13 +2304,8 @@ def in_units(items: list, file_units: str | None, units: str,
     A file with no unit, or one only Rhino knows how big (custom), is
     taken to be in the drawing's own.
     """
-    if file_units in (None, "None", "Unset", "CustomUnits"):
-        return items
-    system = getattr(r3.UnitSystem, file_units)
-    factor = (r3.UnitSystem.UnitScale(system, r3.UnitSystem.Millimeters)
-              / TO_MM[units])
-    if not np.isfinite(factor) or factor <= 0 or np.isclose(factor, 1.0,
-                                                           rtol=1e-12):
+    factor = unit_factor(file_units, units)
+    if factor is None:
         return items
     if notes is not None:
         notes.append(converted_note(_OUR_UNITS.get(file_units,
@@ -1938,7 +2316,8 @@ def in_units(items: list, file_units: str | None, units: str,
 
 
 def import_3dm(path: str, progress=None, units: str = "mm",
-               notes: list | None = None, pages: list | None = None
+               notes: list | None = None, pages: list | None = None,
+               cameras: dict | None = None, adopt: dict | None = None
                ) -> list[tuple[str, object, dict]]:
     """Returns [(name, shape, {layer, color})], scaled into `units`.
 
@@ -1950,8 +2329,9 @@ def import_3dm(path: str, progress=None, units: str = "mm",
     report = progress or Progress()
     if _worth_parallelising(path):
         try:
-            return import_3dm_parallel(path, report, units=units,
-                                       notes=notes, pages=pages)
+            return fresh_groups(import_3dm_parallel(
+                path, report, units=units, notes=notes, pages=pages,
+                cameras=cameras, adopt=adopt))
         except Cancelled:
             raise
         except Exception as exc:                                # noqa: BLE001
@@ -1964,13 +2344,17 @@ def import_3dm(path: str, progress=None, units: str = "mm",
     model = r3.File3dm.Read(path)
     if model is None:
         raise IOError(f"Could not read 3dm file: {path}")
-    global _HATCH_PATTERNS, _DIM_STYLES
+    global _HATCH_PATTERNS, _DIM_STYLES, _CLIPPING, _GROUPS
     _HATCH_PATTERNS = patterns = read_hatch_patterns(path)
     _DIM_STYLES = read_dim_styles(model)
+    _CLIPPING = read_clipping_planes(model, path)
+    _GROUPS = read_groups(model)
+    _IMAGES.clear()
 
     layers = read_layers(model)
     materials = read_materials(model)
     blocks = read_blocks(model)
+    units = adopted_units(model.Settings.ModelUnitSystem.name, units, adopt)
     if pages is not None:
         from .rhino_pages import read_pages
         pages.extend(read_pages(model, units, path))
@@ -2001,6 +2385,17 @@ def import_3dm(path: str, progress=None, units: str = "mm",
                 out.append(part)
             continue
         geo = obj.Geometry
+        clip = clipping_plane(attrs, geo, meta)
+        if clip is not None:
+            counter += 1
+            out.append((*clip, meta))
+            continue
+        picture = picture_frame(attrs, geo, model)
+        if picture is not None:
+            counter += 1
+            out.append((attrs.Name or f"3dm object {counter:02d}", picture,
+                        meta))
+            continue
         if worth_deferring(geo, meta):
             # Held by the geometry rather than the model: rhino3dm hands
             # out an object that outlives the file it was read from, so
@@ -2012,13 +2407,17 @@ def import_3dm(path: str, progress=None, units: str = "mm",
                     _put_off(g, p, path, i),
                 kind=file_kind(geo)), meta))
             continue
-        for shape in object_to_shapes(geo, step):
+        for shape in object_to_shapes(geo, step, source=(path, index)):
             if shape is None or shape.IsNull():
                 continue
             counter += 1
             name = attrs.Name or f"3dm object {counter:02d}"
             out.append((name, shape, meta))
-    return in_units(out, model.Settings.ModelUnitSystem.name, units, notes)
+    file_units = model.Settings.ModelUnitSystem.name
+    if cameras is not None:
+        cameras.update(scaled_cameras(read_cameras(model), file_units,
+                                      units))
+    return fresh_groups(in_units(out, file_units, units, notes))
 
 
 # ------------------------------------------------------------------- export

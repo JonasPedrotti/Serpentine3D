@@ -346,6 +346,12 @@ class SessionJournal:
         self.flush()
         objs = []
         for o in self.scene.all():
+            if not o.shape_ready:
+                # Measuring it would convert it: on a file whose hidden
+                # layers hold hundreds of hatches that was minutes of
+                # work after every open, and what deferring exists to avoid.
+                objs.append({"id": o.id, "kind": o.kind, "deferred": True})
+                continue
             try:
                 size = (geometry.volume(o.shape) if o.kind == "solid"
                         else geometry.curve_length(o.shape)

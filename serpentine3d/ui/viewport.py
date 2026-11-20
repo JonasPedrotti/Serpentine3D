@@ -609,6 +609,12 @@ BATCH_MAX_TRIANGLES = 2048
 # and they would all have to go up again. This way one change costs one batch.
 BATCH_CUT_EVERY = 64
 BATCH_MAX_OBJECTS = 256
+# How far apart two far objects' anchors may be and still share a batch.
+# Their offsets from the batch's anchor go to the card as float32, which
+# steps a few thousandths of a unit at this distance.
+BATCH_SPAN = 65536.0
+# Half the width of a snap marker on screen, in pixels.
+SNAP_MARKER_PX = 11.0
 # Draws a batch can go unused before its buffers are given back. Not one:
 # each detail on a sheet is a draw with its own idea of what is shown.
 BATCH_KEEP_DRAWS = 256
@@ -903,6 +909,36 @@ def _plane_frames(objects) -> list:
             continue
         frames.append((obj.clip_plane, tuple(o), tuple(n)))
     return frames
+
+
+# The longest side a picture is uploaded at. An orthophoto of 16384 pixels
+# a side is most of a gigabyte as RGBA, more than Qt will decode (its
+# 256 MB allocation limit) and than a texture needs to look sharp.
+MAX_PICTURE_SIDE = 8192
+
+
+def _read_texture_image(path: str, image_data: bytes | None,
+                        gl_limit: int = MAX_PICTURE_SIDE):
+    """The picture's image, decoded at most `MAX_PICTURE_SIDE` (or the
+    GPU's own limit) on its longer side; a null QImage if unreadable."""
+    from PySide6.QtCore import QBuffer, QByteArray, QSize, Qt
+    from PySide6.QtGui import QImageReader
+    buffer = None
+    if image_data is None:
+        reader = QImageReader(path)
+    else:
+        buffer = QBuffer()
+        buffer.setData(QByteArray(image_data))
+        reader = QImageReader(buffer)
+    reader.setAutoTransform(True)
+    limit = min(MAX_PICTURE_SIDE, gl_limit or MAX_PICTURE_SIDE)
+    size = reader.size()
+    if size.isValid() and max(size.width(), size.height()) > limit:
+        reader.setScaledSize(size.scaled(QSize(limit, limit),
+                                         Qt.AspectRatioMode.KeepAspectRatio))
+    img = reader.read()
+    del buffer
+    return img
 
 
 def clip_equation(origin, normal):
@@ -1201,7 +1237,7 @@ class _GpuObject:
             self._share_key, lambda: _MeshBuffers(mesh, dash))
         buf = self.buffers
         # Can go in a _Batch, as far as the mesh goes: see _batched.
-        self.plain = (buf.anchor is None and not buf.cloud_count
+        self.plain = (not buf.cloud_count
                       and dash_key == "Continuous"
                       and not len(mesh.local_points)
                       and len(mesh.triangles) <= BATCH_MAX_TRIANGLES)
@@ -1213,6 +1249,9 @@ class _GpuObject:
         self.cloud_levels = buf.cloud_levels
         self.cloud_colored = buf.cloud_colored
         self.anchor = buf.anchor      # the drawer folds this back in
+        # the same as plain floats, for comparing anchors without numpy
+        self.anchor_xyz = (None if buf.anchor is None
+                           else tuple(float(c) for c in buf.anchor))
         if buf.cloud_count:
             self.cloud_vao = self._cloud_vertex_array(buf.cloud_vbo)
             self.cloud_count = buf.cloud_count
@@ -1285,6 +1324,29 @@ class _GpuObject:
         gpu_share.release(self._share_key)
 
 
+def _selection_signature(selection) -> tuple:
+    """What is selected, objects and parts, as something to compare."""
+    try:
+        ids = tuple(sorted(o.id for o in selection.objects()))
+    except Exception:                                           # noqa: BLE001
+        ids = ()
+    return ids, tuple(sorted(map(repr, getattr(selection, "subobjects", ()))))
+
+
+def _shares_anchor(run, gpu) -> bool:
+    """Whether `gpu` can join `run`'s batch: near home both, or anchored
+    near enough the run's first anchor to be drawn from it."""
+    if not run:
+        return True
+    first = run[0][1].anchor_xyz
+    here = gpu.anchor_xyz
+    if first is None or here is None:
+        return first is None and here is None
+    return (abs(here[0] - first[0]) <= BATCH_SPAN
+            and abs(here[1] - first[1]) <= BATCH_SPAN
+            and abs(here[2] - first[2]) <= BATCH_SPAN)
+
+
 class _Batch:
     """A run of objects that look alike, on the GPU as one mesh.
 
@@ -1299,8 +1361,8 @@ class _Batch:
 
     mesh_ready = True
 
-    def __init__(self, meshes, key):
-        mesh = merged(meshes)
+    def __init__(self, meshes, key, origin=None):
+        mesh = merged(meshes, origin)
         self.gpu = _GpuObject(mesh, share_id=key)
         # Once it is on the card only its box is asked for, by `_cull`,
         # so the merged arrays go: kept, every small object in the file
@@ -1586,6 +1648,16 @@ class Viewport(QOpenGLWidget):
         self._bound_uniform: dict = {}
         self._bound_prog = -1
         self._bound_width = -1.0
+        # The clip planes the object being drawn wants, and what each
+        # program holds: set when a program is bound, not for all five
+        # programs per object (see _want_clips).
+        self._clips_wanted = None
+        self._clips_held: dict = {}
+        # The model as last drawn, colour and depth, for the frames a
+        # command's rubber band and snap marker ask for: see _scene_cached.
+        self._scene_fbo = None          # (fbo, colour rb, depth rb, w, h)
+        self._scene_key = None
+        self._scene_cache_ok = True     # False once a copy failed here
         self._bg_vao = 0
         self._paint_failed = False          # a frame threw; see paintGL
         # Ambient occlusion: wanted or not, its GL side once made, and the
@@ -1844,20 +1916,26 @@ class Viewport(QOpenGLWidget):
             self._draw_selection_box(w, h)
             return
 
-        if self.grid_visible:
-            self._draw_grid(mvp64)
         self._sync_gpu()
-        occlude = self.shows_ambient_occlusion()
-        self._ao_draws = [] if occlude else None
-        try:
-            self._draw_objects(mvp64, view)
-        finally:
-            draws, self._ao_draws = self._ao_draws, None
-        if occlude and draws:
-            self._draw_ambient_occlusion(draws, proj, self._ao_ground(mvp))
-        if parallel:
+        scene_key = self._scene_cache_key(mvp64, view, w, h)
+        if not self._scene_cached(scene_key):
+            if self.grid_visible:
+                self._draw_grid(mvp64)
+            occlude = self.shows_ambient_occlusion()
+            self._ao_draws = [] if occlude else None
+            try:
+                self._draw_objects(mvp64, view)
+            finally:
+                draws, self._ao_draws = self._ao_draws, None
+            if occlude and draws:
+                self._draw_ambient_occlusion(draws, proj,
+                                             self._ao_ground(mvp))
+            if parallel:
+                GL.glDepthFunc(GL.GL_LEQUAL)
+            self._draw_image_planes(mvp)
+            self._keep_scene(scene_key)
+        elif parallel:
             GL.glDepthFunc(GL.GL_LEQUAL)
-        self._draw_image_planes(mvp)
         self._draw_pending(mvp)
         self._draw_control_points(mvp)
         self._draw_combs(mvp)
@@ -2390,12 +2468,27 @@ class Viewport(QOpenGLWidget):
         self._bound_uniform.clear()
         self._bound_prog = -1
         self._bound_width = -1.0
+        self._clips_wanted = None
+        self._clips_held.clear()
 
     def _use(self, prog: int):
-        """Bind a shader program, unless it is already the bound one."""
+        """Bind a shader program, unless it is already the bound one, with
+        the clip planes the object being drawn wants."""
         if self._bound_prog != prog:
             GL.glUseProgram(prog)
             self._bound_prog = prog
+        wanted = self._clips_wanted
+        if wanted is not None and prog in self._clips_held                 and self._clips_held[prog] is not wanted:
+            self._upload_clips(prog, wanted)
+
+    def _want_clips(self, clips):
+        """Say which clip planes the next draws dot with. Each program gets
+        them when it is next bound: a file far from home anchors every
+        object apart, and setting all five programs for each of thousands
+        of objects made a frame with a plane in it take a second."""
+        self._clips_wanted = clips
+        if self._bound_prog in self._clips_held:
+            self._use(self._bound_prog)
 
     def _line_width(self, width: float):
         w = min(width, self._max_line_width)
@@ -2444,8 +2537,8 @@ class Viewport(QOpenGLWidget):
         if entry is not None:
             return entry
         from PySide6.QtGui import QImage
-        img = (QImage(path) if image_data is None
-               else QImage.fromData(image_data))
+        img = _read_texture_image(path, image_data,
+                                  int(GL.glGetIntegerv(GL.GL_MAX_TEXTURE_SIZE)))
         if img.isNull():
             self._image_textures[cache_key] = (0, 1.0)
             return self._image_textures[cache_key]
@@ -2650,6 +2743,112 @@ class Viewport(QOpenGLWidget):
         offered objects too, while retaining the visible objects' buffers.
         """
         return self.scene.drawable_objects()
+
+    # -- the model, kept while a command only moves its overlays ------------
+
+    def _scene_cache_key(self, mvp64, view, w, h):
+        """What the model part of a frame depends on, or None when this
+        frame should not use a kept one.
+
+        Only while a command waits for a point, the one time every mouse
+        move asks for a frame and nothing but the rubber band and the snap
+        marker has changed. Anything the model's own drawing reads is in
+        the key, so a changed scene, view, selection or look draws afresh;
+        an object still lighting up, a mesh still on its way or a picture
+        being placed draws every frame as before.
+        """
+        if (not self.point_mode or not self._scene_cache_ok
+                or self._flashes or self._tess_pending
+                or self._ghost_picture is not None
+                or self._target is not None):
+            return None
+        sel = self.selection
+        return (w, h, self.devicePixelRatioF(),
+                np.asarray(mvp64, np.float64).tobytes(),
+                np.asarray(view, np.float64).tobytes(),
+                self.display_mode, self.grid_visible, self.grid_axes_visible,
+                self._iso_override, self._edge_override,
+                self.shows_ambient_occlusion(), repr(self.background),
+                self._gpu_sync_key(), tuple(self.scene.layers.all()),
+                _selection_signature(sel), self._choice_hover)
+
+    def _scene_cached(self, key) -> bool:
+        """Put the kept model on screen, colour and depth, if it is the one
+        `key` describes; False to draw it."""
+        held = self._scene_fbo
+        if key is None or held is None or self._scene_key != key:
+            return False
+        fbo, _c, _d, pw, ph = held
+        target = self.defaultFramebufferObject()
+        GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, fbo)
+        GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, target)
+        GL.glBlitFramebuffer(0, 0, pw, ph, 0, 0, pw, ph,
+                             GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT
+                             | GL.GL_STENCIL_BUFFER_BIT, GL.GL_NEAREST)
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target)
+        if GL.glGetError() != GL.GL_NO_ERROR:
+            self._drop_scene_cache(for_good=True)
+            return False
+        return True
+
+    def _keep_scene(self, key):
+        """Copy the model just drawn aside, for the frames after it."""
+        if key is None:
+            self._scene_key = None
+            return
+        vp = [int(v) for v in GL.glGetIntegerv(GL.GL_VIEWPORT)]
+        pw, ph = vp[2], vp[3]
+        held = self._scene_fbo
+        if held is None or tuple(held[3:]) != (pw, ph):
+            self._drop_scene_cache()
+            fbo = int(GL.glGenFramebuffers(1))
+            colour = int(GL.glGenRenderbuffers(1))
+            depth = int(GL.glGenRenderbuffers(1))
+            GL.glBindRenderbuffer(GL.GL_RENDERBUFFER, colour)
+            GL.glRenderbufferStorage(GL.GL_RENDERBUFFER, GL.GL_RGBA8, pw, ph)
+            GL.glBindRenderbuffer(GL.GL_RENDERBUFFER, depth)
+            GL.glRenderbufferStorage(GL.GL_RENDERBUFFER,
+                                     GL.GL_DEPTH24_STENCIL8, pw, ph)
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
+            GL.glFramebufferRenderbuffer(GL.GL_FRAMEBUFFER,
+                                         GL.GL_COLOR_ATTACHMENT0,
+                                         GL.GL_RENDERBUFFER, colour)
+            GL.glFramebufferRenderbuffer(GL.GL_FRAMEBUFFER,
+                                         GL.GL_DEPTH_STENCIL_ATTACHMENT,
+                                         GL.GL_RENDERBUFFER, depth)
+            done = (GL.glCheckFramebufferStatus(GL.GL_FRAMEBUFFER)
+                    == GL.GL_FRAMEBUFFER_COMPLETE)
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER,
+                                 self.defaultFramebufferObject())
+            self._scene_fbo = (fbo, colour, depth, pw, ph)
+            if not done:
+                self._drop_scene_cache(for_good=True)
+                return
+        fbo = self._scene_fbo[0]
+        source = self.defaultFramebufferObject()
+        GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, source)
+        GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, fbo)
+        GL.glBlitFramebuffer(0, 0, pw, ph, 0, 0, pw, ph,
+                             GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT
+                             | GL.GL_STENCIL_BUFFER_BIT, GL.GL_NEAREST)
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, source)
+        if GL.glGetError() != GL.GL_NO_ERROR:
+            # a context whose own buffer this cannot copy, as a multisampled
+            # one: drawn every frame, as before
+            self._drop_scene_cache(for_good=True)
+            return
+        self._scene_key = key
+
+    def _drop_scene_cache(self, for_good: bool = False):
+        held, self._scene_fbo, self._scene_key = self._scene_fbo, None, None
+        if for_good:
+            self._scene_cache_ok = False
+        if held is not None:
+            try:
+                GL.glDeleteFramebuffers(1, [held[0]])
+                GL.glDeleteRenderbuffers(2, [held[1], held[2]])
+            except Exception:                                   # noqa: BLE001
+                pass
 
     def _gpu_sync_key(self) -> tuple:
         """Everything the reconcile below reads, so it can be skipped when
@@ -2999,6 +3198,7 @@ class Viewport(QOpenGLWidget):
         for prog in (self._mesh_prog, self._line_prog, self._thick_prog,
                      self._point_prog, self._marker_prog):
             self._set_clip_uniforms(prog, clips)
+        self._clips_wanted = clips if clips else None
         # What is see-through composits correctly drawn back-to-front, over
         # everything opaque: in a ghosted frame that is the lot, otherwise
         # only the objects with an opacity, drawn last. The opaque ones keep
@@ -3023,7 +3223,8 @@ class Viewport(QOpenGLWidget):
         # Clipping planes re-express themselves around anchored objects as
         # the loop goes, and rendered mode has its materials, so those
         # frames draw an object at a time.
-        if not (clips or mode == "rendered"):
+        single = objects + see_through
+        if mode != "rendered":
             objects = self._batched(objects, locked_layers, mode,
                                     light_background)
         objects = objects + see_through
@@ -3050,8 +3251,9 @@ class Viewport(QOpenGLWidget):
         from ..core.text_object import TextShape
         for obj in objects:
             if isinstance(obj, _Batch):
-                self._draw_batch(obj, flat, flat_view, fill_alpha,
-                                 show_edges, show_isos)
+                self._draw_batch(obj, mvp, view, fill_alpha,
+                                 show_edges, show_isos, clips)
+                clips_dirty = bool(clips) and obj.gpu.anchor is not None
                 continue
             if obj.clip_plane is not None and self._target is not None:
                 # A sheet shows what a plane cut, not the plane: it is a
@@ -3078,10 +3280,7 @@ class Viewport(QOpenGLWidget):
                 # The GPU dots the planes with the rebased pos, so an
                 # anchored object needs them re-expressed around its
                 # anchor, and the next unanchored one needs them back.
-                for prog in (self._mesh_prog, self._line_prog,
-                             self._thick_prog, self._point_prog,
-                             self._marker_prog):
-                    self._set_clip_uniforms(prog, oclips)
+                self._want_clips(oclips)
                 clips_dirty = gpu.anchor is not None
             selected = self._looks_selected(obj.id)
             gold = self._selection_color(obj.id) if selected else None
@@ -3263,10 +3462,7 @@ class Viewport(QOpenGLWidget):
                     GL.glBindVertexArray(self._preview.vao)
                     GL.glDrawArrays(GL.GL_TRIANGLES, 0, len(pts))
             if obj.clip_plane is not None and clips:
-                for prog in (self._mesh_prog, self._line_prog,
-                             self._thick_prog, self._point_prog,
-                             self._marker_prog):
-                    self._set_clip_uniforms(prog, oclips)
+                self._want_clips(oclips)
             if gpu.iso_count and show_isos:
                 if selected:
                     iso_color = (*gold, 0.55)
@@ -3286,7 +3482,9 @@ class Viewport(QOpenGLWidget):
                     selected, anchor=gpu.anchor)
         self._line_width(1.0)
         if clips and mode in CAP_MODES:
-            self._draw_section_caps(mvp, view, clips, objects, locked_layers,
+            # each solid on its own: a batch is not one to cap
+            self._draw_section_caps(mvp, view, clips,
+                                    self._cull(mvp, single), locked_layers,
                                     mode)
 
     def _batched(self, objects, locked_layers, mode, light_background) -> list:
@@ -3336,7 +3534,7 @@ class Viewport(QOpenGLWidget):
                 finish()
                 items.append(obj)
                 continue
-            if look is not run_look:
+            if look is not run_look or not _shares_anchor(run, gpu):
                 finish()
                 run_look = look
             run.append((obj, gpu))
@@ -3354,7 +3552,8 @@ class Viewport(QOpenGLWidget):
         key = tuple(gpu.mesh_key for _obj, gpu in run)
         batch = self._batches.get(key)
         if batch is None:
-            batch = _Batch([obj.mesh for obj, _gpu in run], key)
+            batch = _Batch([obj.mesh for obj, _gpu in run], key,
+                           run[0][1].anchor)
             self._batches[key] = batch
             built.append(key)
         batch.look = look
@@ -3414,10 +3613,17 @@ class Viewport(QOpenGLWidget):
         return (fill, edge,
                 self.scene.screen_width_of(obj), iso)
 
-    def _draw_batch(self, batch, mvp, view, fill_alpha, show_edges, show_isos):
-        """A batch, as the object loop would draw each object in it."""
+    def _draw_batch(self, batch, mvp, view, fill_alpha, show_edges, show_isos,
+                    clips=()):
+        """A batch, as the object loop would draw each object in it: from
+        its anchor, when its objects are far from home, with the clip
+        planes re-expressed around it."""
         gpu = batch.gpu
         fill, edge, width, iso = batch.look
+        mvp = anchored(mvp, gpu.anchor)
+        view = anchored(view, gpu.anchor)
+        if clips:
+            self._want_clips(anchored_clips(clips, gpu.anchor))
         if fill_alpha > 0 and gpu.tri_count:
             prog = self._mesh_prog
             self._use(prog)
@@ -3672,6 +3878,7 @@ class Viewport(QOpenGLWidget):
         GL.glEnable(GL.GL_DEPTH_TEST)
 
     def _end_clips(self, clips):
+        self._clips_wanted = None
         for i in range(len(clips)):
             GL.glDisable(GL.GL_CLIP_DISTANCE0 + i)
         for prog in (self._mesh_prog, self._line_prog, self._thick_prog,
@@ -3954,6 +4161,21 @@ class Viewport(QOpenGLWidget):
             out[i, :2] = detail_project(entered, p)
         return out
 
+    def _world_per_pixel(self, point) -> float:
+        """How long one screen pixel is in the model, at `point`."""
+        cam = self.camera
+        h = max(self.height(), 1)
+        tan = math.tan(math.radians(cam.fov) / 2.0)
+        if cam.projection == "parallel":
+            return 2.0 * cam.distance * tan / h
+        forward = np.asarray(cam.target, float) - np.asarray(cam.position,
+                                                             float)
+        norm = float(np.linalg.norm(forward)) or 1.0
+        depth = float(np.dot(np.asarray(point, float)
+                             - np.asarray(cam.position, float),
+                             forward / norm))
+        return 2.0 * max(depth, 1e-9) * tan / h
+
     def _snap_to_draw(self):
         """The snap to mark: the one under a point being picked, or under a
         grip or sheet item being dragged, which lands where a pick would."""
@@ -4021,6 +4243,11 @@ class Viewport(QOpenGLWidget):
             else:
                 at = np.asarray(snap[0], float)
                 axes = self.camera.right_up()
+                # A fixed number of pixels where the snap is, not a share of
+                # the distance to the camera's target: with the target far
+                # off, as a file's own view often has it, a snap near the
+                # eye was marked a metre wide.
+                size = self._world_per_pixel(at) * SNAP_MARKER_PX
                 reach = size * 0.95
             segs = _snap_marker(snap[1], at, *axes, reach)
             if self._projecting():
@@ -4484,12 +4711,19 @@ class Viewport(QOpenGLWidget):
             on for _o, _n, on in self._clip_frames(self.view_key))
 
     def _set_clip_uniforms(self, prog, clips):
+        wanted, self._clips_wanted = self._clips_wanted, None
         self._use(prog)
+        self._clips_wanted = wanted
+        self._upload_clips(prog, clips)
+
+    def _upload_clips(self, prog, clips):
+        """Set the bound program's clip planes."""
         GL.glUniform1i(self._uloc(prog, "uClipCount"),
                        len(clips))
         if clips:
             GL.glUniform4fv(self._uloc(prog, "uClips"),
                             len(clips), np.asarray(clips, np.float32))
+        self._clips_held[prog] = clips
 
     def _ghost_geometry(self):
         """The pending result's triangles and lines, where they are drawn.
@@ -4894,7 +5128,9 @@ class Viewport(QOpenGLWidget):
     #: Modes that leave surface isocurves off unless asked. Rendered: a
     #: render showing the wire cage of every surface is not a render, and
     #: it is what GitHub #5 was looking at. Plaster, for the same reason.
-    _ISO_OFF_MODES = ("rendered", "plaster", "plastercolor")
+    #: Shaded too: the faces say where a surface is, and its isocurves over
+    #: a survey drawing are a grid of noise.
+    _ISO_OFF_MODES = ("shaded", "rendered", "plaster", "plastercolor")
 
     def shows_isocurves(self, mode: str | None = None) -> bool:
         """Whether surface isocurves are drawn in this pane.

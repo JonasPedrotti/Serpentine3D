@@ -116,9 +116,9 @@ def _plane_crossings(obj, eq) -> list:
     return [tuple(p) for p in a + (b - a) * t[:, None]]
 
 
-# A mesh offers its corners and the middles of the edges it draws while it
-# is small enough for that to stay quick; a scan of millions keeps only the
-# nearest point on its outline.
+# A mesh offers its corners while it is small enough for that to stay
+# quick. Not the middles of its edges, nor Near along them: a terrain or a
+# scan is every one of its triangles, and those caught the cursor anywhere.
 MESH_SNAPS_UP_TO = 200_000
 
 
@@ -151,16 +151,13 @@ def _static_snap_points(shape) -> list[tuple[tuple, str]]:
     if isinstance(shape, (TextShape, HatchShape, DimensionShape)):
         return shape.snap_points()
     # Any other mesh (an OBJ, an STL, a terrain) snaps at its corners, as
-    # ends, and at the middles of the edges it draws.
+    # ends, and only there.
     from .mesh import MeshShape, _weld
     if isinstance(shape, MeshShape):
         if len(shape.vertices) > MESH_SNAPS_UP_TO:
             return []
-        points, pairs = shape.edge_pairs(welding=_weld(shape.vertices))
-        out = [(tuple(float(c) for c in p), "end") for p in points]
-        out += [(tuple(float(c) for c in (points[a] + points[b]) / 2), "mid")
-                for a, b in pairs]
-        return out
+        points = _weld(shape.vertices)[0]
+        return [(tuple(float(c) for c in p), "end") for p in points]
 
     if shape.ShapeType() == occ.VERTEX:
         x, y, z = geometry.point_coords(shape)
@@ -212,6 +209,29 @@ def _static_snap_points(shape) -> list[tuple[tuple, str]]:
         except Exception:
             continue
     return out
+
+
+def _reaching(objects, camera, px, py, width, height, radius_px,
+              boxes=None) -> list:
+    """The objects whose box, seen on screen, comes within `radius_px` of
+    the cursor. One that is partly behind the eye is kept: its box does
+    not say where on screen it is. `boxes` are their boxes, if known."""
+    objects = list(objects)
+    if not objects:
+        return objects
+    if boxes is None:
+        boxes = np.array([obj.bbox() for obj in objects], float)
+    pick = np.array([[x, y, z] for x in (0, 1) for y in (0, 1)
+                     for z in (0, 1)])
+    corners = boxes[:, pick, [0, 1, 2]]                          # (N, 8, 3)
+    scr = np.asarray(camera.project(corners.reshape(-1, 3), width, height),
+                     float).reshape(len(objects), 8, 3)
+    behind = (scr[:, :, 2] <= 0).any(axis=1)
+    lo = scr[:, :, :2].min(axis=1) - radius_px
+    hi = scr[:, :, :2].max(axis=1) + radius_px
+    over = (lo[:, 0] <= px) & (px <= hi[:, 0]) \
+        & (lo[:, 1] <= py) & (py <= hi[:, 1])
+    return [obj for obj, keep in zip(objects, behind | over) if keep]
 
 
 def _intersections(objects) -> list[tuple]:
@@ -310,10 +330,13 @@ def _cursor_segments(objects, camera, px, py, width, height, radius_px,
     Solids come too. The edge of a box is not a curve object and it is still
     a line you can see, so a rail passing over one crosses something. A
     clipping plane cuts them back to what it leaves in sight.
+
+    Every object's edges are projected in one go: one call per object was
+    most of a mouse move on a drawing with hundreds near the cursor.
     """
     cursor = np.array([float(px), float(py)])
     r2 = float(radius_px) ** 2
-    segs = []
+    starts, ends, owners, names = [], [], [], []
     for obj in objects:
         mesh = getattr(obj, "mesh", None)
         edges = getattr(mesh, "edge_segments", None)
@@ -330,21 +353,28 @@ def _cursor_segments(objects, camera, px, py, width, height, radius_px,
         if clip:
             a3, b3, cut = _clipped_segments(a3, b3, clip)
             a3, b3 = a3[cut], b3[cut]
-        sa = camera.project(a3, width, height)
-        sb = camera.project(b3, width, height)
-        ab = sb[:, :2] - sa[:, :2]
-        ap = cursor[None, :] - sa[:, :2]
-        den = np.einsum("ij,ij->i", ab, ab)
-        t = np.clip(np.einsum("ij,ij->i", ap, ab)
-                    / np.where(den < 1e-12, 1e-12, den), 0.0, 1.0)
-        d = cursor[None, :] - (sa[:, :2] + ab * t[:, None])
-        keep = ((sa[:, 2] > 0) & (sb[:, 2] > 0)
-                & (np.einsum("ij,ij->i", d, d) <= r2))
-        for i in np.nonzero(keep)[0]:
-            segs.append((a3[i], b3[i], sa[i], sb[i]))
-            if len(segs) >= _APPARENT_LIMIT:
-                return segs
-    return segs
+        if not len(a3):
+            continue
+        starts.append(a3)
+        ends.append(b3)
+        owners.append(np.full(len(a3), len(names)))
+        names.append(obj.id)
+    if not starts:
+        return []
+    a3, b3 = np.concatenate(starts), np.concatenate(ends)
+    owner = np.concatenate(owners)
+    both = camera.project(np.concatenate([a3, b3]), width, height)
+    sa, sb = both[:len(a3)], both[len(a3):]
+    ab = sb[:, :2] - sa[:, :2]
+    ap = cursor[None, :] - sa[:, :2]
+    den = np.einsum("ij,ij->i", ab, ab)
+    t = np.clip(np.einsum("ij,ij->i", ap, ab)
+                / np.where(den < 1e-12, 1e-12, den), 0.0, 1.0)
+    d = cursor[None, :] - (sa[:, :2] + ab * t[:, None])
+    keep = ((sa[:, 2] > 0) & (sb[:, 2] > 0)
+            & (np.einsum("ij,ij->i", d, d) <= r2))
+    chosen = np.nonzero(keep)[0][:_APPARENT_LIMIT]
+    return [(a3[i], b3[i], sa[i], sb[i], names[owner[i]]) for i in chosen]
 
 
 def _apparent_crossings(objects, camera, px, py, width, height,
@@ -360,6 +390,50 @@ def _apparent_crossings(objects, camera, px, py, width, height,
     """
     segs = _cursor_segments(objects, camera, px, py, width, height,
                             radius_px, clip)
+    return _crossings_on_screen(segs, camera, touching=False)
+
+
+def _real_crossings(objects, camera, px, py, width, height, radius_px,
+                    clip=()) -> list[tuple]:
+    """Where two curves meet in space, near the cursor: the crossings of
+    their drawn segments that agree in depth too. Worked out over the
+    segments under the cursor, not every pair of curves in the drawing."""
+    curves = [obj for obj in objects if obj.kind == "curve"]
+    segs = _cursor_segments(curves, camera, px, py, width, height,
+                            radius_px, clip)
+    return _crossings_on_screen(segs, camera, touching=True)
+
+
+def _plane_cuts_near(objects, camera, px, py, width, height, radius_px,
+                     clip) -> list[tuple]:
+    """Where the clipping planes pass through the edges under the cursor:
+    the corners of the section a solid shows, the points a curve pierces
+    a plane at."""
+    if not clip:
+        return []
+    cut = [obj for obj in objects if not obj.clip_plane
+           and not isinstance(obj.shape, PointCloudShape)]
+    segs = _cursor_segments(cut, camera, px, py, width, height, radius_px)
+    if not segs:
+        return []
+    a = np.array([s[0] for s in segs], float)
+    b = np.array([s[1] for s in segs], float)
+    out = []
+    for eq in clip:
+        eq = np.asarray(eq, float)
+        da = a @ eq[:3] + eq[3]
+        db = b @ eq[:3] + eq[3]
+        cross = (da < 0) != (db < 0)
+        if cross.any():
+            t = da[cross] / (da[cross] - db[cross])
+            out.extend(tuple(q) for q in
+                       a[cross] + (b[cross] - a[cross]) * t[:, None])
+    return out
+
+
+def _crossings_on_screen(segs, camera, touching: bool) -> list[tuple]:
+    """Where segments of different objects cross on screen: those that
+    meet in depth as well when `touching`, those that pass apart if not."""
     if len(segs) < 2:
         return []
     flat = getattr(camera, "projection", "perspective") == "parallel"
@@ -373,6 +447,13 @@ def _apparent_crossings(objects, camera, px, py, width, height,
     # per mouse move, which is a fifth of a second of arithmetic done one
     # pair at a time and under a millisecond done all at once.
     i, j = np.triu_indices(len(segs), k=1)
+    if touching:
+        # a polyline's own segments meet at every corner it has
+        owner = np.array([s[4] for s in segs], object)
+        apart = owner[i] != owner[j]
+        i, j = i[apart], j[apart]
+        if not len(i):
+            return []
     p, r = sa[i, :2], sa[j, :2]
     u, v = sb[i, :2] - p, sb[j, :2] - r
     den = u[:, 0] * v[:, 1] - u[:, 1] * v[:, 0]
@@ -393,7 +474,8 @@ def _apparent_crossings(objects, camera, px, py, width, height,
     d2 = da2 + (db2 - da2) * t2
     # one pixel and one depth is one point in space, so the two agreeing on
     # depth means the curves genuinely touch
-    live &= np.abs(d1 - d2) > _APPARENT_GAP
+    if not touching:
+        live &= np.abs(d1 - d2) > _APPARENT_GAP
 
     k = np.nonzero(live)[0]
     if not len(k):
@@ -404,6 +486,12 @@ def _apparent_crossings(objects, camera, px, py, width, height,
     ki, kj = i[k], j[k]
     on_i = a3[ki] + (b3[ki] - a3[ki]) * t1[k][:, None]
     on_j = a3[kj] + (b3[kj] - a3[kj]) * t2[k][:, None]
+    if touching:
+        # meeting in space, to the drawing's tolerance: a depth this far
+        # out from home is too coarse to say it
+        from .tolerance import tol
+        met = np.linalg.norm(on_i - on_j, axis=1) <= tol()
+        return [tuple((p + q) / 2) for p, q in zip(on_i[met], on_j[met])]
     return [tuple(q) for q in np.where(first[:, None], on_i, on_j)]
 
 
@@ -438,6 +526,58 @@ class SnapIndex:
 
     # -- caches --
 
+    def _block(self, objects) -> dict:
+        """What the snaps need of these objects that a mouse move does not
+        change: kept while the scene and the objects stay as they are.
+
+        The points and boxes come from the shapes, which only change with
+        the revision; which objects are in sight changes with it too, or
+        with a layer switched, which the revision does not see. So the key
+        is those and not every object in the list, which on a survey
+        drawing was a millisecond of every mouse move."""
+        layers = getattr(self.scene, "layers", None)
+        if layers is None:
+            # a sheet's stand-in replaces what it changes without counting
+            # a revision, and holds few enough objects to name each one
+            key = ("each", tuple(map(id, objects)),
+                   id(getattr(self, "_features", None)))
+        else:
+            key = (self.scene.revision, len(objects),
+                   objects[0].id if objects else None,
+                   objects[-1].id if objects else None,
+                   getattr(self.scene, "showing_only", None),
+                   tuple((la.id, la.visible, la.parent)
+                         for la in layers.all()))
+        held = getattr(self, "_held_block", None)
+        if held is not None and held["key"] == key:
+            return held
+        clouds = [o for o in objects if isinstance(o.shape, PointCloudShape)]
+        plain = [o for o in objects
+                 if not isinstance(o.shape, PointCloudShape)]
+        points, kinds = [], []
+        for obj in plain:
+            for p, kind in self._points(obj):
+                points.append(p)
+                kinds.append(kind)
+        held = {"key": key, "clouds": clouds,
+                "points": np.asarray(points, float).reshape(-1, 3),
+                "kinds": np.array(kinds, object),
+                "boxes": (np.array([o.bbox() for o in objects], float)
+                          if objects else np.zeros((0, 2, 3))),
+                "by_types": None}
+        self._held_block = held
+        return held
+
+    def _fixed_points(self, block):
+        """The block's fixed points of the kinds switched on."""
+        on = tuple(sorted(k for k, v in self.types.items() if v))
+        cached = block["by_types"]
+        if cached is None or cached[0] != on:
+            keep = np.isin(block["kinds"], list(on)) if len(block["kinds"])                 else np.zeros(0, bool)
+            cached = (on, block["points"][keep], block["kinds"][keep])
+            block["by_types"] = cached
+        return cached[1], cached[2]
+
     def _points(self, obj) -> list:
         entry = self._cache.get(obj.id)
         mesh_key = obj.mesh.uid
@@ -447,13 +587,13 @@ class SnapIndex:
         return entry[1]
 
     def _intersection_points(self, objects) -> list:
-        rev = self.scene.revision
-        if self._int_cache is None or self._int_cache[0] != rev:
-            self._int_cache = (rev, _intersections(objects))
+        key = (self.scene.revision, tuple(obj.id for obj in objects))
+        if self._int_cache is None or self._int_cache[0] != key:
+            self._int_cache = (key, _intersections(objects))
         return self._int_cache[1]
 
     def _crossings_of(self, curve, objects) -> list:
-        rev = self.scene.revision
+        rev = (self.scene.revision, tuple(obj.id for obj in objects))
         cached = self._on_cache
         if cached is None or cached[0] is not curve or cached[1] != rev:
             self._on_cache = cached = (curve, rev, _crossings_of(curve, objects))
@@ -604,31 +744,39 @@ class SnapIndex:
                 pts.append(p)
                 kinds.append(kind)
 
-        for obj in objects:
-            if isinstance(obj.shape, PointCloudShape):
-                if self.types.get("point"):
-                    p = self._cloud_point(obj, camera, px, py, width, height,
-                                          radius_px, clip)
-                    if p is not None:
-                        pts.append(p)
-                        kinds.append("point")
-                continue
-            for p, kind in self._points(obj):
-                if self.types.get(kind):
+        block = self._block(objects)
+        for obj in block["clouds"]:
+            if self.types.get("point"):
+                p = self._cloud_point(obj, camera, px, py, width, height,
+                                      radius_px, clip)
+                if p is not None:
                     pts.append(p)
-                    kinds.append(kind)
+                    kinds.append("point")
+        head, head_kinds = pts, kinds
+        pts, kinds = [], []
+        close = None
+        if (self.types.get("int") or self.types.get("appint")
+                or self.types.get("near")):
+            # Only what reaches the cursor can meet there. Working out
+            # every crossing in the drawing took 25 seconds after each
+            # edit of a survey file, and a clipping plane's cuts through
+            # it 9 more for every step of a drag.
+            close = _reaching(objects, camera, px, py, width, height,
+                              radius_px, block["boxes"])
         if self.types.get("int"):
-            for p in (self._intersection_points(objects) if on_curve is None
-                      else self._crossings_of(on_curve, objects)):
+            for p in (_real_crossings(close, camera, px, py, width, height,
+                                      radius_px, clip) if on_curve is None
+                      else self._crossings_of(on_curve, close)):
                 pts.append(p)
                 kinds.append("int")
             # a clipping plane is a surface too, and where it cuts through
             # a curve, a solid or a mesh is as much an intersection
-            for p in self._cut_points(objects, clip):
+            for p in _plane_cuts_near(close, camera, px, py, width, height,
+                                      radius_px, clip):
                 pts.append(p)
                 kinds.append("int")
         if self.types.get("appint"):
-            for p in _apparent_crossings(objects, camera, px, py, width,
+            for p in _apparent_crossings(close, camera, px, py, width,
                                          height, radius_px, clip):
                 pts.append(p)
                 kinds.append("appint")
@@ -637,10 +785,17 @@ class SnapIndex:
                 pts.append(p)
                 kinds.append("perp")
 
+        # the fixed points of every object, gathered once for as long as
+        # the objects stay as they are, between what was picked and what
+        # this move found
+        fixed, fixed_kinds = self._fixed_points(block)
+        arr = np.concatenate([np.asarray(head, float).reshape(-1, 3), fixed,
+                              np.asarray(pts, float).reshape(-1, 3)])
+        kinds = np.concatenate([np.array(head_kinds, object), fixed_kinds,
+                                np.array(kinds, object)])
         best = None
         best_score = None
-        if pts:
-            arr = np.asarray(pts, float)
+        if len(arr):
             scr = camera.project(arr, width, height)
             d2 = (scr[:, 0] - px) ** 2 + (scr[:, 1] - py) ** 2
             d2[scr[:, 2] <= 0] = np.inf
@@ -654,7 +809,9 @@ class SnapIndex:
                     best = (tuple(arr[i]), kinds[i])
 
         if best is None and self.types.get("near"):
-            near = self._near(objects, camera, px, py, width, height,
+            # what reaches the cursor: over empty space, which is when this
+            # runs, every edge in the drawing was looked at on every move
+            near = self._near(close, camera, px, py, width, height,
                               radius_px, clip)
             if near is not None:
                 best = (near, "near")
@@ -682,11 +839,16 @@ class SnapIndex:
 
     def _near(self, objects, camera, px, py, width, height, radius_px,
               clip=()):
-        """Closest point on any curve's tessellation, in screen space."""
+        """Closest point on any curve's tessellation, in screen space.
+
+        Not on a mesh: its edges are every triangle of a terrain or a scan,
+        and Near on them caught the cursor wherever it went."""
         best = None
         best_d2 = radius_px ** 2
         cursor = np.array([px, py])
         for obj in objects:
+            if obj.kind == "mesh":
+                continue
             mesh = obj.mesh
             if not len(mesh.local_edges):
                 continue

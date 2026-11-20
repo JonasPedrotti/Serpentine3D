@@ -523,18 +523,9 @@ def _cleared(layout):
             row.widget().deleteLater()
 
 
-def _detail_label(detail, view_name: str, units: str) -> str:
-    """A detail as a list of views names it: the view it looks along and
-    its scale, which is what tells two details on one sheet apart."""
-    if detail.perspective:
-        return view_name
-    return f"{view_name} {detail.scale_text(units)}"
-
-
 class _ClipViews(QWidget):
-    """The views a clipping plane cuts, a tick each: the model panes, then
-    each sheet's details under the sheet's name (core/clipping.py), and
-    Paused above them, which stops it cutting any of them and keeps the
+    """The views a clipping plane cuts, a tick each: the model's views
+    (core/clipping.py), and Paused above them, which stops it cutting any of them and keeps the
     ticks for when it resumes. `switch(key, on)` and `pause(paused)` are
     told what was clicked."""
 
@@ -576,26 +567,10 @@ class _ClipViews(QWidget):
             self._rows.addWidget(box)
             self._boxes.append((key, box))
 
-        def heading(text):
-            label = QLabel(text)
-            label.setStyleSheet(f"color: {theme.TEXT_MUTED};")
-            self._rows.addWidget(label)
-
-        if panes:
-            heading("Model")
-            for key, label in panes:
-                tick(key, label)
-        for lay in layouts:
-            if not lay.details:
-                continue
-            heading(lay.name)
-            self._sheets.append(lay.name)
-            seen = Counter()
-            for detail in lay.details:
-                label = _detail_label(detail, view_name(detail), units)
-                seen[label] += 1
-                tick(detail.id, label if seen[label] == 1
-                     else f"{label} ({seen[label]})")
+        # The model's views only: whether a plane cuts a detail on a sheet
+        # is set on the detail, among the planes it lists.
+        for key, label in panes:
+            tick(key, label)
 
     # read by the tests, and a summary of what the rows say
     def views(self) -> list:
@@ -2025,6 +2000,13 @@ class PropertiesPanel(QWidget):
 
     def _clip_checkpoint(self):
         self.history.checkpoint("clipping plane views")
+
+    def refresh_clip_views(self):
+        """List the selected clipping plane's views again: a pane's view
+        has changed, and its tick is named by it."""
+        obj = self._selected()
+        if obj is not None and obj.clip_plane:
+            self._show_clip_views(obj)
 
     def _show_clip_views(self, obj):
         """A clipping plane's views, ticked where it cuts them."""

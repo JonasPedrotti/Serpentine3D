@@ -247,11 +247,23 @@ def _import_file(scene, path: str, ext: str, report, replace: bool = False,
         return len(named)
     if ext == ".3dm":
         from . import rhino
-        pages = []
+        pages, cameras = [], {}
+        # Opened into an empty drawing, the drawing takes the file's units,
+        # as Rhino would open it; added to one, the file is converted.
+        adopt = {} if replace and not scene.all() else None
         items = rhino.import_3dm(path, progress=report.part(0.0, 0.95),
-                                 units=scene.units, notes=notes, pages=pages)
+                                 units=scene.units, notes=notes, pages=pages,
+                                 cameras=cameras, adopt=adopt)
+        if adopt and adopt.get("units") != scene.units:
+            scene.units = adopt["units"]
+            # the new units' lettering, as a drawing set to them is given
+            scene.annot_style_set = None
         n = _add_items(scene, items, report.part(0.95, 1.0))
         _add_sheets(scene, pages, notes)
+        if replace:
+            # Opened, not imported: the panes look where Rhino's did
+            for key, state in cameras.items():
+                scene.view_settings.pane(key)["camera"] = state
         return n
     if ext == ".skp":
         from . import skp
@@ -290,6 +302,9 @@ def _add_items(scene, items: list, adding) -> int:
         if meta.get("user_text"):
             # each object its own copy: several share one meta
             added.user_text = dict(meta["user_text"])
+        if meta.get("clip_plane"):
+            added.clip_plane = {**meta["clip_plane"],
+                                "on_in": list(meta["clip_plane"]["on_in"])}
         adding.tick(done / count, f"Adding object {done} of {count}")
     return len(items)
 

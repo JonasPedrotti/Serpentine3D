@@ -84,6 +84,8 @@ SEAM = "#1b1c1f"               # the dark line between two parts of a panel
 SHADED_AMBIENT = 0.30
 FILL_FLOOR = 0.42
 FILL_KNEE = 0.50
+# Below this on every channel a colour is black, and is shaded white.
+BLACK_BELOW = 0.5 / 255.0
 
 
 def shaded_fill(color):
@@ -103,6 +105,10 @@ def shaded_fill(color):
     """
     r, g, b = color[0], color[1], color[2]
     v = max(r, g, b)
+    if v < BLACK_BELOW:
+        # Black is what most models are left in, not a colour anyone chose
+        # to see a surface in: Rhino shades it white, and so does this.
+        return (1.0, 1.0, 1.0)
     if v >= FILL_KNEE:
         return (r, g, b)
     lift = FILL_FLOOR * (1.0 - v / FILL_KNEE)

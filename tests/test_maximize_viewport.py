@@ -168,3 +168,24 @@ def test_the_view_menu_carries_it_too(win):
     act = _menu_action(view_menu, "Maximize Viewport")
     assert act is not None
     assert act.shortcut().toString() == "Ctrl+M"
+
+
+# -- a new document opens on Perspective alone --
+
+def test_a_new_document_opens_on_perspective_maximised(win):
+    win._set_active_viewport(win.aux_viewports[0])
+    win._file_new()
+
+    assert win.maximized_viewport is win.viewport
+    assert not win._primary_dock.isHidden()
+    assert all(_dock(aux).isHidden() for aux in win.aux_viewports)
+    # and the four panes are behind it
+    assert not win.toggle_maximized_viewport()
+    assert all(not _dock(aux).isHidden() for aux in win.aux_viewports)
+
+
+def test_a_new_model_from_the_welcome_screen_does_too(win):
+    win.start_new("m")
+
+    assert win.maximized_viewport is win.viewport
+    assert all(_dock(aux).isHidden() for aux in win.aux_viewports)

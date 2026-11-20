@@ -21,6 +21,10 @@ def test_a_black_object_is_not_shaded_black():
     assert max(fill) > 0.0, "black stays black: nothing to see"
 
 
+def test_a_black_object_is_shaded_white_as_in_rhino():
+    assert theme.shaded_fill((0.0, 0.0, 0.0)) == (1.0, 1.0, 1.0)
+
+
 def test_a_black_object_reads_as_a_solid_against_the_background():
     """Visible means two things: brighter than the background overall, and
     with enough range between its lit and unlit sides to show its form."""
@@ -53,8 +57,9 @@ def test_the_lift_never_leaves_the_valid_range():
 
 
 def test_darker_colours_are_lifted_at_least_as_much():
-    """Monotonic, so the lift can't invert which of two greys looks lighter."""
-    greys = [i / 20 for i in range(21)]
+    """Monotonic, so the lift can't invert which of two greys looks lighter.
+    Black itself is shaded white, and is not one of the greys."""
+    greys = [i / 20 for i in range(1, 21)]
     fills = [max(theme.shaded_fill((g, g, g))) for g in greys]
     assert fills == sorted(fills), fills
 

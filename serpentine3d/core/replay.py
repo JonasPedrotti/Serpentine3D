@@ -250,6 +250,9 @@ class Replayer:
             if obj is None:
                 self._mismatches.append(f"{r['id']}: missing after replay")
                 continue
+            if r.get("deferred"):
+                # not yet converted when recorded; its kind was a guess
+                continue
             if obj.kind != r["kind"]:
                 self._mismatches.append(
                     f"{r['id']}: kind {r['kind']} became {obj.kind}")

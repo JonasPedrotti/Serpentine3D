@@ -435,7 +435,9 @@ def _faceted_display(mesh: MeshShape, dm, welding):
     # an edge two triangles share is drawn once, matched by where its ends
     # stand, so a mesh stored unwelded is drawn the same
     points, pairs = mesh.edge_pairs(welding=welding)
-    dm.edge_segments = np.asarray(points[pairs], np.float32).reshape(-1, 2, 3)
+    # in float64: placed around the mesh's own origin, not cast first, which
+    # put a mesh at survey coordinates on a half-metre grid
+    dm.edge_segments = np.asarray(points[pairs], float).reshape(-1, 2, 3)
     dm.edge_of_segment = np.arange(len(pairs), dtype=np.int32)
     count = len(tris) * 3
     dm.vertices = corners.reshape(count, 3)

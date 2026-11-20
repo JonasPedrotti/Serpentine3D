@@ -35,6 +35,15 @@ class History:
             if self.on_discard is not None:
                 self.on_discard()
 
+    def revert_checkpoint(self):
+        """Put the scene back as the most recent checkpoint had it and drop
+        that checkpoint: an operation that changed things, then gave up."""
+        if self._undo:
+            _label, snap = self._undo.pop()
+            self.scene.restore(snap)
+            if self.on_discard is not None:
+                self.on_discard()
+
     @property
     def can_undo(self) -> bool:
         return bool(self._undo)

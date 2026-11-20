@@ -368,18 +368,20 @@ def test_a_plane_lists_the_views_it_cuts(window):
     assert props.form.isRowVisible(props.clip_views)
     views = props.clip_views.views()
     keys = [key for key, _label, _on in views]
-    assert set(keys[:4]) == {"perspective", "top", "front", "right"}
-    assert keys[4:] == [det.id]
+    # the model's views only; a detail sets its own planes
+    assert keys == ["perspective", "top", "front", "right"]
+    assert [label for _k, label, _on in views] == [
+        "Perspective", "Top", "Front", "Right"]
     assert {key: on for key, _l, on in views}["top"] is False
     assert all(on for key, _l, on in views if key != "top")
-    assert props.clip_views.sheets() == ["Sheet"]
+    assert props.clip_views.sheets() == []
 
-    props.clip_views.set_view(det.id, False)
-    assert w.scene.get(plane.id).clip_plane["off_in"] == ["top", det.id]
+    props.clip_views.set_view("front", False)
+    assert w.scene.get(plane.id).clip_plane["off_in"] == ["top", "front"]
     props.clip_views.set_view("top", True)
-    assert w.scene.get(plane.id).clip_plane["off_in"] == [det.id]
+    assert w.scene.get(plane.id).clip_plane["off_in"] == ["front"]
     w.history.undo()
-    assert w.scene.get(plane.id).clip_plane["off_in"] == ["top", det.id]
+    assert w.scene.get(plane.id).clip_plane["off_in"] == ["top", "front"]
 
 
 def test_a_plane_can_be_paused_from_its_properties(window):
@@ -507,3 +509,18 @@ def test_enter_on_nothing_pauses_every_plane_as_the_prompt_says(env):
     proc.provide_text("")
     assert not proc.busy
     assert not any(scene.get(o.id).clip_plane["enabled"] for o in (a, b))
+
+
+def test_a_pane_turned_to_another_view_is_ticked_by_it(window):
+    """The tick is the pane's: turned from Top to Left, it reads Left."""
+    w = window
+    w.set_view_layout("quad")
+    plane = _add_plane(w.scene, off_in=["top"])
+    w.selection.set([plane.id])
+    QApplication.processEvents()
+    top = next(vp for vp in w._model_panes() if vp.view_key == "top")
+    top.set_view("left")
+    QApplication.processEvents()
+    views = w.properties.clip_views.views()
+    assert ("top", "Left", False) in views
+    assert "Top" not in [label for _k, label, _on in views]
