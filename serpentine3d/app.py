@@ -82,7 +82,8 @@ class MainWindow(QMainWindow):
         from .ui.title_bar import FramelessFrame, TitleBar
         self._title_bar = TitleBar(
             self, lambda: self._file_new(), lambda: self.recent_files(),
-            lambda path: self._open_recent(path))
+            lambda path: self._open_recent(path),
+            lambda: not self.scene.all() and not self.ctx.current_path)
         self._frame = FramelessFrame(self, self._title_bar)
         self.resize(1440, 900)
         self.setAcceptDrops(True)
@@ -2294,10 +2295,8 @@ class MainWindow(QMainWindow):
     # formats.
 
     def _file_new(self):
-        if self.scene.all():
-            ret = QMessageBox.question(self, "New", "Clear the scene?")
-            if ret != QMessageBox.StandardButton.Yes:
-                return
+        if not self._save_changes_first():
+            return
         self.history.checkpoint("new")
         self.scene.clear()
         self.apply_view_settings()

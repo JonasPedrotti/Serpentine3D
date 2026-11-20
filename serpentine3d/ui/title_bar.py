@@ -82,10 +82,12 @@ class TitleBar(QWidget):
     button whose menu starts a new one or opens a recent one, and the
     window buttons on the right."""
 
-    def __init__(self, window, new_document, recent_files, open_recent):
+    def __init__(self, window, new_document, recent_files, open_recent,
+                 is_blank=lambda: False):
         super().__init__(window)
         self._window = window
         self._new_document = new_document
+        self._is_blank = is_blank
         self._recent_files = recent_files
         self._open_recent = open_recent
         self.setObjectName("titleBar")
@@ -156,8 +158,9 @@ class TitleBar(QWidget):
     def _fill_document_menu(self):
         menu = self.document_menu
         menu.clear()
-        menu.addAction("+  New Document", self._new_document)
-        menu.addSeparator()
+        if not self._is_blank():
+            menu.addAction("+  New Document", self._new_document)
+            menu.addSeparator()
         files = self._recent_files()
         if not files:
             menu.addAction("(no recent documents)").setEnabled(False)
