@@ -3826,7 +3826,10 @@ def run_app(app, splash=None):
     if splash:
         splash.message("Preparing workspace…", 0.7)
     window = MainWindow()
-    app.installEventFilter(FileOpenRelay(window))
+    if sys.platform == "darwin":
+        # Only macOS sends a QFileOpenEvent. Elsewhere the filter only cost
+        # a Python call per event, and Qt's own threads crashed in it.
+        app.installEventFilter(FileOpenRelay(window))
 
     # RPC bridge for the MCP server (unless disabled)
     if os.environ.get("SERP3D_NO_RPC") != "1":
