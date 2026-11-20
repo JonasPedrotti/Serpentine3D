@@ -1668,6 +1668,7 @@ class Viewport(QOpenGLWidget):
         self._ao = None
         self._ao_failed = False
         self._ao_draws = None
+        self._ao_caps = None
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         scene.add_listener(self.update)
@@ -1923,13 +1924,15 @@ class Viewport(QOpenGLWidget):
                 self._draw_grid(mvp64)
             occlude = self.shows_ambient_occlusion()
             self._ao_draws = [] if occlude else None
+            self._ao_caps = [] if occlude else None
             try:
                 self._draw_objects(mvp64, view)
             finally:
                 draws, self._ao_draws = self._ao_draws, None
+                caps, self._ao_caps = self._ao_caps, None
             if occlude and draws:
                 self._draw_ambient_occlusion(draws, proj,
-                                             self._ao_ground(mvp))
+                                             self._ao_ground(mvp), caps)
             if parallel:
                 GL.glDepthFunc(GL.GL_LEQUAL)
             self._draw_image_planes(mvp)
@@ -1991,7 +1994,7 @@ class Viewport(QOpenGLWidget):
                          (x0, y0, z), (x1, y1, z), (x0, y1, z)])
         return rebased(tris, self._frame_anchor), mvp
 
-    def _draw_ambient_occlusion(self, draws, proj, ground=None):
+    def _draw_ambient_occlusion(self, draws, proj, ground=None, caps=()):
         """Replay the frame's opaque faces into a depth of our own and
         darken the picture by what that depth says is hidden from the sky.
         A driver that cannot do it loses the shading, not the frame."""
@@ -2025,6 +2028,23 @@ class Viewport(QOpenGLWidget):
                 GL.glDisable(GL.GL_CLIP_DISTANCE0 + i)
             clip_count = 0
             self._set_clip_uniforms(prog, [])
+            # The caps too: without them the occlusion was worked out from
+            # the inside of every cut solid, and shaded what was cut away.
+            if caps:
+                GL.glEnable(GL.GL_STENCIL_TEST)
+                try:
+                    for (cmvp, plane, gpus, others, style, ppu,
+                         extent) in caps:
+                        self._count_into_stencil(cmvp, plane, gpus)
+                        self._lay_cap(cmvp, plane, others, style, ppu,
+                                      extent)
+                finally:
+                    GL.glDisable(GL.GL_STENCIL_TEST)
+                    for k in range(_caps.MAX_PLANES):
+                        GL.glDisable(GL.GL_CLIP_DISTANCE0 + k)
+                    GL.glDepthMask(True)
+                    GL.glEnable(GL.GL_DEPTH_TEST)
+                self._use(prog)
             if ground is not None:
                 tris, mvp = ground
                 self._preview.update(tris)
@@ -3641,7 +3661,9 @@ class Viewport(QOpenGLWidget):
                               GL.GL_UNSIGNED_INT, ctypes.c_void_p(0))
             GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
             if self._ao_draws is not None and fill_alpha >= 1.0:
-                self._ao_draws.append((gpu.tri_vao, gpu.tri_count, mvp, []))
+                self._ao_draws.append((gpu.tri_vao, gpu.tri_count, mvp,
+                                       anchored_clips(list(clips),
+                                                      gpu.anchor)))
         if gpu.line_count and (show_edges or not gpu.tri_count):
             self._draw_edges(gpu, mvp, edge, width)
         if gpu.iso_count and show_isos:
@@ -3700,10 +3722,13 @@ class Viewport(QOpenGLWidget):
                     self._cap_color(obj, locked_layers, mode)))
                     for obj, _gpu in cut]
                 for style, ids in _caps.group_by_style(looks):
-                    self._count_into_stencil(
-                        mvp, plane, [by_id[oid][1] for oid in ids])
+                    gpus = [by_id[oid][1] for oid in ids]
+                    self._count_into_stencil(mvp, plane, gpus)
                     self._lay_cap(mvp, plane, others, style, ppu,
                                   reach * 1.5 + 1.0)
+                    if self._ao_caps is not None:
+                        self._ao_caps.append((mvp, plane, gpus, others,
+                                              style, ppu, reach * 1.5 + 1.0))
                 self._draw_cut_lines(mvp, plane, others,
                                      [(obj, fills[obj.id]) for obj, _ in cut])
         finally:

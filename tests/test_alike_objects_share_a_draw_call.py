@@ -492,3 +492,19 @@ def test_merging_leaves_the_originals_alone():
     before = a.triangles.copy()
     merged([a, a])
     assert np.array_equal(a.triangles, before)
+
+@pytest.mark.parametrize("far", [False, True])
+def test_a_clipped_batch_is_clipped_for_the_ambient_occlusion_too(
+        gl, monkeypatch, far):
+    """The occlusion's own depth was drawn from a batch without the planes,
+    so it shaded the halves they had cut away."""
+    view = _view(40, far=far)
+    plane = np.array((0.0, 0.0, 1.0, 100.0), np.float32)
+    monkeypatch.setattr(view, "_clip_vectors", lambda: [plane])
+    monkeypatch.setattr(view, "_draw_section_caps", lambda *a: None)
+    view._ao_draws = []
+    _frame_draws(gl, view)
+    draws, view._ao_draws = view._ao_draws, None
+    assert draws
+    for vao, count, mvp, clips in draws:
+        assert len(clips) == 1, "an occlusion draw left unclipped"

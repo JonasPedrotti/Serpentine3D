@@ -17,6 +17,7 @@ import ctypes
 
 import numpy as np
 from OpenGL import GL
+from OpenGL.raw.GL.VERSION.GL_1_0 import glTexImage2D as _raw_tex_image_2d
 
 KERNEL_SIZE = 24
 #: How far round a point is searched for what hides it, in screen pixels,
@@ -183,8 +184,9 @@ class AmbientOcclusion:
     def _texture(self, internal, fmt, kind, w, h):
         tex = GL.glGenTextures(1)
         GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
-        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, internal, w, h, 0, fmt, kind,
-                        None)
+        # unwrapped: PyOpenGL has no array type for a packed depth-stencil
+        _raw_tex_image_2d(GL.GL_TEXTURE_2D, 0, internal, w, h, 0, fmt, kind,
+                          None)
         for p in (GL.GL_TEXTURE_MIN_FILTER, GL.GL_TEXTURE_MAG_FILTER):
             GL.glTexParameteri(GL.GL_TEXTURE_2D, p, GL.GL_NEAREST)
         for p in (GL.GL_TEXTURE_WRAP_S, GL.GL_TEXTURE_WRAP_T):
@@ -194,12 +196,14 @@ class AmbientOcclusion:
 
     def _resize(self, w: int, h: int):
         self._release_targets()
-        self.depth_tex = self._texture(GL.GL_DEPTH_COMPONENT24,
-                                       GL.GL_DEPTH_COMPONENT, GL.GL_FLOAT,
-                                       w, h)
+        # with a stencil, which the section caps are laid in by
+        self.depth_tex = self._texture(GL.GL_DEPTH24_STENCIL8,
+                                       GL.GL_DEPTH_STENCIL,
+                                       GL.GL_UNSIGNED_INT_24_8, w, h)
         self.depth_fbo = GL.glGenFramebuffers(1)
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.depth_fbo)
-        GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_DEPTH_ATTACHMENT,
+        GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER,
+                                  GL.GL_DEPTH_STENCIL_ATTACHMENT,
                                   GL.GL_TEXTURE_2D, self.depth_tex, 0)
         GL.glDrawBuffer(GL.GL_NONE)
         GL.glReadBuffer(GL.GL_NONE)
@@ -230,7 +234,7 @@ class AmbientOcclusion:
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.depth_fbo)
         GL.glViewport(0, 0, w, h)
         GL.glDepthMask(True)
-        GL.glClear(GL.GL_DEPTH_BUFFER_BIT)
+        GL.glClear(GL.GL_DEPTH_BUFFER_BIT | GL.GL_STENCIL_BUFFER_BIT)
 
     def apply(self, target_fbo: int, viewport, proj: np.ndarray,
               pixel_ratio: float = 1.0):
