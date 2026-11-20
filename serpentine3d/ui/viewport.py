@@ -4411,6 +4411,20 @@ class Viewport(QOpenGLWidget):
             self._draw_lines(self._preview, mvp, theme.DIRECTION_ARROW, 1.5)
         GL.glEnable(GL.GL_DEPTH_TEST)
 
+    def _clip_frames_in_sight(self) -> list:
+        """The shown clipping planes whose middle is in sight: not cut away
+        by another plane, and not covered by a face in front. A plane out
+        of sight takes its arrow with it."""
+        cutting = [(np.asarray(o, float), np.asarray(n, float))
+                   for o, n, on in self._clip_frames() if on][:4]
+        frames = [f for f in self._clip_frames(shown=True)
+                  if not _cut_away_by_another(f, cutting)]
+        hidden = self._cover_test(self.camera, self.display_mode,
+                                  self._clip_vectors()) if frames else None
+        if hidden is None:
+            return frames
+        return [f for f in frames if not hidden(f[0])]
+
     def _draw_clip_normals(self, mvp):
         """One arrow per clipping plane, pointing toward the visible side.
 
@@ -4418,10 +4432,11 @@ class Viewport(QOpenGLWidget):
         both sides, so until this was drawn there was nothing on screen that
         said which half of the model the plane was about to take. Drawn over
         the top of everything, because a plane lying flat against a face is
-        exactly when you need to be told. Seen head on, a ring with a cross
-        or a dot stands in for the arrow (`clip_end_on_marks`).
+        exactly when you need to be told, unless an object in front hides
+        the plane (`_clip_frames_in_sight`). Seen head on, a ring with a
+        cross or a dot stands in for the arrow (`clip_end_on_marks`).
         """
-        frames = self._clip_frames(shown=True)
+        frames = self._clip_frames_in_sight()
         if not frames:
             return
         w, h = self.width(), self.height()
@@ -5434,19 +5449,66 @@ class Viewport(QOpenGLWidget):
         """A test of whether a snap point is covered by a face in front of
         it, or None where nothing covers anything: wireframe and ghosted
         show every edge, so every edge snaps."""
-        if self._pick_mode() in ("wireframe", "ghosted"):
+        return self._cover_test(self._eye(), self._pick_mode(), clip,
+                                exclude_ids)
+
+    def _occluders(self) -> tuple:
+        """The objects whose faces hide what lies behind them, with their
+        boxes as (N, 2, 3), kept until the scene, what is shown or the
+        meshes that have arrived change. Only objects already meshed: one
+        still on its way is drawn as a box, and meshing every object here
+        froze the window on a large drawing."""
+        key = (self.scene.revision, self._tess_epoch, self._visible_layers(),
+               self.scene.showing_only, self.space,
+               id(self.layout_view._entered()) if self.space != "model"
+               else None)
+        held = getattr(self, "_occluders_held", None)
+        if (held is None or held[0] != key
+                or any(o.mesh_ready for o in held[3])):
+            objs, boxes, waiting = [], [], []
+            for obj in self._shown_here():
+                if (obj.clip_plane is not None
+                        or (obj.material or {}).get("opacity", 1.0) < 1.0):
+                    continue
+                if not obj.mesh_ready:
+                    waiting.append(obj)
+                    continue
+                mesh = obj.mesh
+                if mesh.is_cloud or not mesh.has_faces:
+                    continue
+                bounds = mesh.bounds()
+                if bounds is None:
+                    continue
+                objs.append(obj)
+                boxes.append(bounds)
+            held = (key, objs, np.asarray(boxes, float).reshape(-1, 2, 3),
+                    waiting)
+            self._occluders_held = held
+        return held[1], held[2]
+
+    def _cover_test(self, eye, mode, clip=(), exclude_ids=None):
+        if mode in ("wireframe", "ghosted"):
             return None
         from ..core.snaps import in_sight
-        exclude = set(exclude_ids or ())
-        eye = self._eye()
         w, h = self.width(), self.height()
-        occluders = [
-            obj for obj in self._shown_here()
-            if obj.id not in exclude and obj.clip_plane is None
-            and (obj.material or {}).get("opacity", 1.0) >= 1.0
-            and not obj.mesh.is_cloud and obj.mesh.has_faces]
+        found = []
+
+        def occluders():
+            # asked for at the first point, after the snaps have meshed
+            # what they look at
+            if not found:
+                objs, boxes = self._occluders()
+                if exclude_ids:
+                    keep = [i for i, o in enumerate(objs)
+                            if o.id not in exclude_ids]
+                    objs, boxes = [objs[i] for i in keep], boxes[keep]
+                found.append((objs, boxes))
+            return found[0]
 
         def hidden(point) -> bool:
+            objs, boxes = occluders()
+            if not objs:
+                return False
             p = np.asarray(point, float)
             px, py, depth = eye.project(p[None, :], w, h)[0]
             if depth <= 0:
@@ -5462,9 +5524,8 @@ class Viewport(QOpenGLWidget):
             pixels = math.hypot(step[0] - px, step[1] - py)
             per_pixel = reach * 1e-3 / pixels if pixels > 1e-9 else 0.0
             slack = max(4.0 * per_pixel, same_place_tolerance(reach))
-            for obj in self._pick_candidates(occluders, px - 1, py - 1,
-                                             px + 1, py + 1, w, h):
-                mesh = obj.mesh
+            for i in _boxes_on_ray(boxes, origin, direction, reach):
+                mesh = objs[i].mesh
                 tris, _ = self._near_triangles(mesh, px - 1, py - 1,
                                                px + 1, py + 1, w, h)
                 if not len(tris):
@@ -7420,6 +7481,39 @@ def _segments_touch_rect(a: np.ndarray, b: np.ndarray, rect) -> np.ndarray:
         t0 = np.where(enters, np.maximum(t0, t), t0)
         t1 = np.where(leaves, np.minimum(t1, t), t1)
     return alive & (t0 <= t1)
+
+
+def _cut_away_by_another(frame, cutting) -> bool:
+    """Whether a plane's middle lies on the side another plane takes away.
+
+    In doubles off the frames rather than through the shader's float32
+    equations, which at survey coordinates are off by more than a plane
+    lying on another needs."""
+    at = np.asarray(frame[0], float)
+    own = np.asarray(frame[1], float)
+    for o, n in cutting:
+        if np.allclose(o, at) and np.allclose(n, own):
+            continue
+        size = float(np.linalg.norm(n)) or 1.0
+        tol = 1e-9 * max(1.0, float(np.abs(at).max()), float(np.abs(o).max()))
+        if np.dot(at - o, n) / size > tol:
+            return True
+    return False
+
+
+def _boxes_on_ray(boxes, origin, direction, reach) -> np.ndarray:
+    """Indices of the boxes (N, 2, 3) the ray passes through before
+    `reach`, nearest first."""
+    if not len(boxes):
+        return np.zeros(0, int)
+    d = np.where(np.abs(direction) < 1e-12, 1e-12, direction)
+    t0 = (boxes[:, 0, :] - origin) / d
+    t1 = (boxes[:, 1, :] - origin) / d
+    near = np.minimum(t0, t1).max(axis=1)
+    far = np.maximum(t0, t1).min(axis=1)
+    pad = 1e-9 * max(abs(reach), 1.0)
+    hit = np.flatnonzero((near <= far + pad) & (far >= 0) & (near < reach))
+    return hit[np.argsort(near[hit])]
 
 
 def _triangles_touch_rect(tri: np.ndarray, rect) -> np.ndarray:
