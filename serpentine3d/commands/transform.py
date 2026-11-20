@@ -75,19 +75,22 @@ def _preview_of(ctx, held, objs, fn, action=None):
     shapes = dict(ctx._moved_control_points(held.get("cv", {}), fn))
     shapes.update(ctx.moved_mesh_parts(held.get("mesh", {}), fn))
     segments = held.get("segment") or {}
+    curve_points = held.get("curve_point") or {}
     at = _point_map(fn)
-    for obj_id, idxs in segments.items():
+    for obj_id in dict.fromkeys(list(segments) + list(curve_points)):
         obj = ctx.scene.get(obj_id)
         if obj is None:
             continue
         try:
             shapes[obj_id] = g.transform_segments(
-                shapes.get(obj_id, obj.shape), idxs, at)
+                shapes.get(obj_id, obj.shape), segments.get(obj_id, []), at,
+                vertices=curve_points.get(obj_id, []))
         except g.GeometryError:
             continue
     faces = held.get("face") or {}
     edges = held.get("edge") or {}
-    for obj_id in dict.fromkeys(list(faces) + list(edges)):
+    points = held.get("point") or {}
+    for obj_id in dict.fromkeys(list(faces) + list(edges) + list(points)):
         obj = ctx.scene.get(obj_id)
         if obj is None:
             continue
@@ -99,7 +102,8 @@ def _preview_of(ctx, held, objs, fn, action=None):
                 shape = g.copy_shape(shape)
             shapes[obj_id] = _solid_parts_shape(
                 shape, faces.get(obj_id, []),
-                edges.get(obj_id, []), fn, action)
+                edges.get(obj_id, []), fn, action,
+                vidx=points.get(obj_id, []))
         except g.GeometryError:
             continue
     return _ghost_of(list(shapes.values()))
@@ -175,23 +179,31 @@ def _do_to_parts(ctx, held, fn, verb, tail, action):
         if n:
             done.append(f"{n} mesh part(s)")
 
-    segments = held.get("segment")
-    if segments:
-        n = 0
+    segments = held.get("segment") or {}
+    curve_points = held.get("curve_point") or {}
+    if segments or curve_points:
+        n = m = 0
         at = _point_map(fn)
-        for obj_id, idxs in segments.items():
+        for obj_id in dict.fromkeys(list(segments) + list(curve_points)):
             obj = ctx.scene.get(obj_id)
             if obj is None:
                 continue
+            idxs = segments.get(obj_id, [])
+            vidx = curve_points.get(obj_id, [])
             try:
                 ctx.scene.replace_shape(
-                    obj_id, g.transform_segments(obj.shape, idxs, at))
+                    obj_id, g.transform_segments(obj.shape, idxs, at,
+                                                 vertices=vidx))
                 n += len(idxs)
+                m += len(vidx)
             except g.GeometryError as exc:
                 refused.append(f"{obj.name}: {exc}")
                 keep += [(obj_id, "edge", i) for i in idxs]
+                keep += [(obj_id, "vertex", i) for i in vidx]
         if n:
             done.append(f"{n} curve segment(s)")
+        if m:
+            done.append(f"{m} curve point(s)")
 
     # A solid's held faces and edges are one change, not a sequence: moving
     # one part tilts the faces beside it and carries the next some of the
@@ -199,18 +211,21 @@ def _do_to_parts(ctx, held, fn, verb, tail, action):
     # a box 20 high). geometry.move_parts asks which corners move instead.
     faces = held.get("face") or {}
     edges = held.get("edge") or {}
+    points = held.get("point") or {}
     doing = verb.lower().rstrip("d")
-    for obj_id in dict.fromkeys(list(faces) + list(edges)):
+    for obj_id in dict.fromkeys(list(faces) + list(edges) + list(points)):
         obj = ctx.scene.get(obj_id)
         if obj is None:
             continue
         fidx = list(faces.get(obj_id, []))
         eidx = list(edges.get(obj_id, []))
+        vidx = list(points.get(obj_id, []))
         hold = ([(obj_id, "face", i) for i in fidx]
-                + [(obj_id, "edge", i) for i in eidx])
+                + [(obj_id, "edge", i) for i in eidx]
+                + [(obj_id, "vertex", i) for i in vidx])
         try:
             shape = _solid_parts_shape(obj.shape, fidx, eidx, fn,
-                                       action, doing)
+                                       action, doing, vidx=vidx)
             ctx.scene.replace_shape(obj_id, shape)
             if kind != "setpt" and fidx and len(fidx) == len(g.faces_of(obj.shape)):
                 done.append(f"{obj.name} (every face held)")
@@ -220,6 +235,8 @@ def _do_to_parts(ctx, held, fn, verb, tail, action):
                     what.append(f"{len(fidx)} face(s)")
                 if eidx:
                     what.append(f"{len(eidx)} solid edge(s)")
+                if vidx:
+                    what.append(f"{len(vidx)} point(s)")
                 done.append(" and ".join(what))
             else:
                 done.append("1 face")
@@ -238,16 +255,24 @@ def _do_to_parts(ctx, held, fn, verb, tail, action):
         ctx.echo("Nothing held could be transformed.")
 
 
-def _solid_parts_shape(shape, fidx, eidx, fn, action, doing="transform"):
+def _solid_parts_shape(shape, fidx, eidx, fn, action, doing="transform",
+                       vidx=()):
     """The same pure parent rebuild for a preview and a completed edit."""
     if action and action[0] == "setpt":
+        if vidx:
+            raise g.GeometryError("a point of a solid can be moved, but "
+                                  "not set")
         return g.set_part_points(
             shape, list(fidx), list(eidx), tuple(action[1]), tuple(action[2]))
     if fidx and len(fidx) == len(g.faces_of(shape)):
         # A band holding every face means the whole parent, for any command.
         return fn(shape)
     if action and action[0] == "move":
-        return g.move_parts(shape, fidx, eidx, tuple(action[1]))
+        return g.move_parts(shape, fidx, eidx, tuple(action[1]),
+                            vertices=vidx)
+    if vidx:
+        raise g.GeometryError(
+            f"a point of a solid can be moved, but not {doing}d")
     if eidx:
         raise g.GeometryError(
             f"an edge of a solid can be moved, but not {doing}d")

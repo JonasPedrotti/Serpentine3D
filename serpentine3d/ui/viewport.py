@@ -183,6 +183,12 @@ VIEW_SETTLE = 0.5
 # ARROW_COUNT is how many go on a curve, and roughly how many on each face of
 # a surface: enough to see the run at a glance, few enough to see through.
 ARROW_PX = 22.0
+# What has points a Ctrl+Shift click can hold: a point object is its point,
+# and a picture's corners or a hatch's are not something to drag about.
+PICKED_POINT_KINDS = ("curve", "surface", "solid", "compound", "mesh")
+# How close on the screen two points of different objects must be drawn for
+# a Ctrl+Shift click to ask which was meant.
+STACK_PX = 3.0
 # What a clipping plane leaves an edge on where it cuts: everything with
 # faces, which a picture, a hatch or lettering is not.
 CUT_EDGE_KINDS = ("solid", "surface", "mesh", "compound")
@@ -1944,6 +1950,7 @@ class Viewport(QOpenGLWidget):
             GL.glDepthFunc(GL.GL_LEQUAL)
         self._draw_pending(mvp)
         self._draw_control_points(mvp)
+        self._draw_held_points(mvp)
         self._draw_combs(mvp)
         self._draw_direction_arrows(mvp)
         self._draw_clip_normals(mvp)
@@ -4392,6 +4399,41 @@ class Viewport(QOpenGLWidget):
                                  theme.CONTROL_POINT_EDGE, 1.5)
         GL.glEnable(GL.GL_DEPTH_TEST)
 
+    def _draw_held_points(self, mvp):
+        """The points a Ctrl+Shift click holds, as a held control point is
+        drawn: a gold square the same size on the glass wherever it is."""
+        held = [(oid, i) for oid, kind, i in self.selection.subobjects
+                if kind == "vertex"]
+        pointed = getattr(self, "_hover_point", None)
+        if not held and pointed is None:
+            return
+        at = [] if pointed is None else [np.asarray(pointed, float)]
+        for oid, i in held:
+            obj = self.scene.get(oid)
+            if obj is None:
+                continue
+            pts = self.held_points(obj)
+            if 0 <= i < len(pts):
+                at.append(pts[i])
+        if not at:
+            return
+        at = np.asarray(at, float)
+        w, h = self.width(), self.height()
+        right, up = self.camera.right_up()
+        half = cv_marker_size(at, self.camera, w, h, CV_HELD_PX)
+        if pointed is not None:
+            half[0] *= 1.6                 # the one the list is pointing at
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        quads = cv_marker_quads(at, right, up, half)
+        self._preview.update(rebased(quads, self._frame_anchor))
+        self._set_line_uniforms(mvp, theme.SELECTION_COLOR + (1.0,))
+        GL.glBindVertexArray(self._preview.vao)
+        GL.glDrawArrays(GL.GL_TRIANGLES, 0, len(quads))
+        edge = cv_marker_outline(at, right, up, half)
+        self._preview.update(rebased(edge, self._frame_anchor))
+        self._draw_lines(self._preview, mvp, theme.CONTROL_POINT_EDGE, 1.5)
+        GL.glEnable(GL.GL_DEPTH_TEST)
+
     def _draw_combs(self, mvp):
         """Curvature combs: quills perpendicular to the curve, length
         proportional to curvature."""
@@ -6163,17 +6205,79 @@ class Viewport(QOpenGLWidget):
             return None
         return float(scr[near, 2].min())
 
+    def held_points(self, obj) -> np.ndarray:
+        """Where each point a Ctrl+Shift click can hold on `obj` is, by the
+        index it is held by: a curve's, a surface's or a solid's corners
+        (geometry.vertices_of), a mesh's points once each (welded, as its
+        parts are moved). Kept until the shape changes."""
+        cache = self.__dict__.setdefault("_held_point_cache", {})
+        shape = obj.shape
+        entry = cache.get(obj.id)
+        if entry is not None and entry[0] is shape:
+            return entry[1]
+        from ..core import geometry as g
+        from ..core.mesh import MeshShape, _weld
+        if isinstance(shape, MeshShape):
+            pts = np.asarray(_weld(shape.vertices)[0], float)
+        elif obj.kind == "curve":
+            try:
+                pts = np.asarray(g.curve_points(shape), float)
+            except Exception:                                   # noqa: BLE001
+                pts = np.zeros((0, 3))
+        else:
+            try:
+                pts = np.asarray(g.vertex_points(shape), float)
+            except Exception:                                   # noqa: BLE001
+                pts = np.zeros((0, 3))
+        pts = pts.reshape(-1, 3)
+        cache[obj.id] = (shape, pts)
+        return pts
+
+    def _pick_point(self, objects, px, py, w, h):
+        """(obj_id, "vertex", index) of the point nearest the pixel within
+        the pick radius, one in sight and not cut away, or None. Points
+        come before edges and faces: the smallest target, and the one a
+        click this close to a corner means."""
+        eye = self._eye()
+        clip = self._pick_clip()
+        hidden = self.snap_hider(clip)
+        found = []
+        for obj in objects:
+            if obj.kind not in PICKED_POINT_KINDS:
+                continue
+            pts = self.held_points(obj)
+            if not len(pts):
+                continue
+            scr = eye.project(pts, w, h)
+            d2 = (scr[:, 0] - px) ** 2 + (scr[:, 1] - py) ** 2
+            near = (scr[:, 2] > 0) & (d2 <= PICK_RADIUS_PX ** 2)
+            cut = self._pick_clip(obj)
+            if cut:
+                from ..core.snaps import in_sight
+                near &= in_sight(pts, cut)
+            for i in np.flatnonzero(near):
+                found.append((float(d2[i]), float(scr[i, 2]), obj.id, int(i)))
+        for _d2, _depth, oid, i in sorted(found):
+            obj = self.scene.get(oid)
+            if hidden is not None and hidden(self.held_points(obj)[i]):
+                continue
+            return (oid, "vertex", i)
+        return None
+
     def pick_subobject(self, px: float, py: float):
-        """(obj_id, "edge"|"face", index) under the pixel, or None."""
+        """(obj_id, "vertex"|"edge"|"face", index) under the pixel, or None."""
         w, h = self.width(), self.height()
         eye = self._eye()
         origin, direction = eye.ray_through(px, py, w, h)
-        # edges first (they are the smaller target)
         r = PICK_RADIUS_PX
         selectable = [obj for obj in self._shown_here()
                       if self.scene.is_selectable(obj.id)]
         near_cursor = self._pick_candidates(selectable, px - r, py - r,
                                             px + r, py + r, w, h)
+        point = self._pick_point(near_cursor, px, py, w, h)
+        if point is not None:
+            return point
+        # then edges (they are the smaller target)
         # Every segment under the cursor, gathered before anything is chosen:
         # which edge wins depends on how close the closest one came, and that
         # is not known until all the objects have been looked at.
@@ -6247,6 +6351,28 @@ class Viewport(QOpenGLWidget):
                         i = int(sub[i])      # back to the mesh's own numbering
                     best_face = (obj.id, "face",
                                  int(mesh.face_of_triangle[i]))
+        # What cannot be picked can still be in the way: a locked object
+        # in front hides the edge or face behind it as much as any other.
+        hidden = self.snap_hider(self._pick_clip())
+
+        def seen_at_depth(depth):
+            if hidden is None:
+                return True
+            z0 = float(eye.project(np.asarray([origin], float), w, h)[0, 2])
+            z1 = float(eye.project(np.asarray([origin + direction], float),
+                                   w, h)[0, 2])
+            if abs(z1 - z0) < 1e-12:
+                return True
+            return not hidden(origin + direction * ((depth - z0) / (z1 - z0)))
+
+        if best_face is not None:
+            hit = origin + direction * best_t
+            face_depth = float(eye.project(np.asarray([hit], float),
+                                           w, h)[0, 2])
+            if hidden is not None and hidden(hit):
+                best_face = None
+        if best_edge is not None and not seen_at_depth(best_edge_depth):
+            best_edge = None
         if best_edge is None:
             return best_face
         if best_face is None:
@@ -6254,9 +6380,7 @@ class Viewport(QOpenGLWidget):
         # Both are under the cursor, so the nearer one wins. The two are
         # measured differently — the edge by how far in front of the camera
         # it projects, the face by how far along the ray it was struck — so
-        # put the hit point through the same projection before comparing.
-        hit = origin + direction * best_t
-        face_depth = float(eye.project(np.asarray([hit], float), w, h)[0, 2])
+        # the hit point went through the same projection above.
         if best_edge_depth * EDGE_PICK_BIAS <= face_depth:
             return best_edge
         return best_face
@@ -6670,6 +6794,116 @@ class Viewport(QOpenGLWidget):
         # without moving lands in the gap rather than on the first row.
         menu.popup(self.mapToGlobal(pos.toPoint()) + QPoint(13, 11))
 
+    def _points_with(self, hit) -> list:
+        """Every point in sight drawn where `hit` is, within STACK_PX on
+        the screen, one per object, `hit` first: points that only a list
+        can tell apart. On the screen, not in the model: two ends a few
+        millimetres apart are one place to the eye, and a model distance
+        cannot know how far the view is zoomed."""
+        oid, _kind, index = hit
+        w, h = self.width(), self.height()
+        eye = self._eye()
+        at = self.held_points(self.scene.get(oid))[index]
+        sx, sy, _ = eye.project(np.asarray([at], float), w, h)[0]
+        hidden = self.snap_hider(self._pick_clip())
+        r = STACK_PX
+        selectable = [o for o in self._shown_here()
+                      if o.id != oid and o.kind in PICKED_POINT_KINDS
+                      and self.scene.is_selectable(o.id)]
+        out = [hit]
+        for obj in self._pick_candidates(selectable, sx - r, sy - r,
+                                         sx + r, sy + r, w, h):
+            pts = self.held_points(obj)
+            if not len(pts):
+                continue
+            scr = eye.project(pts, w, h)
+            d2 = (scr[:, 0] - sx) ** 2 + (scr[:, 1] - sy) ** 2
+            d2[scr[:, 2] <= 0] = np.inf
+            i = int(np.argmin(d2))
+            if d2[i] <= r * r and (hidden is None or not hidden(pts[i])):
+                out.append((obj.id, "vertex", i))
+        return out
+
+    def _offer_the_points(self, stacked, pos):
+        """Points of several objects in one place: which object's? Pointing
+        at a row lights its object, so you can see whose point it is."""
+        from .object_chooser import ChoiceRow, ObjectChooser, kind_label
+        rows, by_id = [], {}
+        for entry in stacked:
+            obj = self.scene.get(entry[0])
+            rows.append(ChoiceRow(obj_id=obj.id, name=obj.name,
+                                  kind=f"Point of {kind_label(obj.kind).lower()}",
+                                  color=self.scene.color_of(obj)))
+            by_id[obj.id] = entry
+        self._press_pos = None
+        menu = ObjectChooser(rows, self)
+        self._chooser = menu
+
+        def hover(obj_id):
+            self._hover_point = (self._point_at_entry(by_id[obj_id])
+                                 if obj_id in by_id else None)
+            self.set_choice_hover(obj_id)
+            self.update()
+
+        menu.rowHovered.connect(hover)
+
+        def take(obj_id):
+            self.selection.toggle_subobject(*by_id[obj_id])
+            self.update()
+
+        menu.objectChosen.connect(take)
+        menu.aboutToHide.connect(self._chooser_closed)
+        menu.popup(self.mapToGlobal(pos.toPoint()) + QPoint(13, 11))
+
+    def _part_or_whole(self, hit, pos) -> bool:
+        """For a part of an object in a group, take the object or offer the
+        choice; False to hold the part as before.
+
+        A click on a member of a group otherwise takes the whole group, so
+        Ctrl+Shift is the way to one of its objects as well as to a part of
+        one. Where the part is the whole object, the one segment of a curve
+        or the one face of a surface, there is nothing to choose and the
+        object is taken; otherwise a list asks which was meant.
+        """
+        obj_id, kind, index = hit
+        obj = self.scene.get(obj_id)
+        if obj is None or not obj.group_id:
+            return False
+        if kind != "vertex" and _is_its_only_part(obj, kind):
+            self.selection.toggle(obj_id)
+            self.update()
+            return True
+        from .object_chooser import ChoiceRow, ObjectChooser, kind_label
+        color = self.scene.color_of(obj)
+        rows = [ChoiceRow(obj_id="part", name=_part_name(obj, kind),
+                          kind=obj.name, color=color),
+                ChoiceRow(obj_id="whole",
+                          name=f"Whole {kind_label(obj.kind).lower()}",
+                          kind=obj.name, color=color)]
+        self._press_pos = None
+        menu = ObjectChooser(rows, self)
+        self._chooser = menu
+        def hover(which):
+            self._hover_point = (self._point_at_entry(hit)
+                                 if which == "part" and kind == "vertex"
+                                 else None)
+            self.set_choice_hover(obj_id if which == "whole" else None)
+            self.update()
+
+        menu.rowHovered.connect(hover)
+
+        def take(which):
+            if which == "whole":
+                self.selection.toggle(obj_id)
+            else:
+                self.selection.toggle_subobject(*hit)
+            self.update()
+
+        menu.objectChosen.connect(take)
+        menu.aboutToHide.connect(self._chooser_closed)
+        menu.popup(self.mapToGlobal(pos.toPoint()) + QPoint(13, 11))
+        return True
+
     def _choices_in_the_same_place(self, hits) -> list[str]:
         """The ids a plain click has to ask about, or an empty list.
 
@@ -6684,7 +6918,16 @@ class Viewport(QOpenGLWidget):
                    for i in together}
         return together if len(answers) > 1 else []
 
+    def _point_at_entry(self, entry):
+        """Where a held-point entry (obj_id, "vertex", index) is, or None."""
+        obj = self.scene.get(entry[0])
+        if obj is None:
+            return None
+        pts = self.held_points(obj)
+        return pts[entry[2]] if 0 <= entry[2] < len(pts) else None
+
     def _chooser_closed(self):
+        self._hover_point = None
         self._chooser = None
         self.set_choice_hover(None)
 
@@ -6939,7 +7182,12 @@ class Viewport(QOpenGLWidget):
             if (mods & Qt.KeyboardModifier.ControlModifier
                     and mods & Qt.KeyboardModifier.ShiftModifier):
                 hit = self.pick_subobject(pos.x(), pos.y())
-                if hit is not None:
+                if hit is not None and hit[1] == "vertex":
+                    stacked = self._points_with(hit)
+                    if len(stacked) > 1:
+                        self._offer_the_points(stacked, pos)
+                        return
+                if hit is not None and not self._part_or_whole(hit, pos):
                     self.selection.toggle_subobject(*hit)
                     self.update()
                 return
@@ -7200,7 +7448,28 @@ class Viewport(QOpenGLWidget):
                     which = _wholly(mesh.face_of_triangle, owner,
                                     ok & corners_in.all(axis=1))
                 caught.extend((obj.id, "face", int(i)) for i in which)
+            caught.extend(self._points_in_band(obj, rect, eye, w, h))
         return caught
+
+    def _points_in_band(self, obj, rect, eye, w, h) -> list:
+        """The points of `obj` a band holds, window or crossing alike: a
+        point is either inside it or not. Only the ones in sight."""
+        if obj.kind not in PICKED_POINT_KINDS:
+            return []
+        pts = self.held_points(obj)
+        if not len(pts):
+            return []
+        scr = eye.project(pts, w, h)
+        inside = ((scr[:, 2] > 0) & (scr[:, 0] >= rect[0])
+                  & (scr[:, 0] <= rect[2]) & (scr[:, 1] >= rect[1])
+                  & (scr[:, 1] <= rect[3]))
+        cut = self._pick_clip(obj)
+        if cut:
+            from ..core.snaps import in_sight
+            inside &= in_sight(pts, cut)
+        hidden = self.snap_hider(cut)
+        return [(obj.id, "vertex", int(i)) for i in np.flatnonzero(inside)
+                if hidden is None or not hidden(pts[i])]
 
     # -------------------------------------------------------- control points
 
@@ -7686,6 +7955,32 @@ def face_edge_color(color, kind) -> tuple:
     if kind == "mesh":
         edge = [max(c, MESH_EDGE_FLOOR) for c in edge]
     return (*edge, 1.0)
+
+
+def _is_its_only_part(obj, kind) -> bool:
+    """Is a held part of `obj` all there is of it: the one segment of a
+    curve, the one face of a surface or the one triangle of a mesh?"""
+    from ..core import geometry as g
+    from ..core.mesh import MeshShape
+    shape = obj.shape
+    if isinstance(shape, MeshShape):
+        return kind == "face" and len(shape.triangles) == 1
+    if kind == "edge" and obj.kind == "curve":
+        return len(g.edges_of(shape)) == 1
+    if kind == "face":
+        return len(g.faces_of(shape)) == 1
+    return False
+
+
+def _part_name(obj, kind) -> str:
+    """What a held part is called in front of a person."""
+    if kind == "vertex":
+        return "Point"
+    if obj.kind == "mesh":
+        return "Triangle" if kind == "face" else "Mesh edge"
+    if kind == "edge":
+        return "Segment" if obj.kind == "curve" else "Edge"
+    return "Face"
 
 
 def _clip_polygon(poly, clip) -> np.ndarray:

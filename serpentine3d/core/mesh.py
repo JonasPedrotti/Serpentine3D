@@ -201,13 +201,14 @@ class MeshShape:
 
     def part_points(self, kind: str, index: int, welding=None) -> list:
         """The points a part is made of: a triangle's three ("face"), an
-        edge's two ("edge"), or one point ("cv")."""
+        edge's two ("edge"), or one point ("cv", or "vertex" as a
+        Ctrl+Shift click holds it)."""
         welding = _weld(self.vertices) if welding is None else welding
         if kind == "face":
             return sorted({int(i) for i in welding[1][self.triangles[index]]})
         if kind == "edge":
             return [int(i) for i in self.edge_pairs(welding=welding)[1][index]]
-        if kind == "cv":
+        if kind in ("cv", "vertex"):
             if not 0 <= index < len(welding[0]):
                 raise IndexError(index)
             return [int(index)]

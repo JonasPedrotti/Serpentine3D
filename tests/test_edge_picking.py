@@ -101,14 +101,18 @@ def test_the_nearer_of_two_edges_on_one_object_wins():
 
     segs = box.mesh.edge_segments.reshape(-1, 3)
     scr = view.camera.project(segs, view.width(), view.height())
-    # a vertical corner: the box's front and back edges stack up here
-    px, py = float(scr[0, 0]), float(scr[0, 1])
+    # along a vertical edge, the box's front and back edges stacked up
+    # there; a third of the way, clear of the corner, which holds a point
+    px = float(scr[0, 0] + (scr[1, 0] - scr[0, 0]) / 3)
+    py = float(scr[0, 1] + (scr[1, 1] - scr[0, 1]) / 3)
 
     hit = view.pick_subobject(px, py)
     assert hit is not None and hit[1] == "edge"
 
-    d2 = (scr[:, 0] - px) ** 2 + (scr[:, 1] - py) ** 2
-    within = (d2 <= vp_mod.PICK_RADIUS_PX ** 2) & (scr[:, 2] > 0)
+    d2 = vp_mod._point_segment_dist2(np.array([px, py]), scr[0::2, :2],
+                                     scr[1::2, :2])
+    within = np.repeat((d2 <= vp_mod.PICK_RADIUS_PX ** 2)
+                       & (scr[0::2, 2] > 0), 2)
     assert within.sum() >= 4, "no competing edge here; the test proves nothing"
 
     on_hit = np.repeat(box.mesh.edge_of_segment, 2) == hit[2]
@@ -154,6 +158,23 @@ def _corner_pixel(view, box, farthest: bool):
     return float(scr[i, 0]), float(scr[i, 1]), float(scr[i, 2])
 
 
+def _beside_corner(view, box, farthest: bool):
+    """A pixel on one of the edges meeting at a corner, clear of the
+    corner itself, which a click holds as a point."""
+    verts = np.asarray(box.mesh.vertices, float)
+    away = np.linalg.norm(verts - view.camera.position, axis=1)
+    corner = verts[int(np.argmax(away) if farthest else np.argmin(away))]
+    segs = np.asarray(box.mesh.edge_segments, float)
+    w, h = view.width(), view.height()
+    for a, b in segs:
+        if np.allclose(a, corner) or np.allclose(b, corner):
+            far = b if np.allclose(a, corner) else a
+            at = corner + (far - corner) * 0.25
+            scr = view.camera.project(np.asarray([at]), w, h)[0]
+            return float(scr[0]), float(scr[1])
+    raise AssertionError("no edge meets the corner")
+
+
 def _nearest_face_hit(view, box, px, py):
     """Ray distance to the first triangle under a pixel, or inf."""
     from serpentine3d.utils.math3d import ray_triangle_hits
@@ -193,22 +214,41 @@ def test_an_edge_you_can_see_still_beats_the_face_behind_it():
     borders is at the same distance and covers far more of the cursor.
     """
     scene, box, view = _solid_view()
-    px, py, _ = _corner_pixel(view, box, farthest=False)
+    px, py = _beside_corner(view, box, farthest=False)
 
     hit = view.pick_subobject(px, py)
     assert hit is not None, "nothing was picked at all"
     assert hit[1] == "edge", "a visible edge lost its click to the face"
 
 
+def test_the_corner_you_can_see_is_held_as_a_point():
+    """On the corner itself the smallest target wins: the point."""
+    scene, box, view = _solid_view()
+    px, py, _ = _corner_pixel(view, box, farthest=False)
+
+    hit = view.pick_subobject(px, py)
+    assert hit is not None and hit[1] == "vertex"
+
+
 def test_wireframe_has_nothing_in_front_to_hide_behind():
     """No faces are drawn, so the edge behind is the edge you meant."""
+    scene, box, view = _solid_view()
+    view.display_mode = "wireframe"
+    px, py = _beside_corner(view, box, farthest=True)
+
+    hit = view.pick_subobject(px, py)
+    assert hit is not None, "nothing was picked at all"
+    assert hit[1] == "edge", "picked a face in a view that draws none"
+
+
+def test_wireframe_holds_the_far_corner_too():
+    """Every corner is drawn, so the far one is there to be held."""
     scene, box, view = _solid_view()
     view.display_mode = "wireframe"
     px, py, _ = _corner_pixel(view, box, farthest=True)
 
     hit = view.pick_subobject(px, py)
-    assert hit is not None, "nothing was picked at all"
-    assert hit[1] == "edge", "picked a face in a view that draws none"
+    assert hit is not None and hit[1] == "vertex"
 
 
 # -- control points ----------------------------------------------------------

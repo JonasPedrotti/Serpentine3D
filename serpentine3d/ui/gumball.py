@@ -354,7 +354,7 @@ class Gumball:
             obj = self.vp.scene.get(oid)
             if obj is None:
                 continue
-            if obj.kind == "mesh" and kind in ("face", "edge"):
+            if obj.kind == "mesh" and kind in ("face", "edge", "vertex"):
                 # a mesh's triangle or edge is held by its points
                 try:
                     points = obj.shape.part_points(kind, idx)
@@ -529,14 +529,22 @@ class Gumball:
     def _segment_target_of(self):
         subs = list(getattr(self.vp.selection, "subobjects", ()))
         held: dict = {}
+        points: dict = {}
         mids = []
         for oid, kind, idx in subs:
-            if kind != "edge":
+            if kind not in ("edge", "vertex"):
                 return None
             obj = self.vp.scene.get(oid)
             if obj is None or obj.kind != "curve":
                 return None
             try:
+                if kind == "vertex":
+                    at = self.vp.held_points(obj)
+                    if not (0 <= idx < len(at)):
+                        return None
+                    mids.append(np.asarray(at[idx], float))
+                    points.setdefault(oid, []).append(int(idx))
+                    continue
                 elist = g.edges_of(obj.shape)
                 if not (0 <= idx < len(elist)):
                     return None
@@ -544,9 +552,9 @@ class Gumball:
             except g.GeometryError:
                 return None
             held.setdefault(oid, []).append(int(idx))
-        if not held:
+        if not held and not points:
             return None
-        return held, np.mean(mids, axis=0)
+        return held, np.mean(mids, axis=0), points
 
     def _parts_target(self):
         """For faces and edges held together on one solid, return
@@ -567,6 +575,9 @@ class Gumball:
         subs = list(getattr(self.vp.selection, "subobjects", ()))
         faces = [(oid, idx) for (oid, kind, idx) in subs if kind == "face"]
         edges = [(oid, idx) for (oid, kind, idx) in subs if kind == "edge"]
+        points = [(oid, idx) for (oid, kind, idx) in subs if kind == "vertex"]
+        if points:
+            return self._points_target_of(subs, faces, edges, points)
         if len(faces) < 2 or not edges:
             # one face keeps its own richer handle whatever edges ride
             # along; the mix this is for is what a band across a solid
@@ -589,7 +600,32 @@ class Gumball:
             at += [np.asarray(g.centroid(elist[i]), float) for i in eidx]
         except g.GeometryError:
             return None
-        return oid, fidx, eidx, np.mean(at, axis=0)
+        return oid, fidx, eidx, np.mean(at, axis=0), []
+
+    def _points_target_of(self, subs, faces, edges, points):
+        """Points of one surface or solid held, with any faces and edges of
+        it: moved as one change, each held point a corner that moves."""
+        if len({oid for oid, _, _ in subs}) != 1:
+            return None                       # one object at a time
+        oid = points[0][0]
+        obj = self.vp.scene.get(oid)
+        if obj is None or obj.kind not in ("surface", "solid", "compound"):
+            return None
+        try:
+            flist = g.faces_of(obj.shape)
+            elist = g.edges_of(obj.shape)
+            corners = self.vp.held_points(obj)
+            fidx = [i for _, i in faces if 0 <= i < len(flist)]
+            eidx = [i for _, i in edges if 0 <= i < len(elist)]
+            vidx = [i for _, i in points if 0 <= i < len(corners)]
+            if not vidx:
+                return None
+            at = [np.asarray(corners[i], float) for i in vidx]
+            at += [np.asarray(g.centroid(flist[i]), float) for i in fidx]
+            at += [np.asarray(g.centroid(elist[i]), float) for i in eidx]
+        except g.GeometryError:
+            return None
+        return oid, fidx, eidx, np.mean(at, axis=0), vidx
 
     def _fillet_target(self):
         """For one or more selected edges on a single solid, return
@@ -1298,7 +1334,7 @@ class Gumball:
             if not 0 <= face[1] < len(faces):
                 return []
             return [self._span(("face", *face), faces[face[1]], axes)]
-        if d is not None and any(d.get(k) for k in (
+        if d is not None and any(d.get(k) is not None for k in (
                 "segments", "multiface", "parts", "fillet", "edge_move")):
             return []
         if d is None and (self._segment_target() is not None
@@ -1605,7 +1641,7 @@ class Gumball:
             self.vp.window_checkpoint("gumball " + handle[0])
         elif seg is not None:                 # held curve segments
             originals = {}
-            for oid in seg[0]:
+            for oid in list(seg[0]) + list(seg[2]):
                 obj = vp.scene.get(oid)
                 if obj is not None:
                     originals[oid] = obj.shape
@@ -1688,8 +1724,11 @@ class Gumball:
             "cvs": dict(cv[0]) if cv is not None else None,
             "segments": ({k: list(v) for k, v in seg[0].items()}
                          if seg is not None else None),
+            "segment_points": ({k: list(v) for k, v in seg[2].items()}
+                               if seg is not None else {}),
             "segment_mids": {},
-            "parts": ((parts[0], list(parts[1]), list(parts[2]))
+            "parts": ((parts[0], list(parts[1]), list(parts[2]),
+                       list(parts[4]))
                       if parts is not None else None),
             "pp": (pp[0], pp[1]) if pp is not None else None,
             "pp_planar": bool(pp[4]) if pp is not None else True,
@@ -1910,12 +1949,13 @@ class Gumball:
                 d["offset"] = delta
                 label = "move edge " + vp.scene.format_length(float(value))
             elif d.get("parts"):              # faces and edges, as one change
-                oid, fidx, eidx = d["parts"]
+                oid, fidx, eidx, vidx = d["parts"]
                 orig = d["originals"].get(oid)
                 delta = np.asarray(axes[i] * value, float)
                 if not self._rebuild(
                         oid, orig, value,
-                        lambda v: g.move_parts(orig, fidx, eidx, tuple(delta))):
+                        lambda v: g.move_parts(orig, fidx, eidx, tuple(delta),
+                                               vertices=vidx)):
                     return d["last_label"]
                 d["offset"] = delta
                 label = "move parts " + vp.scene.format_length(float(value))
@@ -2073,7 +2113,7 @@ class Gumball:
         `whole`."""
         if self.drag.get("cvs"):
             self._apply_cvs(at)
-        elif self.drag.get("segments"):
+        elif self.drag.get("segments") is not None:
             self._apply_segments(at)
         else:
             self._apply(whole)
@@ -2083,11 +2123,12 @@ class Gumball:
         if d.get("parts"):
             # faces and edges held together move as one change, from the
             # shape the drag began on every time (see _apply_cvs)
-            oid, fidx, eidx = d["parts"]
+            oid, fidx, eidx, vidx = d["parts"]
             self._rebuild(oid, d["originals"].get(oid),
                           float(np.linalg.norm(delta)),
                           lambda v: g.move_parts(d["originals"][oid], fidx,
-                                                 eidx, tuple(delta)))
+                                                 eidx, tuple(delta),
+                                                 vertices=vidx))
             return
         self._apply_points(lambda p: p + delta,
                            lambda s: g.translate(s, tuple(delta)))
@@ -2250,7 +2291,10 @@ class Gumball:
         went so the selection can find it again when the drag ends."""
         d = self.drag
         vp = self.vp
-        for obj_id, idxs in d["segments"].items():
+        points = d.get("segment_points") or {}
+        for obj_id in dict.fromkeys(list(d["segments"]) + list(points)):
+            idxs = d["segments"].get(obj_id, [])
+            vidx = points.get(obj_id, [])
             original = d["originals"].get(obj_id)
             if original is None or vp.scene.get(obj_id) is None:
                 continue
@@ -2258,8 +2302,12 @@ class Gumball:
                 edges = g.edges_of(original)
                 mids = {i: at(np.asarray(g.centroid(edges[i]), float))
                         for i in idxs}
+                corners = g.curve_points(original)
+                d.setdefault("point_targets", {})[obj_id] = {
+                    i: at(np.asarray(corners[i], float)) for i in vidx}
                 vp.scene.replace_shape(
-                    obj_id, g.transform_segments(original, idxs, at))
+                    obj_id, g.transform_segments(original, idxs, at,
+                                                 vertices=vidx))
             except (g.GeometryError, IndexError):
                 continue
             d["segment_mids"][obj_id] = mids
@@ -2347,7 +2395,7 @@ class Gumball:
                 self._resync_face(d)         # curved offsets keep their index
             elif d.get("edge_move"):
                 self._resync_edge(d)
-            elif d.get("segments"):
+            elif d.get("segments") is not None:
                 self._resync_segments(d)
             elif d.get("parts"):
                 self._resync_parts(d)
@@ -2432,7 +2480,7 @@ class Gumball:
         facing the same way and lying nearest where the drag put it, an
         edge by running the same way likewise. One that cannot be found
         is let go of rather than left pointing at something else."""
-        oid, fidx, eidx = d["parts"]
+        oid, fidx, eidx, vidx = d["parts"]
         obj = self.vp.scene.get(oid)
         orig = d["originals"].get(oid)
         if obj is None or orig is None:
@@ -2440,6 +2488,14 @@ class Gumball:
         delta = np.asarray(d.get("offset", np.zeros(3)), float)
         sel = self.vp.selection
         held = [e for e in sel.subobjects if e[0] != oid]
+        if vidx:
+            was = g.vertex_points(orig)
+            now = self.vp.held_points(obj)
+            for i in vidx:
+                if 0 <= i < len(was) and len(now):
+                    want = np.asarray(was[i], float) + delta
+                    held.append((oid, "vertex", int(np.argmin(
+                        np.linalg.norm(now - want, axis=1)))))
         try:
             was_f, now_f = g.faces_of(orig), g.faces_of(obj.shape)
             was_e, now_e = g.edges_of(orig), g.edges_of(obj.shape)
@@ -2475,10 +2531,32 @@ class Gumball:
             pass
         sel.set_subobjects(held)
 
+    def _resync_points(self, targets):
+        """Hold again each point a rebuild may have renumbered: the one now
+        nearest where the drag put it. `targets` is {obj_id: {old: where}}."""
+        sel = self.vp.selection
+        for oid, wants in targets.items():
+            obj = self.vp.scene.get(oid)
+            if obj is None or not wants:
+                continue
+            now = self.vp.held_points(obj)
+            if not len(now):
+                continue
+            for old, want in wants.items():
+                best = int(np.argmin(np.linalg.norm(
+                    now - np.asarray(want, float), axis=1)))
+                if best == old:
+                    continue
+                if (oid, "vertex", old) in sel.subobjects:
+                    sel.toggle_subobject(oid, "vertex", old)
+                if (oid, "vertex", best) not in sel.subobjects:
+                    sel.toggle_subobject(oid, "vertex", best)
+
     def _resync_segments(self, d):
         """The curve was put back together, so a held segment's index may
         point at a different segment now: hold the one whose middle is
         where the drag left it."""
+        self._resync_points(d.get("point_targets") or {})
         sel = self.vp.selection
         for oid, mids in d["segment_mids"].items():
             obj = self.vp.scene.get(oid)

@@ -154,5 +154,5 @@ def test_sweeping_its_faces_names_the_same_ones_wherever_it_is(placed):
     kinds = {kind for _oid, kind, _i in caught}
 
     assert caught, "a sweep over the whole box caught none of its parts"
-    assert kinds <= {"face", "edge"}
+    assert kinds <= {"face", "edge", "vertex"}
     assert all(oid == obj.id for oid, _k, _i in caught)
