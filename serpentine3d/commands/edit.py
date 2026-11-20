@@ -66,6 +66,24 @@ def _delete_held_faces(ctx) -> bool:
         obj = ctx.scene.get(oid)
         if obj is None:
             continue
+        if obj.kind == "mesh":
+            # a mesh's face is a triangle: the rest stay, the points too
+            import numpy as np
+            from ..core.mesh import MeshShape
+            mesh = obj.shape
+            keep = np.ones(len(mesh.triangles), bool)
+            drop = [i for i in set(indices) if 0 <= i < len(keep)]
+            keep[drop] = False
+            done += len(drop)
+            if not keep.any():
+                ctx.scene.remove(oid)
+                ctx.echo(f"{obj.name}: every face deleted, "
+                         "so the mesh went with it.")
+            else:
+                ctx.scene.replace_shape(oid, MeshShape(
+                    mesh.vertices, mesh.triangles[keep],
+                    faceted=mesh.faceted))
+            continue
         was_solid = g.shape_kind(obj.shape) == "solid"
         try:
             # All of them at once. Taking one out renumbers the rest, so a
