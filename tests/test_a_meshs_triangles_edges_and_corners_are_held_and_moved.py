@@ -300,14 +300,14 @@ def test_properties_switch_a_mesh_between_faceted_and_smooth(tmp_path,
 
 # -- a preview while it moves, and snapping to corners ------------------------------
 
-def test_a_mesh_snaps_at_its_corners_and_its_edges_middles():
+def test_a_mesh_snaps_at_its_corners_only():
     from serpentine3d.core.snaps import _static_snap_points
     points = _static_snap_points(_sheet())
     ends = {tuple(np.round(p, 6)) for p, kind in points if kind == "end"}
-    mids = {tuple(np.round(p, 6)) for p, kind in points if kind == "mid"}
     assert ends == {(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0),
                     (10, 5, 8)}
-    assert (5, 0, 0) in mids                     # the bottom border's middle
+    # not the middles of its edges: on a terrain they caught the cursor
+    assert {kind for _p, kind in points} == {"end"}
 
 
 def test_move_shows_the_held_triangle_moving_before_it_is_placed(env):

@@ -296,9 +296,10 @@ def test_the_bar_keeps_moving_while_one_object_is_being_read(tmp_path,
                                                              monkeypatch):
     """The object count cannot move while a single object is in hand, so the
     pieces report for it. Otherwise the dialog says 11631 of 11759 and sits
-    there, which is the complaint that started this."""
+    there, which is the complaint that started this. A mesh is read from
+    its record in one go now, so the boxes are what is split here."""
     path = _survey_3dm(str(tmp_path / "survey.3dm"))
-    monkeypatch.setenv("SERP3D_IMPORT_SPLIT_VERTICES", "50")
+    monkeypatch.setenv("SERP3D_IMPORT_SPLIT_FACES", "2")
     seen = []
     rp.import_3dm_parallel(path, progress=Progress(
         lambda f, m: seen.append((f, m))), workers=3)

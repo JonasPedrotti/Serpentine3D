@@ -137,11 +137,11 @@ def test_the_app_records_one_compact_import_despite_quiet_period_flushes(
 
 def test_the_apps_dxf_cancel_is_atomic_and_later_work_still_records(
         tmp_path, window, monkeypatch):
-    from PySide6.QtWidgets import QProgressDialog
+    from serpentine3d.ui.progress_card import ProgressCard
 
     window.processor.run("line -20,0,0 -10,0,0")
     before = _bounds(window.scene)
-    real_set_value = QProgressDialog.setValue
+    real_set_value = ProgressCard.setValue
     cancelled_at = []
 
     def cancel_partway(dialog, value):
@@ -150,7 +150,7 @@ def test_the_apps_dxf_cancel_is_atomic_and_later_work_still_records(
             cancelled_at.append(value)
             dialog.cancel()
 
-    monkeypatch.setattr(QProgressDialog, "setValue", cancel_partway)
+    monkeypatch.setattr(ProgressCard, "setValue", cancel_partway)
     # Exercise the app's cancellation wiring without relying on the fixture
     # taking longer than the progress dialog's repaint throttle interval.
     monkeypatch.setattr(fileio, "throttled", lambda callback: callback)

@@ -31,7 +31,7 @@ def test_a_mesh_snaps_at_its_corners_and_does_not_raise():
     points = _static_snap_points(_tablet())
     ends = sorted(p for p, kind in points if kind == "end")
     assert ends == [(0, 0, 0), (0, 14, 0), (20, 0, 0), (20, 14, 0)]
-    assert {kind for _p, kind in points} == {"end", "mid"}
+    assert {kind for _p, kind in points} == {"end"}
 
 
 def test_a_mesh_too_big_to_list_offers_only_its_outline(monkeypatch):

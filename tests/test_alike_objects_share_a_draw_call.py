@@ -302,16 +302,33 @@ def test_modes_with_an_order_or_materials_are_not_batched(gl, mode):
     assert _frame_draws(gl, view, mode_override=mode) >= 40
 
 
-def test_a_clipped_frame_is_not_batched(gl, monkeypatch):
+def test_a_clipped_frame_is_batched_too(gl, monkeypatch):
+    """A plane in the view used to draw every object on its own, which on
+    a survey drawing was a frame per second with a command running."""
     view = _view(40)
     plane = (0.0, 0.0, 1.0, 100.0)
     monkeypatch.setattr(view, "_clip_vectors", lambda: [plane])
     monkeypatch.setattr(view, "_draw_section_caps", lambda *a: None)
-    assert _frame_draws(gl, view) >= 40
+    assert _frame_draws(gl, view) < 40
 
 
-def test_far_objects_keep_their_own_anchor(gl):
-    assert not _batches(_items(_view(9, far=True)))
+def test_far_objects_near_one_another_share_an_anchor(gl):
+    """Far from home and close together, as a survey is: one batch, drawn
+    from the first object's anchor, its offsets small."""
+    batches = _batches(_items(_view(9, far=True)))
+    assert batches
+    assert all(b.gpu.anchor is not None for b in batches)
+
+
+def test_far_objects_far_apart_keep_their_anchors_apart(gl):
+    view = _view(0)
+    for x in (3_000_000.0, 3_000_000.0 + 2 * vp_mod.BATCH_SPAN):
+        for k in range(3):
+            view.scene.add(g.make_box((x + k * 3.0, 0.0, 0.0), 1, 1, 1))
+    _sync(view)
+    for batch in _batches(_items(view)):
+        lo, hi = batch.mesh.bounds()
+        assert hi[0] - lo[0] < vp_mod.BATCH_SPAN, "one batch spans both"
 
 
 def test_dashes_keep_their_own_buffers(gl):
@@ -372,8 +389,8 @@ def test_a_batch_does_not_keep_its_merged_mesh_once_uploaded(gl, monkeypatch):
     keep every small object's geometry twice over."""
     made = []
 
-    def merging(meshes):
-        mesh = merged(meshes)
+    def merging(meshes, origin=None):
+        mesh = merged(meshes, origin)
         made.append(weakref.ref(mesh))
         return mesh
 

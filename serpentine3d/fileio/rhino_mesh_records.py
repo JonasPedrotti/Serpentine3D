@@ -84,19 +84,59 @@ def mesh_arrays(body: bytes):
         nbytes = struct.unpack_from("<I", body, at)[0]
         if nbytes != vcount * 12:
             return None
-        method = body[at + 8]
-        at += 9
-        if method == 0:
-            raw = body[at:at + nbytes]
-        else:
-            code, size = struct.unpack_from("<IQ", body, at)
-            if code != _ANONYMOUS:
-                return None
-            raw = zlib.decompress(body[at + 12:at + 12 + size - 4])
+        raw, at = _buffer(body, at)
+        if raw is None:
+            return None
         verts = np.frombuffer(raw, "<f4", vcount * 3).reshape(-1, 3)
-        return verts.astype(float), faces.astype(np.int64)
+        exact = _double_vertices(body, at, verts)
+        return (verts.astype(float) if exact is None else exact,
+                faces.astype(np.int64))
     except (IndexError, struct.error, zlib.error, ValueError):
         return None
+
+
+def _buffer(body: bytes, at: int):
+    """(bytes, where the next field starts) of the compressed buffer
+    openNURBS writes at `at`: its size, a CRC, the method, the data."""
+    nbytes = struct.unpack_from("<I", body, at)[0]
+    method = body[at + 8]
+    at += 9
+    if method == 0:
+        return body[at:at + nbytes], at + nbytes
+    code, size = struct.unpack_from("<IQ", body, at)
+    if code != _ANONYMOUS:
+        return None, at
+    raw = zlib.decompress(body[at + 12:at + 12 + size - 4])
+    return (raw if len(raw) == nbytes else None), at + 12 + size
+
+
+def _double_vertices(body: bytes, at: int, single: np.ndarray):
+    """The mesh's double precision vertices, if the record carries them.
+
+    Rhino keeps them beside the single precision ones for a mesh far from
+    the origin, where a float's grid is half a metre wide at five million.
+    They follow later in the record; a buffer of the right size whose
+    values round to the single precision ones is taken to be them.
+    """
+    want = len(single) * 24
+    lead = struct.pack("<I", want)
+    start = at
+    while True:
+        at = body.find(lead, start)
+        if at < 0 or at + 9 > len(body):
+            return None
+        start = at + 1
+        if body[at + 8] not in (0, 1):
+            continue
+        try:
+            raw, _ = _buffer(body, at)
+        except (IndexError, struct.error, zlib.error):
+            continue
+        if raw is None:
+            continue
+        exact = np.frombuffer(raw, "<f8", len(single) * 3).reshape(-1, 3)
+        if np.array_equal(exact.astype(np.float32), single):
+            return exact.copy()
 
 
 def _records(path: str):

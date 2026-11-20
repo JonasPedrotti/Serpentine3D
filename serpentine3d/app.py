@@ -14,7 +14,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDockWidget, QFileDialog, QInputDialog, QMainWindow,
-    QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QProgressDialog,
+    QLineEdit, QMenu, QMessageBox, QPlainTextEdit,
     QStackedWidget, QStatusBar, QTabBar, QTextEdit, QToolBar, QVBoxLayout,
     QWidget,
 )
@@ -195,9 +195,7 @@ class MainWindow(QMainWindow):
             # a sheet's selection belongs to whichever pane is showing it
             viewport_source=lambda: self.active_viewport,
             # the model panes a clipping plane lists among its views
-            panes_source=lambda: [
-                (vp.view_key, self._viewport_title(vp))
-                for vp in self.all_viewports() if vp.space == "model"],
+            panes_source=self._clip_pane_choices,
             viewports_source=self._model_panes)
         self.properties.modelTextChanged.connect(
             self._model_text_changed_from_properties)
@@ -646,6 +644,22 @@ class MainWindow(QMainWindow):
         self._set_active_viewport(vp)
         return vp
 
+    def _clip_pane_choices(self) -> list:
+        """(key, name) of the viewports a clipping plane can cut: the four
+        standard ones always, whichever panes the layout shows, then any
+        other model pane. Each is named by the view it shows now, so a pane
+        turned to Left is ticked as Left."""
+        panes = {vp.view_key: vp for vp in self.all_viewports()
+                 if vp.space == "model"}
+        out = []
+        for key in ("perspective", "top", "front", "right", *panes):
+            if any(k == key for k, _name in out):
+                continue
+            vp = panes.get(key)
+            out.append((key, vp._view_name.capitalize() if vp is not None
+                        else key.capitalize()))
+        return out
+
     def _model_panes(self) -> list:
         """Every model pane the window has made, shown or not."""
         return [vp for vp in [self.viewport, *self.aux_viewports,
@@ -909,6 +923,9 @@ class MainWindow(QMainWindow):
         vp.setAcceptDrops(True)
         vp.installEventFilter(self)
         vp.displayModeChanged.connect(self._update_status)
+        # a selected clipping plane lists the panes by the view they show
+        vp.viewChanged.connect(
+            lambda _name: self.properties.refresh_clip_views())
         vp.layoutSelectionChanged.connect(self._update_status)
         vp.layoutSelectionChanged.connect(self.properties.refresh)
         vp.cameraMoved.connect(
@@ -1111,6 +1128,15 @@ class MainWindow(QMainWindow):
         finally:
             for dock, name in zip(panes, names):
                 dock.setObjectName(name)
+
+    def show_perspective_alone(self):
+        """How a new document opens: Perspective maximised, with Top, Front
+        and Right behind it, so a double-click on its title or Ctrl+M brings
+        the four panes back."""
+        if self.space != "model":
+            return
+        self.set_view_layout("quad")
+        self.toggle_maximized_viewport(self.viewport)
 
     def toggle_maximized_viewport(self, vp=None) -> bool:
         """Give one pane the whole window, or hand the layout back.
@@ -2275,6 +2301,7 @@ class MainWindow(QMainWindow):
         self.history.checkpoint("new")
         self.scene.clear()
         self.apply_view_settings()
+        self.show_perspective_alone()
         self.ctx.current_path = None
         self.command_line.echo("New document.")
         self.mark_saved()
@@ -2285,6 +2312,7 @@ class MainWindow(QMainWindow):
         self.history.checkpoint("new")
         self.scene.clear()
         self.apply_view_settings()
+        self.show_perspective_alone()
         self.scene.units = units
         self.scene.notify()
         self.ctx.current_path = None
@@ -2331,7 +2359,7 @@ class MainWindow(QMainWindow):
 
     def _file_open(self):
         path = self._pick_file(save=False, title="Open")
-        if path:
+        if path and (not _opens_as_new(path) or self._save_changes_first()):
             self._open_path(path)
 
     def _import_showing_progress(self, path: str, scene=None,
@@ -2345,15 +2373,8 @@ class MainWindow(QMainWindow):
         ordinary files don't flash one up, and updates are throttled because
         repainting per face would cost more than the import itself.
         """
-        dlg = QProgressDialog(f"Opening {os.path.basename(path)}…",
-                              "Cancel", 0, 100, self)
-        dlg.setWindowTitle("Opening")
-        dlg.setWindowModality(Qt.WindowModality.WindowModal)
-        dlg.setMinimumDuration(500)
-        dlg.setAutoClose(False)
-        dlg.setAutoReset(False)
-        # It appears on a delay, so place it now rather than on the way up.
-        untether(dlg, over=self)
+        from .ui.progress_card import ProgressCard
+        dlg = ProgressCard(self, f"Opening {os.path.basename(path)}")
 
         def report(fraction, message):
             dlg.setLabelText(message)
@@ -2371,7 +2392,7 @@ class MainWindow(QMainWindow):
                                           progress=fileio.throttled(report),
                                           replace=replace, notes=notes)
         finally:
-            dlg.close()
+            dlg.finish()
 
     def _open_path(self, path: str):
         """Open a file by path (shared by the dialog, Recent menu and the
@@ -2380,9 +2401,16 @@ class MainWindow(QMainWindow):
             # a graph, not a model: it opens in Hydra beside the model
             self.show_hydra().open_path(path)
             return
+        cleared = False
         try:
             self.history.checkpoint("open")
             notes = []
+            if _opens_as_new(path):
+                # A Rhino file opens as the document it is, as Rhino opens
+                # it, and so in its own units; Import is there to add one.
+                self.scene.clear()
+                self.ctx.current_path = None
+                cleared = True
             self._import_showing_progress(path, replace=True, notes=notes)
             if self.journal is not None:
                 self.journal.note_load(path)
@@ -2397,12 +2425,19 @@ class MainWindow(QMainWindow):
             self.add_recent(path)
         except fileio.Cancelled:
             # the user's own decision, not a failure — no alert. Cancel
-            # leaves the scene untouched, so there is nothing to undo.
-            self.history.discard_checkpoint()
+            # leaves the scene as it was: untouched, or put back.
+            self._abandon_open(cleared)
             self.command_line.echo("Open cancelled.")
         except Exception as exc:                              # noqa: BLE001
-            self.history.discard_checkpoint()
+            self._abandon_open(cleared)
             QMessageBox.warning(self, "Open failed", str(exc))
+
+    def _abandon_open(self, cleared: bool):
+        """Drop an open that did not finish: what it cleared comes back."""
+        if cleared:
+            self.history.revert_checkpoint()
+        else:
+            self.history.discard_checkpoint()
 
     # -- recent files (MRU) --
     def recent_files(self) -> list:
@@ -2592,6 +2627,12 @@ class MainWindow(QMainWindow):
         while (self._pending_import_paths and not self.processor.busy
                and not self._importing_file):
             path, paper_drop = self._pending_import_paths.pop(0)
+            if (paper_drop is None and _opens_as_new(path)
+                    and not self.scene.all()):
+                # A Rhino file dropped on an empty drawing is opened, not
+                # added: in its own units, with its own views.
+                self._open_path(path)
+                continue
             self._import_path(path, paper_drop=paper_drop)
 
     def _import_path(self, path, paper_drop=None):
@@ -3819,6 +3860,10 @@ def run_app(app, splash=None):
 
     _open_launch_args(window, app.arguments()[1:])
     window.offer_handoff()
+    if not window.scene.all() and not getattr(window.ctx, "current_path",
+                                              None):
+        # started on nothing: a new document, and it opens as one does
+        window.show_perspective_alone()
 
     from .ui.welcome import WelcomeScreen, should_show as _welcome
     if _welcome(window):
@@ -3828,6 +3873,11 @@ def run_app(app, splash=None):
         _offer_default_app(window)
     window.start_update_check()
     return app.exec()
+
+
+def _opens_as_new(path: str) -> bool:
+    """Whether Open makes a new document of `path` rather than adding it."""
+    return path.lower().endswith(".3dm")
 
 
 def _open_launch_args(window, args: list[str]):

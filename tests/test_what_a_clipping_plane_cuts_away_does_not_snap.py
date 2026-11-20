@@ -126,9 +126,10 @@ def test_the_outline_of_a_mesh_above_the_plane_does_not_snap():
     scene.add(MeshShape([[0, 0, 2], [10, 0, 2], [10, 0, 9], [0, 0, 9]],
                         [[0, 1, 2], [0, 2, 3]]))
     index = SnapIndex(scene)
-    index.types = _only("near")
-    assert _find(index, cam, (10, 0, 5), clip=())[1] == "near"
-    assert _find(index, cam, (10, 0, 5)) is None
+    # its corners, which are all a mesh snaps at
+    index.types = _only("end")
+    assert _find(index, cam, (10, 0, 9), clip=())[1] == "end"
+    assert _find(index, cam, (10, 0, 9)) is None
 
 
 # --- where the plane cuts through ---------------------------------------------

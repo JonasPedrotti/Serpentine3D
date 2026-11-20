@@ -158,6 +158,44 @@ def test_a_rhino_file_in_the_drawings_units_is_left_alone(tmp_path):
     assert notes == []
 
 
+def test_a_rhino_file_opened_into_an_empty_drawing_brings_its_units(tmp_path):
+    """Opened, not added: the drawing is in the file's units, as Rhino
+    would open it, and nothing is converted."""
+    path = _rhino_file(tmp_path, rhino3dm.UnitSystem.Meters)
+    scene = Scene()
+    notes = []
+
+    import_file(scene, path, replace=True, notes=notes)
+
+    assert scene.units == "m"
+    by_name = {o.name: o for o in scene.all()}
+    assert _size(by_name["Shown"].shape) == _cube(1.0)
+    assert _size(by_name["Off"].shape) == _cube(1.0)
+    assert notes == []
+
+
+def test_a_rhino_file_opened_into_a_drawing_with_work_is_converted(tmp_path):
+    path = _rhino_file(tmp_path, rhino3dm.UnitSystem.Meters)
+    scene = _cube_scene("mm", 1.0)
+
+    import_file(scene, path, replace=True)
+
+    assert scene.units == "mm"
+    by_name = {o.name: o for o in scene.all()}
+    assert _size(by_name["Shown"].shape) == _cube(1000.0)
+
+
+def test_the_parallel_reader_brings_the_files_units_too(tmp_path):
+    from serpentine3d.fileio import rhino_parallel as rp
+    path = _rhino_file(tmp_path, rhino3dm.UnitSystem.Meters)
+    adopt = {}
+
+    items = rp.import_3dm_parallel(path, workers=2, units="mm", adopt=adopt)
+
+    assert adopt == {"units": "m"}
+    assert _item_sizes(items) == {"Shown": [_cube(1.0)], "Off": [_cube(1.0)]}
+
+
 def test_an_inch_drawing_writes_a_rhino_file_in_inches(tmp_path):
     path = str(tmp_path / "inch.3dm")
     export_file(_cube_scene("in", 1.0), path)
@@ -256,3 +294,33 @@ def test_the_window_says_it_converted_on_import_and_open(window, tmp_path):
                for line in history), history
     # Open on anything but a .serp adds, as it always has.
     assert _sizes(window.scene) == [_cube(25.4)] * 2
+
+
+def test_opening_a_rhino_file_makes_a_new_document_in_its_units(window,
+                                                                 tmp_path):
+    """Open on a .3dm is a new document, whatever was there: it is the
+    file's, in the file's units. Import is how one is added."""
+    window.scene.add(g.make_box((0, 0, 0), 1, 1, 1), name="Earlier work")
+    path = _rhino_file(tmp_path, rhino3dm.UnitSystem.Meters)
+
+    window._open_path(path)
+
+    assert window.scene.units == "m"
+    assert sorted(o.name for o in window.scene.all()) == ["Off", "Shown"]
+
+
+def test_a_cancelled_rhino_open_leaves_the_drawing_as_it_was(window,
+                                                            tmp_path,
+                                                            monkeypatch):
+    from serpentine3d import fileio
+    window.scene.add(g.make_box((0, 0, 0), 1, 1, 1), name="Earlier work")
+    path = _rhino_file(tmp_path, rhino3dm.UnitSystem.Meters)
+
+    def cancelled(*_a, **_k):
+        raise fileio.Cancelled()
+
+    monkeypatch.setattr(window, "_import_showing_progress", cancelled)
+    window._open_path(path)
+
+    assert [o.name for o in window.scene.all()] == ["Earlier work"]
+    assert window.scene.units == "mm"

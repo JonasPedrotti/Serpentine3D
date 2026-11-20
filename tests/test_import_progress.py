@@ -133,10 +133,19 @@ def _one_mesh_3dm(path: str, faces: int) -> str:
     return path
 
 
-def test_progress_moves_inside_a_large_mesh(tmp_path):
+def _without_mesh_records(monkeypatch):
+    """A mesh read from its record is read in one go, too quickly to report
+    on; one whose record cannot be followed is read a face at a time."""
+    from serpentine3d.fileio import rhino_mesh_records
+    monkeypatch.setattr(rhino_mesh_records, "mesh_arrays_at",
+                        lambda path, index: None)
+
+
+def test_progress_moves_inside_a_large_mesh(tmp_path, monkeypatch):
     """Meshes are converted a face at a time in Python — the fence's biggest
     is 1.6 million faces, 21 seconds in one opaque call. A frozen bar for 21
     seconds is the complaint this whole change exists to answer."""
+    _without_mesh_records(monkeypatch)
     path = _one_mesh_3dm(str(tmp_path / "mesh.3dm"), 5000)
     seen = []
     fileio.import_file(Scene(), path,
@@ -146,7 +155,8 @@ def test_progress_moves_inside_a_large_mesh(tmp_path):
         f"progress never moved inside the mesh: {seen}"
 
 
-def test_cancel_inside_a_mesh_stops_it(tmp_path):
+def test_cancel_inside_a_mesh_stops_it(tmp_path, monkeypatch):
+    _without_mesh_records(monkeypatch)
     path = _one_mesh_3dm(str(tmp_path / "mesh.3dm"), 5000)
     calls = {"n": 0}
 
@@ -210,7 +220,9 @@ def test_throttling_never_swallows_a_cancel():
 def test_the_window_shows_a_dialog_and_honours_its_cancel(tmp_path):
     """The whole point, wired end to end: Open puts up a cancellable dialog,
     and pressing Cancel stops the import and leaves the scene alone."""
-    from PySide6.QtWidgets import QApplication, QProgressDialog
+    from PySide6.QtWidgets import QApplication
+
+    from serpentine3d.ui.progress_card import ProgressCard
 
     from serpentine3d import app as app_mod
 
@@ -221,7 +233,7 @@ def test_the_window_shows_a_dialog_and_honours_its_cancel(tmp_path):
 
         def find_dialog():
             for w in QApplication.instance().topLevelWidgets():
-                if isinstance(w, QProgressDialog) and w.isVisible():
+                if isinstance(w, ProgressCard) and w.isVisible():
                     return w
             return None
 
@@ -261,7 +273,9 @@ def test_the_progress_dialog_is_not_tethered_to_the_main_window(tmp_path):
     import sys
 
     from PySide6.QtCore import Qt, QTimer
-    from PySide6.QtWidgets import QApplication, QProgressDialog
+    from PySide6.QtWidgets import QApplication
+
+    from serpentine3d.ui.progress_card import ProgressCard
 
     from serpentine3d import app as app_mod
 
@@ -275,7 +289,7 @@ def test_the_progress_dialog_is_not_tethered_to_the_main_window(tmp_path):
 
         def look():
             for w in QApplication.instance().topLevelWidgets():
-                if isinstance(w, QProgressDialog) and w.isVisible():
+                if isinstance(w, ProgressCard) and w.isVisible():
                     seen["type"] = w.windowType()
                     w.cancel()
                     poll.stop()
