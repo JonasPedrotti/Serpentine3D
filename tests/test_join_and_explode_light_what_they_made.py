@@ -134,14 +134,22 @@ def test_a_picked_result_shows_the_flash_and_settles_back_to_gold(
     vp.camera.target = (10, 10, 0)
     vp.camera.distance = 60
 
-    def brightest():
+    def around_the_curve():
         image = vp.grabFramebuffer()
         (x, y, _w), = vp.camera.project(np.asarray([(10, 5, 0)], float),
                                         vp.width(), vp.height())
         scale = image.width() / max(vp.width(), 1)
-        return max((image.pixelColor(int(x * scale) + dx, int(y * scale) + dy)
-                    for dx in range(-3, 4) for dy in range(-3, 4)),
+        return [image.pixelColor(int(x * scale) + dx, int(y * scale) + dy)
+                for dx in range(-3, 4) for dy in range(-3, 4)]
+
+    def brightest():
+        return max(around_the_curve(),
                    key=lambda c: c.red() + c.green() + c.blue())
+
+    def most_gold():
+        # Not the brightest: a line's soft edge over the lighter grid can
+        # sum higher than the gold at its middle while being half grey.
+        return max(around_the_curve(), key=lambda c: c.red() - c.blue())
 
     window.selection.set([a.id, b.id])
     window.processor.run("join")
@@ -149,5 +157,5 @@ def test_a_picked_result_shows_the_flash_and_settles_back_to_gold(
     assert lit.blue() > 200, "the joined curve lights up white"
     later = viewport_module.time.monotonic() + theme.CHANGE_FLASH_SECONDS + 1e-3
     monkeypatch.setattr(viewport_module.time, "monotonic", lambda: later)
-    settled = brightest()
+    settled = most_gold()
     assert settled.blue() < 120 and settled.red() > 200, "then gold again"
