@@ -409,12 +409,28 @@ class Scene:
         layer in one pass means the file behind it is opened once, and it
         keeps the cost where the user can see they asked for it.
         """
-        pending = [o.id for o in self.all()
-                   if o.layer_id == layer_id and not o.shape_ready]
+        return self.realise_all(o.id for o in self.all()
+                                if o.layer_id == layer_id)
+
+    def realise_all(self, ids=None, progress=None) -> int:
+        """Convert everything still deferred among `ids` (all objects when
+        None), with one notification for the lot. Returns how many.
+        `progress(fraction)` hears how far it has got.
+
+        One at a time, each conversion tells every panel the scene changed,
+        and on a drawing with thousands of hidden objects that is the
+        layers panel recounting the whole scene thousands of times.
+        """
+        if ids is None:
+            ids = self._order
+        pending = [i for i in ids
+                   if i in self.objects and not self.objects[i].shape_ready]
         if not pending:
             return 0
         with self.batched():
-            for obj_id in pending:
+            for n, obj_id in enumerate(pending):
+                if progress is not None:
+                    progress(n / len(pending))
                 self.realise(obj_id)
         return len(pending)
 

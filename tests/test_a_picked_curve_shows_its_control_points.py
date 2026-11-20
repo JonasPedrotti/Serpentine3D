@@ -97,7 +97,7 @@ def test_escape_with_points_kept_hides_them_all_the_picked_curve_too(win):
     kept = win.scene.add(g.make_line((0, 20, 0), (10, 20, 0)))
     win.selection.set([kept.id])
     win.run_command("pointson")
-    win.selection.set([obj.id])
+    _click(vp, (5.0, 0.0, 0.0))
     assert vp.cv_enabled == {obj.id, kept.id}
     win._cancel()
     assert win.selection.ids == [obj.id]
@@ -105,6 +105,22 @@ def test_escape_with_points_kept_hides_them_all_the_picked_curve_too(win):
     win.selection.set_held(True)          # any later notify leaves them off
     win.selection.set_held(False)
     assert not vp.cv_enabled
+
+
+def test_curves_caught_in_a_window_show_no_points(win):
+    obj, vp = _curve(win)
+    other = win.scene.add(g.make_line((0, 5, 0), (10, 5, 0)))
+    win._on_box_selected([obj.id, other.id], Qt.KeyboardModifier.NoModifier)
+    assert set(win.selection.ids) == {obj.id, other.id}
+    assert not vp.cv_enabled
+
+
+def test_a_curve_clicked_then_widened_by_a_window_keeps_its_points(win):
+    obj, vp = _curve(win)
+    other = win.scene.add(g.make_line((0, 5, 0), (10, 5, 0)))
+    _click(vp, (5.0, 0.0, 0.0))
+    win._on_box_selected([other.id], Qt.KeyboardModifier.ShiftModifier)
+    assert vp.cv_enabled == {obj.id}
 
 
 def test_a_surface_picked_shows_no_points(win):

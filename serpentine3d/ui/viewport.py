@@ -3303,6 +3303,8 @@ class Viewport(QOpenGLWidget):
                     GL.glBindVertexArray(self._preview.vao)
                     GL.glDrawArrays(GL.GL_LINES, 0, len(pend))
                 continue
+            if gpu.tri_count:
+                self._nudge_curves(False)
             omvp = flat if gpu.anchor is None else anchored(mvp, gpu.anchor)
             oview = flat_view if gpu.anchor is None \
                 else anchored(view, gpu.anchor)
@@ -3376,6 +3378,7 @@ class Viewport(QOpenGLWidget):
             else:
                 fill_alpha_obj = fill_alpha
             if lettering and obj.shape.background:
+                self._nudge_curves(False)
                 self._draw_text_background(obj.shape, omvp, gpu.anchor,
                                            light_background)
             if fill_alpha_obj > 0 and gpu.tri_count:
@@ -3510,6 +3513,7 @@ class Viewport(QOpenGLWidget):
                     (*gold, 1.0) if selected else (0.0, 0.0, 0.0, 1.0),
                     selected, anchor=gpu.anchor)
         self._line_width(1.0)
+        self._nudge_curves(False)
         if clips and mode in CAP_MODES:
             # each solid on its own: a batch is not one to cap
             self._draw_section_caps(mvp, view, clips,
@@ -3649,6 +3653,8 @@ class Viewport(QOpenGLWidget):
         planes re-expressed around it."""
         gpu = batch.gpu
         fill, edge, width, iso = batch.look
+        if gpu.tri_count:
+            self._nudge_curves(False)
         mvp = anchored(mvp, gpu.anchor)
         view = anchored(view, gpu.anchor)
         if clips:
@@ -4116,7 +4122,9 @@ class Viewport(QOpenGLWidget):
 
     def _nudge_curves(self, on: bool):
         """Draw what follows a hair nearer (a curve) or as it is. Switched
-        only when it changes: set per object, it was two GL calls each."""
+        only when it changes: set per object, it was two GL calls each. So
+        whatever draws faces switches it off first, or faces after a curve
+        come forward too, over their own edges and what stands before them."""
         if getattr(self, "_curves_nudged", False) == on:
             return
         GL.glDepthRange(0.0, 1.0 - CURVE_DEPTH_NUDGE if on else 1.0)
@@ -7941,7 +7949,7 @@ def _boxes_on_ray(boxes, origin, direction, reach) -> np.ndarray:
 
 # How much of the depth range a curve is drawn nearer than it is, so that
 # lying on an edge it wins the tie (see Viewport._draw_edges).
-CURVE_DEPTH_NUDGE = 2e-5
+CURVE_DEPTH_NUDGE = 1e-6
 # The least grey a mesh's edges are drawn in: darkened from a black mesh's
 # own colour they were black on black, and its triangles could not be told
 # apart.

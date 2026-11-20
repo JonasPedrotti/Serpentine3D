@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QImage
 
 from serpentine3d import fileio
 from serpentine3d.api import SerpApi
-from serpentine3d.commands.base import PointReq, TextReq
+from serpentine3d.commands.base import PointReq, SelectReq, TextReq
 from serpentine3d.core import geometry as g
 from serpentine3d.core.layout import Layout
 
@@ -25,7 +25,7 @@ CASES = [
     ("open", "plain", (), False, "open", ("*.serp", "*.3dm"), "none"),
     ("import", "plain", (), False, "import", ("*.step", "*.obj"), "none"),
     ("save", "plain", (), True, "save", ("*.serp", "*.3dm"), "native"),
-    ("export", "plain", ("",), True, "export", ("*.serp", "*.step"),
+    ("export", "picked", (), True, "export", ("*.serp", "*.step"),
      "export"),
     ("pictureframe", "picture", ("",), False, "picture",
      ("*.png", "*.jpg", "*.jpeg"), "none"),
@@ -59,8 +59,10 @@ def window():
 
 
 def _prepare(win, kind):
-    if kind == "model":
-        win.scene.add(g.make_box((0, 0, 0), 10, 10, 10))
+    if kind in ("model", "picked"):
+        box = win.scene.add(g.make_box((0, 0, 0), 10, 10, 10))
+        if kind == "picked":
+            win.selection.set([box.id])
     elif kind in ("sheet", "multi_sheet"):
         layout = win._new_sheet("A3")
         layout.name = "Picker Sheet"
@@ -188,7 +190,16 @@ def test_api_command_never_opens_a_picker(window, monkeypatch, tmp_path):
     monkeypatch.setattr(window, "_pick_file", forbidden_picker)
     monkeypatch.setattr(fileio, "export_file", record_export)
 
-    SerpApi(window).command("export", inputs=["All", str(target)])
+    box = window.scene.add(g.make_box((0, 0, 0), 10, 10, 10))
+    window.selection.set([box.id])
+    SerpApi(window).command("export", inputs=[str(target)])
 
     assert exported and exported[0][0] == str(target)
     assert not window.processor.busy
+
+
+def test_export_with_nothing_picked_asks_for_objects(window):
+    window.scene.add(g.make_box((0, 0, 0), 10, 10, 10))
+    window.run_command("export")
+
+    assert isinstance(window.processor.request, SelectReq)

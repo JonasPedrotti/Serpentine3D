@@ -260,3 +260,20 @@ def test_both_paths_produce_the_same_drawing(tmp_path):
                       for name, shape, meta in items)
 
     assert summary(serial) == summary(parallel)
+
+
+def test_saving_something_hidden_that_converts_to_nothing(tmp_path):
+    """A text on a switched-off layer is put off like everything else there
+    and turns out to be nothing once asked. Saving asked mid-way through
+    the list of what to write and stumbled over the hole it left."""
+    from serpentine3d.fileio import export_file
+
+    scene = Scene()
+    import_file(scene, _file(tmp_path))
+    scene.add(DeferredShape(lambda: [], kind="curve"), name="text")
+    out = str(tmp_path / "saved.3dm")
+    export_file(scene, out)
+
+    again = Scene()
+    import_file(again, out)
+    assert len(again.all()) == 6

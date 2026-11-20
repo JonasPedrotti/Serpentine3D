@@ -120,7 +120,9 @@ def test_export_of_a_bare_filename_writes_a_real_file(monkeypatch, tmp_path):
     monkeypatch.setattr(app_mod, "QFileDialog", Rec)
     win = app_mod.MainWindow()
     try:
-        win.scene.add(BRepPrimAPI_MakeBox(10., 10., 5.).Shape(), name="box")
+        box = win.scene.add(BRepPrimAPI_MakeBox(10., 10., 5.).Shape(),
+                            name="box")
+        win.selection.set([box.id])
         win._pick_stl_quality = lambda: "standard"      # skip the modal
         win._file_export()
     finally:
@@ -188,8 +190,12 @@ def test_dialogs_use_the_fileio_filters(monkeypatch):
     try:
         win._file_open()
         win._file_import()
+        from serpentine3d.core import geometry as g
+        box = win.scene.add(g.make_box((0, 0, 0), 1, 1, 1))
+        win.selection.set([box.id])
         win._file_export()
     finally:
+        win.mark_saved()
         win.close()
 
     assert ".3dm" in _exts_in(seen["Open"])

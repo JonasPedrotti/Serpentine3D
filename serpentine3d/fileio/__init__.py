@@ -194,8 +194,8 @@ def _import_file(scene, path: str, ext: str, report, replace: bool = False,
                  notes: list | None = None) -> int:
     if ext == ".serp":
         if not replace:
-            return native.merge_scene(scene, path, notes)
-        native.load_scene(scene, path)
+            return native.merge_scene(scene, path, notes, progress=report)
+        native.load_scene(scene, path, progress=report)
         return len(scene.all())
     if ext in (".step", ".stp"):
         shapes = step.import_step(path, scene.units, notes)
@@ -407,19 +407,43 @@ class _Only:
 
 def export_file(scene, path: str, only_ids: list | None = None,
                 thumbnail: bytes | None = None, stl_quality: str = "standard",
-                rhino_version: int = 8):
+                rhino_version: int = 8, progress=None):
     """Export scene (or subset) to a file, format by extension.
 
     Returns a note about anything the format could not carry, or None
-    when everything went in.
+    when everything went in. `progress` is called as for `import_file`;
+    answering False cancels, raising `Cancelled`, before the file is
+    written.
     """
     ext = os.path.splitext(path)[1].lower()
+    report = Progress(progress, f"Saving {os.path.basename(path)}…")
+    report(0.0)
+    writing = report
+    if ext != ".serp":
+        # A .serp keeps what was never converted as it is; every other
+        # format needs the geometry, and some of it converts to nothing
+        # (a hidden layer's text) and leaves the scene, so this comes
+        # before the list of what to write is taken.
+        ids = scene._order if only_ids is None else only_ids
+        if any(i in scene.objects and not scene.objects[i].shape_ready
+               for i in ids):
+            scene.realise_all(only_ids, progress=report.part(
+                0.0, 0.4, "Converting hidden objects…"))
+            writing = report.part(0.4, 1.0)
+    note = _export_file(scene, path, ext, only_ids, thumbnail, stl_quality,
+                        rhino_version, writing)
+    report.done()
+    return note
+
+
+def _export_file(scene, path, ext, only_ids, thumbnail, stl_quality,
+                 rhino_version, progress):
     objs = scene.all()
     if only_ids:
         objs = [o for o in objs if o.id in only_ids]
     if ext == ".serp":
         native.save_scene(_Only(scene, only_ids) if only_ids else scene,
-                          path, thumbnail=thumbnail)
+                          path, thumbnail=thumbnail, progress=progress)
         return
     if ext == ".ply":
         from . import ply
@@ -437,10 +461,10 @@ def export_file(scene, path: str, only_ids: list | None = None,
         left_note = (f"{len(clouds)} point cloud(s) left out: {ext[1:]} "
                      "cannot carry them (export them as PLY)")
         note = _export_shapes(scene, path, ext, objs, only_ids, thumbnail,
-                              stl_quality, rhino_version)
+                              stl_quality, rhino_version, progress)
         return f"{note}; {left_note}" if note else left_note
     return _export_shapes(scene, path, ext, objs, only_ids, thumbnail,
-                          stl_quality, rhino_version)
+                          stl_quality, rhino_version, progress)
 
 
 # Formats whose own coordinates are single precision: a Rhino mesh's
@@ -494,36 +518,58 @@ def _precision_note(objs, ext) -> str | None:
             "to keep detail finer than that.")
 
 
+class _Reporting(list):
+    """A writer's list of objects that says how far through it the writer
+    is, each time it takes the next one. Never backwards: a writer that
+    goes through twice does not send the bar back to the start."""
+
+    def __init__(self, items, progress):
+        super().__init__(items)
+        self._progress = progress
+        self._best = 0.0
+
+    def __iter__(self):
+        for n, item in enumerate(super().__iter__()):
+            self._best = max(self._best, n / len(self))
+            self._progress(self._best)
+            yield item
+
+
 def _export_shapes(scene, path, ext, objs, only_ids, thumbnail, stl_quality,
-                   rhino_version):
+                   rhino_version, progress=None):
+    def counted(items):
+        return items if progress is None else _Reporting(items, progress)
+
     if ext in (".step", ".stp"):
-        n = step.export_step([o.shape for o in objs], path, scene.units)
+        n = step.export_step(counted([o.shape for o in objs]), path,
+                             scene.units)
         return (f"{n} mesh object(s) left out: STEP cannot carry them"
                 if n else None)
     if ext == ".obj":
-        obj.export_obj([(o.name, o.shape, scene.color_of(o))
-                        for o in objs], path)
+        obj.export_obj(counted([(o.name, o.shape, scene.color_of(o))
+                                for o in objs]), path)
         return
     if ext == ".fbx":
         from . import fbx
-        fbx.export_fbx([(o.name, o.shape, scene.color_of(o))
-                        for o in objs], path, units=scene.units)
+        fbx.export_fbx(counted([(o.name, o.shape, scene.color_of(o))
+                                for o in objs]), path, units=scene.units)
         return
     if ext == ".stl":
         from . import stl
-        stl.export_stl([(o.name, o.shape) for o in objs], path,
+        stl.export_stl(counted([(o.name, o.shape) for o in objs]), path,
                        quality=stl_quality)
         return _precision_note(objs, ext)
     if ext == ".3mf":
         from . import threemf
         threemf.export_3mf(
-            [(o.name, o.shape, scene.color_of(o)) for o in objs], path,
+            counted([(o.name, o.shape, scene.color_of(o)) for o in objs]),
+            path,
             unit=threemf.UNIT_3MF.get(scene.units, "millimeter"))
         return
     if ext == ".3dm":
         from . import rhino
         rhino.export_3dm(scene, path, only_ids=only_ids,
-                         version=rhino_version)
+                         version=rhino_version, progress=progress)
         return _precision_note(objs, ext)
     if ext == ".dxf":
         from . import dxf as dxf_mod

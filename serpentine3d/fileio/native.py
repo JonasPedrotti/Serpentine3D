@@ -84,7 +84,8 @@ def read_thumbnail(path: str) -> bytes | None:
     return None
 
 
-def save_scene(scene, path: str, thumbnail: bytes | None = None):
+def save_scene(scene, path: str, thumbnail: bytes | None = None,
+               progress=None):
     if getattr(scene, "before_save", None) is not None:
         scene.before_save()
     from ..core.layout import layouts_to_json, sheet_groups_to_json, style_set
@@ -92,6 +93,14 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
     trajectories = list(getattr(scene, "trajectories", None) or [])
     session = getattr(scene, "session", None) or None
     blobs = {}
+    # In their own list below, so a reader older than version 3 opens the
+    # rest of the drawing with the scan simply absent.
+    drawn = [o for o in scene.all() if o.kind not in ("pointcloud", "picture")]
+    objects = []
+    for n, obj in enumerate(drawn):
+        if progress is not None:
+            progress(0.9 * n / len(drawn))
+        objects.append(_object_to_json(obj))
     doc = {
         "format": "serpentine3d",
         "version": PLAIN_VERSION,
@@ -149,41 +158,7 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
             for layer in scene.layers.all()
         ],
         "current_layer": scene.layers.current_id,
-        "objects": [
-            {
-                "id": obj.id,
-                "name": obj.name,
-                "layer": obj.layer_id,
-                "visible": obj.visible,
-                "color": list(obj.color) if obj.color else None,
-                "material": dict(obj.material) if obj.material else None,
-                "clip_plane": (dict(obj.clip_plane) if obj.clip_plane
-                               else None),
-                "annotation": (dict(obj.annotation) if obj.annotation
-                               else None),
-                "locked": obj.locked,
-                "linetype": obj.linetype,
-                "draw_order": obj.draw_order,
-                "print_width": obj.print_width,
-                "section_fill": (dict(obj.section_fill)
-                                 if obj.section_fill else None),
-                "hatch_style": (dict(obj.hatch_style)
-                                if obj.hatch_style else None),
-                "user_text": (dict(obj.user_text) if obj.user_text
-                              else None),
-                "group": obj.group_id,
-                "block": obj.block_id,
-                "brep": (None if obj.kind == "mesh" else
-                         base64.b64encode(geometry.shape_to_bytes(
-                             obj.shape)).decode("ascii")),
-                "mesh": (_mesh_to_json(obj.shape)
-                         if obj.kind == "mesh" else None),
-            }
-            for obj in scene.all()
-            # In their own list below, so a reader older than version 3
-            # opens the rest of the drawing with the scan simply absent.
-            if obj.kind not in ("pointcloud", "picture")
-        ],
+        "objects": objects,
     }
     if clouds or trajectories or session:
         doc["version"] = 3
@@ -263,6 +238,38 @@ def save_scene(scene, path: str, thumbnail: bytes | None = None):
         doc["version"] = 10
         doc["requires"] = "0.13.1"
     _write_container(doc, path, thumbnail, blobs)
+
+
+def _object_to_json(obj) -> dict:
+    return {
+        "id": obj.id,
+        "name": obj.name,
+        "layer": obj.layer_id,
+        "visible": obj.visible,
+        "color": list(obj.color) if obj.color else None,
+        "material": dict(obj.material) if obj.material else None,
+        "clip_plane": (dict(obj.clip_plane) if obj.clip_plane
+                       else None),
+        "annotation": (dict(obj.annotation) if obj.annotation
+                       else None),
+        "locked": obj.locked,
+        "linetype": obj.linetype,
+        "draw_order": obj.draw_order,
+        "print_width": obj.print_width,
+        "section_fill": (dict(obj.section_fill)
+                         if obj.section_fill else None),
+        "hatch_style": (dict(obj.hatch_style)
+                        if obj.hatch_style else None),
+        "user_text": (dict(obj.user_text) if obj.user_text
+                      else None),
+        "group": obj.group_id,
+        "block": obj.block_id,
+        "brep": (None if obj.kind == "mesh" else
+                 base64.b64encode(geometry.shape_to_bytes(
+                     obj.shape)).decode("ascii")),
+        "mesh": (_mesh_to_json(obj.shape)
+                 if obj.kind == "mesh" else None),
+    }
 
 
 def _hatching_0121_loses(scene) -> bool:
@@ -386,20 +393,25 @@ def _cloud_to_json(obj, blobs: dict) -> dict:
     return entry
 
 
-def load_scene(scene, path: str):
+def load_scene(scene, path: str, progress=None):
     """Replace scene contents with the file's contents (v1 JSON, v2 zip
-    container, or v3 container with point-cloud blobs)."""
+    container, or v3 container with point-cloud blobs). `progress` is a
+    `Progress` or a callback as `import_file` takes one."""
     import zipfile
+    from .progress import Progress
+    report = (progress if isinstance(progress, Progress)
+              else Progress(progress))
+    report(0.0)
     if zipfile.is_zipfile(path):          # v2 / v3 container
         with zipfile.ZipFile(path) as z:
             doc = json.loads(z.read("document.json"))
             _check_version(doc)
-            _load_doc(scene, doc, blobs=z)
+            _load_doc(scene, doc, blobs=z, progress=report.part(0.1, 1.0))
     else:                                 # v1: bare JSON
         with open(path, encoding="utf-8") as f:
             doc = json.load(f)
         _check_version(doc)
-        _load_doc(scene, doc)
+        _load_doc(scene, doc, progress=report.part(0.1, 1.0))
 
 
 _CARRIED_FIELDS = ("visible", "locked", "group_id", "block_id", "color",
@@ -408,7 +420,8 @@ _CARRIED_FIELDS = ("visible", "locked", "group_id", "block_id", "color",
                    "hatch_style", "user_text")
 
 
-def merge_scene(scene, path: str, notes: list | None = None) -> int:
+def merge_scene(scene, path: str, notes: list | None = None,
+                progress=None) -> int:
     """Add a .serp file's objects to `scene`, keeping everything already there.
 
     What Import means for every other format. The file is read into a scene
@@ -421,7 +434,7 @@ def merge_scene(scene, path: str, notes: list | None = None) -> int:
     """
     from ..core.scene import Scene
     incoming = Scene()
-    load_scene(incoming, path)
+    load_scene(incoming, path, progress)
     # Scaled on the way across rather than in `incoming`, where replacing a
     # shape rebuilds what its history built from it, which would then be
     # scaled a second time.
@@ -608,7 +621,7 @@ def _restore_widths(layers, layer_id: str, ld: dict):
         layers.follow_print(layer_id)
 
 
-def _load_doc(scene, doc: dict, blobs=None):
+def _load_doc(scene, doc: dict, blobs=None, progress=None):
     # "serpentine" is the pre-rebrand identifier; those files stay valid
     if doc.get("format") not in ("serpentine3d", "serpentine"):
         raise ValueError("Not a Serpentine3D file")
@@ -703,7 +716,10 @@ def _load_doc(scene, doc: dict, blobs=None):
         scene.hatch_patterns[pattern.name] = pattern
     scene.history_records = list(doc.get("history_records", []))
 
-    for od in doc.get("objects", []):
+    objects = doc.get("objects", [])
+    for n, od in enumerate(objects):
+        if progress is not None:
+            progress(0.9 * n / len(objects))
         if od.get("mesh"):
             shape = _mesh_from_json(od["mesh"])
         else:
@@ -758,7 +774,10 @@ def _load_doc(scene, doc: dict, blobs=None):
                 scene.update(obj.id, clip_plane={**obj.clip_plane,
                                                  "enabled": False})
 
-    for cd in doc.get("pointclouds", []):
+    clouds = doc.get("pointclouds", [])
+    for n, cd in enumerate(clouds):
+        if progress is not None:
+            progress(0.9 + 0.1 * n / len(clouds))
         cloud = _cloud_from_json(cd, blobs)
         if cloud is None:
             continue

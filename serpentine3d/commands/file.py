@@ -44,7 +44,17 @@ def cmd_save(ctx):
     # the menus (#5).
     if os.path.splitext(path)[1].lower() not in fileio.EXPORT_EXTS:
         path += ".serp"
-    fileio.export_file(ctx.scene, path, thumbnail=_thumbnail(ctx))
+    window = ctx.window
+    live = window is not None and not getattr(
+        getattr(window, "processor", None), "headless", True)
+    try:
+        if live:
+            window._export_showing_progress(path, thumbnail=_thumbnail(ctx))
+        else:
+            fileio.export_file(ctx.scene, path, thumbnail=_thumbnail(ctx))
+    except fileio.Cancelled:
+        ctx.echo("Save cancelled.")
+        return
     ctx.current_path = path
     if ctx.window is not None:
         ctx.window.mark_saved()
@@ -92,18 +102,36 @@ def cmd_import(ctx):
 
 @command("export", aliases=("exp",), mutates=False)
 def cmd_export(ctx):
-    scope = yield OptionReq("Export", options=["All", "Selected"],
-                            default="All")
-    ids = None
-    if scope == "Selected":
-        objs = yield SelectReq("Select objects to export")
-        ids = [o.id for o in objs]
+    """Export what is picked: picked before, it goes without asking."""
+    objs = yield SelectReq("Select objects to export")
+    ids = [o.id for o in objs]
     path = yield FileReq("Export path (.step/.stp/.obj/.serp)",
                          default="~/untitled.step", save=True,
-                         title="Export model", filters=fileio.export_filter())
+                         title="Export", filters=fileio.export_filter())
     path = _expand(path)
-    fileio.export_file(ctx.scene, path, only_ids=ids)
-    ctx.echo(f"Exported to {path}")
+    window = ctx.window
+    processor = getattr(window, "processor", None)
+    live = window is not None and not getattr(processor, "headless", True)
+    options = {"only_ids": ids}
+    if live:
+        if path.lower().endswith(".stl"):
+            quality = window._pick_stl_quality()
+            if quality is None:
+                ctx.echo("Export cancelled.")
+                return
+            options["stl_quality"] = quality
+        options["rhino_version"] = fileio.rhino_version_from_filter(
+            getattr(window, "_picked_filter", ""))
+    try:
+        if live:
+            note = window._export_showing_progress(path, **options)
+        else:
+            note = fileio.export_file(ctx.scene, path, **options)
+    except fileio.Cancelled:
+        ctx.echo("Export cancelled.")
+        return
+    ctx.echo(f"Exported {len(ids)} object(s) to {path}"
+             + (f" ({note})" if note else ""))
 
 
 @command("setdefaultapp", mutates=False)

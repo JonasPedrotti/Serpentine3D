@@ -70,8 +70,9 @@ class ProgressCard(CardDialog):
     that is asked about, and a wait before it shows at all, so a quick
     file does not flash a popup up."""
 
-    def __init__(self, parent, heading: str, delay: float = 0.5):
-        super().__init__(parent, heading, title="Opening")
+    def __init__(self, parent, heading: str, delay: float = 0.5,
+                 title: str = "Opening"):
+        super().__init__(parent, heading, title=title)
         if sys.platform.startswith("linux"):
             # GNOME glues a dialog-type window to its parent, so dragging
             # one dragged the main window too (ui/dialogs.untether)
