@@ -1747,8 +1747,10 @@ class Gumball:
         if snaps is None or context is None:
             return None
         ids, extra = context
+        hider = getattr(vp, "snap_hider", None)
         snap = snaps.find(vp._eye(), px, py, vp.width(), vp.height(),
-                          exclude_ids=ids, extra_points=extra)
+                          exclude_ids=ids, extra_points=extra,
+                          hidden=hider(exclude_ids=ids) if hider else None)
         vp._active_snap = snap
         return None if snap is None else np.asarray(snap[0], float)
 

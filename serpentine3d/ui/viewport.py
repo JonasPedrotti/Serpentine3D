@@ -5430,6 +5430,61 @@ class Viewport(QOpenGLWidget):
             return False
         return self.space == "model" or self._drawing_through() is not None
 
+    def snap_hider(self, clip=(), exclude_ids=None):
+        """A test of whether a snap point is covered by a face in front of
+        it, or None where nothing covers anything: wireframe and ghosted
+        show every edge, so every edge snaps."""
+        if self._pick_mode() in ("wireframe", "ghosted"):
+            return None
+        from ..core.snaps import in_sight
+        exclude = set(exclude_ids or ())
+        eye = self._eye()
+        w, h = self.width(), self.height()
+        occluders = [
+            obj for obj in self._shown_here()
+            if obj.id not in exclude and obj.clip_plane is None
+            and (obj.material or {}).get("opacity", 1.0) >= 1.0
+            and not obj.mesh.is_cloud and obj.mesh.has_faces]
+
+        def hidden(point) -> bool:
+            p = np.asarray(point, float)
+            px, py, depth = eye.project(p[None, :], w, h)[0]
+            if depth <= 0:
+                return False
+            origin, direction = eye.ray_through(px, py, w, h)
+            direction = np.asarray(direction, float)
+            direction = direction / (np.linalg.norm(direction) or 1.0)
+            reach = float(np.dot(p - origin, direction))
+            # a face the point lies on, or a facet a few pixels off the true
+            # surface, does not cover it
+            right = np.asarray(eye.right_up()[0], float)
+            step = eye.project((p + right * reach * 1e-3)[None, :], w, h)[0]
+            pixels = math.hypot(step[0] - px, step[1] - py)
+            per_pixel = reach * 1e-3 / pixels if pixels > 1e-9 else 0.0
+            slack = max(4.0 * per_pixel, same_place_tolerance(reach))
+            for obj in self._pick_candidates(occluders, px - 1, py - 1,
+                                             px + 1, py + 1, w, h):
+                mesh = obj.mesh
+                tris, _ = self._near_triangles(mesh, px - 1, py - 1,
+                                               px + 1, py + 1, w, h)
+                if not len(tris):
+                    continue
+                t = ray_triangle_hits(origin - mesh.origin, direction,
+                                      mesh.local[tris[:, 0]].astype(float),
+                                      mesh.local[tris[:, 1]].astype(float),
+                                      mesh.local[tris[:, 2]].astype(float))
+                t = t[t < reach - slack]
+                if not len(t):
+                    continue
+                if not clip:
+                    return True
+                hits = origin[None, :] + t[:, None] * direction[None, :]
+                if in_sight(hits, clip).any():
+                    return True
+            return False
+
+        return hidden
+
     def _point_at(self, px: float, py: float):
         if self.space != "model":
             self._active_snap = None
@@ -5447,7 +5502,8 @@ class Viewport(QOpenGLWidget):
                     pending_points=self.pending_points,
                     picked_points=self.picked_points,
                     clip=self._clip_vectors(entered.id),
-                    on_curve=self.snap_on)
+                    on_curve=self.snap_on,
+                    hidden=self.snap_hider(self._clip_vectors(entered.id)))
                 if snap is not None:
                     self._active_snap = snap
                     return snap[0]
@@ -5497,7 +5553,9 @@ class Viewport(QOpenGLWidget):
                                    pending_points=self.pending_points,
                                    picked_points=self.picked_points,
                                    clip=self._clip_vectors(self.view_key),
-                                   on_curve=self.snap_on)
+                                   on_curve=self.snap_on,
+                                   hidden=self.snap_hider(
+                                       self._clip_vectors(self.view_key)))
             if snap is not None:
                 self._active_snap = snap
                 t = float(np.dot(np.asarray(snap[0], float) - base, unit))
@@ -5516,7 +5574,9 @@ class Viewport(QOpenGLWidget):
                                pending_points=self.pending_points,
                                picked_points=self.picked_points,
                                clip=self._clip_vectors(self.view_key),
-                               on_curve=self.snap_on)
+                               on_curve=self.snap_on,
+                               hidden=self.snap_hider(
+                                   self._clip_vectors(self.view_key)))
         if snap is not None:
             self._active_snap = snap
             return snap[0]
