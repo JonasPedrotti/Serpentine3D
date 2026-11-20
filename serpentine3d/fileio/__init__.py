@@ -379,6 +379,32 @@ def _make_layer(scene, rung: dict, parent_id: str | None) -> str:
     return existing.id
 
 
+class _Only:
+    """The scene as a .serp of some of its objects sees it: those objects,
+    with every layer, block and style, and the history that builds them
+    from one another. No sheets: a sheet shows the whole model."""
+
+    def __init__(self, scene, ids):
+        self._scene = scene
+        self._ids = set(ids)
+        self.layouts = []
+        self.sheet_groups = []
+        self.trajectories = []
+        self.session = None
+
+    def __getattr__(self, name):
+        return getattr(self._scene, name)
+
+    def all(self):
+        return [o for o in self._scene.all() if o.id in self._ids]
+
+    @property
+    def history_records(self):
+        return [r for r in self._scene.history_records
+                if r["output"] in self._ids
+                and all(i in self._ids for i in r["inputs"])]
+
+
 def export_file(scene, path: str, only_ids: list | None = None,
                 thumbnail: bytes | None = None, stl_quality: str = "standard",
                 rhino_version: int = 8):
@@ -392,7 +418,8 @@ def export_file(scene, path: str, only_ids: list | None = None,
     if only_ids:
         objs = [o for o in objs if o.id in only_ids]
     if ext == ".serp":
-        native.save_scene(scene, path, thumbnail=thumbnail)
+        native.save_scene(_Only(scene, only_ids) if only_ids else scene,
+                          path, thumbnail=thumbnail)
         return
     if ext == ".ply":
         from . import ply
