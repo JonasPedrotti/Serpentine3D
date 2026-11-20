@@ -3137,6 +3137,7 @@ class Viewport(QOpenGLWidget):
             # after a failed upload makes its shaders' unwritten distances
             # undefined, so release them even when an object cannot draw.
             self._end_clips(clips)
+            self._nudge_curves(False)
 
     @contextmanager
     def _into_detail(self, width: float, height: float, ratio: float,
@@ -3431,9 +3432,7 @@ class Viewport(QOpenGLWidget):
                 elif plaster and gpu.tri_count and not locked:
                     edge_color = theme.PLASTER_EDGE
                 else:
-                    # face edges: darkened object colour
-                    edge_color = (line_color[0] * 0.35, line_color[1] * 0.35,
-                                  line_color[2] * 0.35, 1.0)
+                    edge_color = face_edge_color(line_color, obj.kind)
                 lw = self.scene.screen_width_of(obj)
                 self._draw_edges(gpu, omvp, edge_color,
                                  2.2 if selected else lw)
@@ -3623,8 +3622,8 @@ class Viewport(QOpenGLWidget):
         if light_background:
             line = (min(color[0], 0.3), min(color[1], 0.3),
                     min(color[2], 0.33))
-        edge = (*line, 1.0) if obj.kind == "curve" else (
-            line[0] * 0.35, line[1] * 0.35, line[2] * 0.35, 1.0)
+        edge = ((*line, 1.0) if obj.kind == "curve"
+                else face_edge_color(line, obj.kind))
         iso = (*color, 0.55) if mode == "wireframe" else (
             color[0] * 0.30, color[1] * 0.30, color[2] * 0.30, 0.8)
         fill = theme.shaded_fill(color)
@@ -4099,7 +4098,24 @@ class Viewport(QOpenGLWidget):
 
     def _draw_edges(self, gpu, mvp, color, width: float):
         """Object edges at a given pixel width. Wide lines fall back to a
-        screen-space quad shader where GL_LINES are capped (llvmpipe)."""
+        screen-space quad shader where GL_LINES are capped (llvmpipe).
+
+        A curve, whose lines are all there is of it, is drawn a hair
+        nearer than it is: lying exactly on a mesh's edge or a face's, the
+        two fought for the same depth and the curve came and went. A
+        touch, so a face a real distance in front still hides it."""
+        self._nudge_curves(not getattr(gpu, "tri_count", 0))
+        self._draw_edge_lines(gpu, mvp, color, width)
+
+    def _nudge_curves(self, on: bool):
+        """Draw what follows a hair nearer (a curve) or as it is. Switched
+        only when it changes: set per object, it was two GL calls each."""
+        if getattr(self, "_curves_nudged", False) == on:
+            return
+        GL.glDepthRange(0.0, 1.0 - CURVE_DEPTH_NUDGE if on else 1.0)
+        self._curves_nudged = on
+
+    def _draw_edge_lines(self, gpu, mvp, color, width: float):
         if width <= self._max_line_width + 0.25 or not gpu.thick_count:
             self._set_line_uniforms(mvp, color)
             self._line_width(width)
@@ -7652,6 +7668,24 @@ def _boxes_on_ray(boxes, origin, direction, reach) -> np.ndarray:
     pad = 1e-9 * max(abs(reach), 1.0)
     hit = np.flatnonzero((near <= far + pad) & (far >= 0) & (near < reach))
     return hit[np.argsort(near[hit])]
+
+
+# How much of the depth range a curve is drawn nearer than it is, so that
+# lying on an edge it wins the tie (see Viewport._draw_edges).
+CURVE_DEPTH_NUDGE = 2e-5
+# The least grey a mesh's edges are drawn in: darkened from a black mesh's
+# own colour they were black on black, and its triangles could not be told
+# apart.
+MESH_EDGE_FLOOR = 0.32
+
+
+def face_edge_color(color, kind) -> tuple:
+    """The colour the edges of a face are drawn in: the object's own,
+    darkened, and for a mesh never darker than a mid grey."""
+    edge = [c * 0.35 for c in color[:3]]
+    if kind == "mesh":
+        edge = [max(c, MESH_EDGE_FLOOR) for c in edge]
+    return (*edge, 1.0)
 
 
 def _clip_polygon(poly, clip) -> np.ndarray:
