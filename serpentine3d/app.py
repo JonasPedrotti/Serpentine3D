@@ -302,6 +302,8 @@ class MainWindow(QMainWindow):
         self.scene.add_listener(self._update_status)
         self.selection.add_listener(self._update_status)
         self._points_wanted: set[str] = set()
+        # curves picked by a click on them, the only ones that show points
+        self._clicked_curves: set[str] = set()
         self.selection.add_listener(self._show_selected_points)
         self.scene.add_listener(self._refresh_space_tabs)
         self._refresh_space_tabs()
@@ -2010,6 +2012,12 @@ class MainWindow(QMainWindow):
         additive = bool(modifiers & (Qt.KeyboardModifier.ShiftModifier
                                      | Qt.KeyboardModifier.ControlModifier))
         ids = self.scene.expand_group_ids([obj_id])
+        if not additive:
+            self._clicked_curves = {obj_id}
+        elif self.selection.is_selected(obj_id):
+            self._clicked_curves.discard(obj_id)
+        else:
+            self._clicked_curves.add(obj_id)
         if additive:
             if self.selection.is_selected(obj_id):
                 self.selection.set([i for i in self.selection.ids
@@ -2393,6 +2401,30 @@ class MainWindow(QMainWindow):
         finally:
             dlg.finish()
 
+    def _export_showing_progress(self, path: str, **kwargs):
+        """export_file behind the same card an import shows: a .3dm of a
+        survey converts every hidden object and writes thousands more,
+        and with no card the window looked hung."""
+        from .ui.progress_card import ProgressCard
+        dlg = ProgressCard(self, f"Saving {os.path.basename(path)}",
+                           title="Saving")
+
+        def report(fraction, message):
+            dlg.setLabelText(message)
+            dlg.setValue(int(fraction * 100))
+            QApplication.processEvents()
+            return not dlg.wasCanceled()
+
+        paused = (self.journal.pause() if self.journal is not None
+                  else contextlib.nullcontext())
+        try:
+            with paused:
+                return fileio.export_file(self.scene, path,
+                                          progress=fileio.throttled(report),
+                                          **kwargs)
+        finally:
+            dlg.finish()
+
     def _open_path(self, path: str):
         """Open a file by path (shared by the dialog, Recent menu and the
         welcome screen)."""
@@ -2510,9 +2542,8 @@ class MainWindow(QMainWindow):
             self._save_rhino_version = fileio.rhino_version_from_filter(
                 getattr(self, "_picked_filter", ""))
         try:
-            fileio.export_file(self.scene, path,
-                               rhino_version=getattr(
-                                   self, "_save_rhino_version", 8))
+            self._export_showing_progress(
+                path, rhino_version=getattr(self, "_save_rhino_version", 8))
             self.ctx.current_path = path
             if path.lower().endswith(".3dm"):
                 # Honest about the trade before anyone loses a sheet to it.
@@ -2523,6 +2554,8 @@ class MainWindow(QMainWindow):
                 self.command_line.echo(f"Saved {path}")
             self.mark_saved()
             self.add_recent(path)
+        except fileio.Cancelled:
+            self.command_line.echo("Save cancelled.")
         except Exception as exc:                              # noqa: BLE001
             QMessageBox.warning(self, "Save failed", str(exc))
 
@@ -2710,25 +2743,9 @@ class MainWindow(QMainWindow):
                     ("Ultra fine — maximum detail", "ultra")]
 
     def _file_export(self):
-        path = self._pick_file(save=True, title="Export")
-        if not path:
-            return
-        stl_quality = "standard"
-        if path.lower().endswith(".stl"):
-            stl_quality = self._pick_stl_quality()
-            if stl_quality is None:
-                return
-        try:
-            ids = self.selection.ids or None
-            note = fileio.export_file(
-                self.scene, path, only_ids=ids, stl_quality=stl_quality,
-                rhino_version=fileio.rhino_version_from_filter(
-                    getattr(self, "_picked_filter", "")))
-            scope = "selection" if ids else "scene"
-            self.command_line.echo(f"Exported {scope} to {path}"
-                                   + (f" ({note})" if note else ""))
-        except Exception as exc:                              # noqa: BLE001
-            QMessageBox.warning(self, "Export failed", str(exc))
+        """The Export command: what is picked goes straight to the file
+        chooser, and with nothing picked it asks for objects first."""
+        self.run_command("export")
 
     def _pick_stl_quality(self) -> str | None:
         """STL quality picker. Built as an instance (not QInputDialog.getItem)
@@ -3402,8 +3419,10 @@ class MainWindow(QMainWindow):
     AUTO_POINTS_UP_TO = 50
 
     def _show_selected_points(self):
-        """A picked curve shows its control points, ready to pick, and they
-        go again when the selection lets go of it. A curve with one of its
+        """A curve picked by a click on it shows its control points, ready
+        to pick, and they go again when the selection lets go of it. One
+        caught in a window or picked any other way shows none: a band over
+        a drawing would cover it in markers. A curve with one of its
         points held stays on, since picking a point lets go of the curve.
 
         Only what the selection itself changed is acted on: Escape hiding
@@ -3412,7 +3431,9 @@ class MainWindow(QMainWindow):
         catch the clicks meant for the next curve.
         """
         sel, scene = self.selection, self.scene
-        curves = [o.id for o in sel.objects() if o.kind == "curve"]
+        self._clicked_curves &= set(sel.ids)
+        curves = [o.id for o in sel.objects()
+                  if o.kind == "curve" and o.id in self._clicked_curves]
         wanted = set(curves) if len(curves) <= self.AUTO_POINTS_UP_TO \
             else set()
         wanted.update(oid for oid, kind, _i in sel.subobjects

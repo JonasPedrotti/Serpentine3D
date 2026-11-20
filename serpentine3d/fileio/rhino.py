@@ -2152,7 +2152,16 @@ class PendingFile:
         self.objects = objects
         self._owed = owed
         self._model = None
+        self._patterns = None
         self._lock = threading.Lock()
+
+    def hatch_patterns(self) -> dict:
+        """The file's hatch pattern table, read once for every hatch owed
+        rather than the whole file again for each."""
+        with self._lock:
+            if self._patterns is None:
+                self._patterns = read_hatch_patterns(self.path)
+            return self._patterns
 
     def settled(self):
         """One object owed has been read without the model."""
@@ -2204,7 +2213,7 @@ def _deferred_from_file(pending: PendingFile, index: int, kind: str):
         geo = pending.geometry(index)
         if geo is None:
             return []
-        patterns = (read_hatch_patterns(pending.path)
+        patterns = (pending.hatch_patterns()
                     if isinstance(geo, r3.Hatch) else None)
         return _put_off(geo, patterns, pending.path, index)
 
@@ -2490,7 +2499,7 @@ def _parents_first(layers) -> list:
 
 
 def export_3dm(scene, path: str, only_ids: list | None = None,
-               version: int = 8):
+               version: int = 8, progress=None):
     model = r3.File3dm()
     # A new file says millimetres whatever it holds.
     model.Settings.ModelUnitSystem = _RHINO_UNITS[scene.units]
@@ -2522,7 +2531,9 @@ def export_3dm(scene, path: str, only_ids: list | None = None,
     if only_ids:
         objs = [o for o in objs if o.id in only_ids]
     materials = {}
-    for obj in objs:
+    for n, obj in enumerate(objs):
+        if progress is not None:
+            progress(n / len(objs))
         attrs = r3.ObjectAttributes()
         attrs.Name = obj.name
         attrs.LayerIndex = layer_index.get(obj.layer_id, 0)
