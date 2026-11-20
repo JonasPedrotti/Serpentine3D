@@ -183,6 +183,9 @@ VIEW_SETTLE = 0.5
 # ARROW_COUNT is how many go on a curve, and roughly how many on each face of
 # a surface: enough to see the run at a glance, few enough to see through.
 ARROW_PX = 22.0
+# What a clipping plane leaves an edge on where it cuts: everything with
+# faces, which a picture, a hatch or lettering is not.
+CUT_EDGE_KINDS = ("solid", "surface", "mesh", "compound")
 # A clipping plane's own arrow, longer than a direction arrow so it reads as
 # a property of the whole plane rather than of the edge it happens to start
 # near, and fixed on the glass for the same reason theirs is.
@@ -3675,7 +3678,8 @@ class Viewport(QOpenGLWidget):
     def _draw_section_caps(self, mvp, view, clips, objects, locked_layers,
                            mode):
         """Close every solid a live clipping plane cuts with a cap, in its
-        section's fill (see ui/section_caps.py for how).
+        section's fill (see ui/section_caps.py for how), and edge every
+        solid, surface and mesh it cuts in the plane's own colour.
 
         After the objects, so a cap is hidden behind whatever is in front
         of it; on the stencil, so only the inside of a solid is capped.
@@ -3683,18 +3687,20 @@ class Viewport(QOpenGLWidget):
         if not self._cap_prog or self._cap_quad is None:
             return
         planes = _caps.cap_planes(self._clip_frames())
-        solids = []
+        faced = []
         for obj in objects:
             gpu = self._gpu.get(obj.id)
-            if (obj.kind == "solid" and gpu is not None and gpu.tri_count
+            if (obj.kind in CUT_EDGE_KINDS and obj.clip_plane is None
+                    and gpu is not None and gpu.tri_count
                     and obj.mesh_ready and obj.mesh.bounds() is not None):
-                solids.append((obj, gpu))
-        if not planes or not solids:
+                faced.append((obj, gpu))
+        if not planes or not faced:
             self._cut_lines.end_frame()
             return
-        boxes = [obj.mesh.bounds() for obj, _gpu in solids]
+        boxes = [obj.mesh.bounds() for obj, _gpu in faced]
         lows = np.array([b[0] for b in boxes], float)
         highs = np.array([b[1] for b in boxes], float)
+        colors = self._clip_plane_colors()
         # Measured in the picture being made, along its own right: a
         # detail's, not the pane's or the model camera's.
         target = self._draw_target()
@@ -3705,32 +3711,18 @@ class Viewport(QOpenGLWidget):
             for i, plane in enumerate(planes):
                 through = _caps.straddling(lows, highs, plane.origin,
                                            plane.normal)
-                cut = [solids[k] for k in np.flatnonzero(through)]
-                if not cut:
+                crossed = [faced[k] for k in np.flatnonzero(through)]
+                if not crossed:
                     continue
+                cut = [(obj, gpu) for obj, gpu in crossed
+                       if obj.kind == "solid"]
                 others = [p.equation for j, p in enumerate(planes) if j != i]
-                ppu = _caps.pixels_per_unit(mvp, plane.origin, right,
-                                            width, height)
-                reach = max(float(np.linalg.norm(
-                    np.asarray(corner, float) - np.asarray(plane.origin)))
-                    for obj, _gpu in cut for corner in obj.mesh.bounds())
-                by_id = {obj.id: (obj, gpu) for obj, gpu in cut}
-                fills = {obj.id: self.scene.section_fill_of(obj)
-                         for obj, _gpu in cut}
-                looks = [(obj.id, _caps.cap_style(
-                    fills[obj.id],
-                    self._cap_color(obj, locked_layers, mode)))
-                    for obj, _gpu in cut]
-                for style, ids in _caps.group_by_style(looks):
-                    gpus = [by_id[oid][1] for oid in ids]
-                    self._count_into_stencil(mvp, plane, gpus)
-                    self._lay_cap(mvp, plane, others, style, ppu,
-                                  reach * 1.5 + 1.0)
-                    if self._ao_caps is not None:
-                        self._ao_caps.append((mvp, plane, gpus, others,
-                                              style, ppu, reach * 1.5 + 1.0))
-                self._draw_cut_lines(mvp, plane, others,
-                                     [(obj, fills[obj.id]) for obj, _ in cut])
+                if cut:
+                    self._cap_solids(mvp, plane, others, cut, right,
+                                     (width, height), locked_layers, mode)
+                edge = colors.get((tuple(plane.origin), tuple(plane.normal)),
+                                  theme.CLIP_NORMAL)
+                self._draw_cut_lines(mvp, plane, others, crossed, edge)
         finally:
             self._cut_lines.end_frame()
             GL.glDisable(GL.GL_STENCIL_TEST)
@@ -3742,6 +3734,29 @@ class Viewport(QOpenGLWidget):
             for k in range(_caps.MAX_PLANES):
                 (GL.glEnable if k < len(clips) else GL.glDisable)(
                     GL.GL_CLIP_DISTANCE0 + k)
+
+    def _cap_solids(self, mvp, plane, others, cut, right, size,
+                    locked_layers, mode):
+        """The caps one plane lays over the solids it cuts: a stencil pass
+        for every look they share. `right` is the picture's own, which the
+        hatch's spacing is measured along."""
+        ppu = _caps.pixels_per_unit(mvp, plane.origin, right, *size)
+        reach = max(float(np.linalg.norm(
+            np.asarray(corner, float) - np.asarray(plane.origin)))
+            for obj, _gpu in cut for corner in obj.mesh.bounds())
+        extent = reach * 1.5 + 1.0
+        by_id = {obj.id: (obj, gpu) for obj, gpu in cut}
+        looks = [(obj.id, _caps.cap_style(
+            self.scene.section_fill_of(obj),
+            self._cap_color(obj, locked_layers, mode)))
+            for obj, _gpu in cut]
+        for style, ids in _caps.group_by_style(looks):
+            gpus = [by_id[oid][1] for oid in ids]
+            self._count_into_stencil(mvp, plane, gpus)
+            self._lay_cap(mvp, plane, others, style, ppu, extent)
+            if self._ao_caps is not None:
+                self._ao_caps.append((mvp, plane, gpus, others, style, ppu,
+                                      extent))
 
     def _cap_color(self, obj, locked_layers, mode):
         """The colour a cap shades from: the object's, greyed on a locked
@@ -3831,11 +3846,13 @@ class Viewport(QOpenGLWidget):
         self._cap_quad.draw(extent)
         GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
 
-    def _draw_cut_lines(self, mvp, plane, others, cut):
-        """The line round every cap one plane lays, where the plane meets
-        each solid's faces, in the width and colour the solid's section
-        says (#82). `cut` is (object, section fill) for every solid the
-        plane passes through.
+    def _draw_cut_lines(self, mvp, plane, others, cut, color):
+        """The edge one plane leaves on everything it cuts, where it meets
+        each object's faces, in the plane's own `color`: a solid's in the
+        width its section says (#82), in the colour it says if it says one,
+        and none where the width is none; a surface's or a mesh's in the
+        width a section has by default. `cut` is (object, gpu) for every
+        object the plane passes through.
 
         Not on the stencil: half the line's width lies outside the cap.
         Cut by every other plane, as the cap is, but not by this one: the
@@ -3848,8 +3865,15 @@ class Viewport(QOpenGLWidget):
         """
         groups: dict = {}
         px_per_mm = self._draw_target().px_per_mm
-        for obj, fill in cut:
+        for obj, _gpu in cut:
+            fill = (self.scene.section_fill_of(obj) if obj.kind == "solid"
+                    else None)
             style = _caps.cut_line_style(fill, px_per_mm)
+            if style is not None and (fill is None
+                                      or fill.cut_line_color is None):
+                # ink, the default, is the plane's colour; a colour the
+                # section names is its own
+                style = ((*(float(c) for c in color[:3]), 1.0), style[1])
             if self._looks_selected(obj.id):
                 # A picked solid shows where it is cut, in gold: on a
                 # sheet the cut can be all there is to see of it, and its
@@ -4664,13 +4688,14 @@ class Viewport(QOpenGLWidget):
         cache = getattr(self, "_clip_frames_cache", None)
         if cache is None or cache[0] != key:
             visible = {o.id for o in self.scene.visible_objects()}
-            every, shown_frames = [], []
+            every, shown_frames, owners = [], [], []
             for plane in (o for o in self.scene.all() if o.clip_plane):
                 frame = _plane_frames([plane])      # one read a plane
                 every.extend(frame)
+                owners.extend((plane, f[1], f[2]) for f in frame)
                 if plane.id in visible:
                     shown_frames.extend(frame)
-            cache = (key, every, shown_frames, {})
+            cache = (key, every, shown_frames, {}, owners)
             self._clip_frames_cache = cache
         view = self._view_drawn() if view is None else view
         frames = cache[3].get((view, shown))
@@ -4679,6 +4704,13 @@ class Viewport(QOpenGLWidget):
                       for setting, o, n in cache[2 if shown else 1]]
             cache[3][(view, shown)] = frames
         return frames
+
+    def _clip_plane_colors(self) -> dict:
+        """Each clipping plane's colour, by its (origin, normal): asked
+        afresh, since a layer's colour changes without a revision."""
+        self._clip_frames()
+        return {(o, n): self.scene.color_of(plane)
+                for plane, o, n in self._clip_frames_cache[4]}
 
     def _clip_vectors(self, view: str | None = None) -> list:
         """vec4 clip equations from the planes that cut `view`, the one

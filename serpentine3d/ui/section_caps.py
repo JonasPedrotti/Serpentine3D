@@ -194,20 +194,22 @@ def family_uniforms(families) -> tuple:
 
 def cut_line_style(fill, px_per_mm: float | None = None):
     """The line round a cap, as ((r, g, b, a), pixels), or None for a
-    section with no cut line. Its width on the paper is drawn the way a
+    section with no cut line. No section at all (None) is the line a
+    section has by default, as a cut surface or mesh is edged. Its width on the paper is drawn the way a
     layer's print width is on screen; ink is the ink its hatch draws in.
 
     On a sheet, where there is a millimetre to measure by (`px_per_mm`
     pixels to it), the line is its width on the paper, as a hidden-line
     detail draws it and as it prints (#94). Never under a pixel either way.
     """
-    from ..core.layers import screen_width_for
-    if fill.cut_line_width <= 0:
+    from ..core.layers import DEFAULT_CUT_LINE_WIDTH, screen_width_for
+    mm = DEFAULT_CUT_LINE_WIDTH if fill is None else fill.cut_line_width
+    if mm <= 0:
         return None
     rgb = (tuple(float(c) for c in fill.cut_line_color[:3])
-           if fill.cut_line_color else INK_ON_SCREEN)
-    width = (screen_width_for(fill.cut_line_width) if px_per_mm is None
-             else max(1.0, round(fill.cut_line_width * px_per_mm, 2)))
+           if fill is not None and fill.cut_line_color else INK_ON_SCREEN)
+    width = (screen_width_for(mm) if px_per_mm is None
+             else max(1.0, round(mm * px_per_mm, 2)))
     return (*rgb, 1.0), width
 
 
