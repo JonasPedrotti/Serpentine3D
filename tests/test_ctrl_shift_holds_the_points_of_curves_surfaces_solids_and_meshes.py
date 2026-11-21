@@ -152,7 +152,7 @@ def test_move_takes_a_curve_s_corner_and_its_sides_follow(env):
     assert g.is_closed_curve(moved)
 
 
-def test_move_lifts_a_box_s_top_corners_and_refuses_one(env):
+def test_move_lifts_a_box_s_top_corners_and_then_one(env):
     scene, sel, proc = env
     box = scene.add(g.make_box((0, 0, 0), 2, 2, 2))
     top = [i for i, p in enumerate(g.vertex_points(box.shape)) if p[2] == 2]
@@ -163,12 +163,17 @@ def test_move_lifts_a_box_s_top_corners_and_refuses_one(env):
     assert g.bbox(scene.get(box.id).shape)[1][2] == pytest.approx(3.0)
     one = [i for i, p in enumerate(g.vertex_points(scene.get(box.id).shape))
            if p[2] == pytest.approx(3.0)][:1]
+    lifted = g.vertex_points(scene.get(box.id).shape)[one[0]]
     sel.set_subobjects([(box.id, "vertex", one[0])])
     proc.run("move")
     proc.provide_text("0,0,0")
     proc.provide_text("0,0,1")
-    assert g.bbox(scene.get(box.id).shape)[1][2] == pytest.approx(3.0), \
-        "one corner of a box would bend its sides, so it stays"
+    shape = scene.get(box.id).shape
+    assert g.is_valid(shape) and g.shape_kind(shape) == "solid"
+    corners = {tuple(round(c, 6) for c in p) for p in g.vertex_points(shape)}
+    assert (lifted[0], lifted[1], 4.0) in corners, \
+        "one corner of a box rises alone, its sides bending to follow"
+    assert sum(1 for p in corners if p[2] == 3.0) == 3
 
 
 def test_move_takes_a_mesh_s_point_and_its_triangles_follow(env):

@@ -27,6 +27,13 @@ from serpentine3d.core.selection import SelectionManager
 from serpentine3d.ui.gumball import Gumball
 
 
+
+@pytest.fixture(autouse=True)
+def _ctrl_for_the_other_gumball(monkeypatch):
+    """Held parts get the transform gumball; these are the ones holding
+    Ctrl asks for instead, so Ctrl is held throughout."""
+    monkeypatch.setattr("serpentine3d.ui.gumball._ctrl_down", lambda: True)
+
 class _Cam:
     def ray_through(self, px, py, w, h):
         return np.array([px, 100.0, py]), np.array([0.0, -1.0, 0.0])

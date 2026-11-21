@@ -31,6 +31,13 @@ from serpentine3d.core.selection import SelectionManager
 from serpentine3d.ui import gumball as gb
 from serpentine3d.ui.viewport import Viewport
 
+
+@pytest.fixture(autouse=True)
+def _ctrl_for_the_other_gumball(monkeypatch):
+    """Held parts get the transform gumball; these are the ones holding
+    Ctrl asks for instead, so Ctrl is held throughout."""
+    monkeypatch.setattr("serpentine3d.ui.gumball._ctrl_down", lambda: True)
+
 CTRL = Qt.KeyboardModifier.ControlModifier
 NONE = Qt.KeyboardModifier.NoModifier
 Z_ARROW = ("move", 2)
@@ -354,12 +361,14 @@ def test_a_solid_has_nowhere_to_grow_so_it_just_moves(pane):
 
 # -- an edge picked off a solid ----------------------------------------------
 
-def test_ctrl_dragging_a_held_edge_makes_a_surface_from_it(pane):
+def test_the_box_on_a_held_edge_makes_a_surface_from_it(pane):
+    """Ctrl brings up the edge's own gumball, so the box, not Ctrl and the
+    arrow, is what grows a surface out of the edge."""
     box = pane.scene.add(g.make_box((0, 0, 0), 4, 4, 4))
     pane.selection.set([box.id])
     pane.selection.set_subobjects([(box.id, "edge", 0)])
     edge = g.edges_of(box.shape)[0]
-    assert _grab(pane)
+    assert _grab(pane, handle=("ext", 2))
     pane.gumball.apply_scalar(2.0)
     pane.gumball.end_drag()
     made = _others(pane, box)

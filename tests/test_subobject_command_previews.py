@@ -252,15 +252,38 @@ def test_repeated_cursor_previews_are_pure_and_cancel_leaves_the_original(env):
 
 
 @pytest.mark.parametrize("command,held,answers,cursor", [
-    ("rotate", "edge", [(5., 5., 5.), (6., 5., 5.)], (5., 6., 5.)),
     ("scale", "edge", [(0., 0., 0.), (10., 0., 0.)], (5., 0., 0.)),
     ("rotate", "top", [(5., 5., 10.), (6., 5., 10.)], (5., 6., 10.)),
-    # Single-face Rotate3D currently refuses at commit; its preview must
-    # honor that supported-operation boundary rather than promise a tilt.
     ("rotate3d", "top", [(5., 5., 10.), (15., 5., 10.), (5., 6., 10.)],
      (5., 5., 11.)),
-    ("rotate", "two-faces", [(5., 5., 5.), (6., 5., 5.)], (5., 6., 5.)),
     ("scale", "two-faces", [(0., 0., 0.), (10., 0., 0.)], (5., 0., 0.)),
+])
+def test_once_refused_parts_preview_what_the_click_builds(
+        env, command, held, answers, cursor):
+    """Edges, a face turned about any axis and sets of faces are all
+    transformed now; the ghost is the result the click makes."""
+    scene, sel, _hist, ctx, proc = env
+    box = _box(scene)
+    if held == "edge":
+        sel.toggle_subobject(box.id, "edge", _edge(box.shape, (5, 0, 10)))
+    else:
+        sel.toggle_subobject(box.id, "face", _face(box.shape, (0, 0, 1)))
+        if held == "two-faces":
+            sel.toggle_subobject(box.id, "face", _face(box.shape, (0, -1, 0)))
+    _start(proc, command, *answers)
+
+    ghost = proc.preview_for(cursor)
+    assert ghost is not None and g.is_valid(ghost)
+    _assert_points(scene.get(box.id).shape, _BOX_POINTS)
+    proc.provide(cursor)
+    assert not proc.busy
+    _assert_same_geometry(ghost, scene.get(box.id).shape)
+
+
+@pytest.mark.parametrize("command,held,answers,cursor", [
+    # turned a quarter turn, these would fold the faces beside them
+    ("rotate", "edge", [(5., 5., 5.), (6., 5., 5.)], (5., 6., 5.)),
+    ("rotate", "two-faces", [(5., 5., 5.), (6., 5., 5.)], (5., 6., 5.)),
 ])
 def test_refused_subobject_operation_has_no_misleading_transformed_ghost(
         env, command, held, answers, cursor):
@@ -299,8 +322,8 @@ def test_invalid_candidate_is_quiet_and_a_later_valid_cursor_still_previews(env)
     _start(proc, "move", (0., 0., 0.))
     original_selection = list(sel.subobjects)
 
-    # These two faces shifted sideways would bend a planar neighbor.
-    assert proc.preview_for((3., 0., 0.)) is None
+    # Pushed back onto the far wall, the front would collapse its edges.
+    assert proc.preview_for((0., 10., 0.)) is None
     assert proc.busy and sel.subobjects == original_selection
     _assert_points(scene.get(box.id).shape, _BOX_POINTS)
 
@@ -344,7 +367,10 @@ def window(tmp_path, monkeypatch):
     w.close()
 
 
-def test_cursor_movement_delivers_the_full_parent_preview_to_viewports(window):
+def test_cursor_movement_delivers_the_moving_edges_to_viewports(window):
+    """As in Rhino, the cursor carries the edges that move and the corners
+    they move, not filled faces: that keeps up with the cursor however big
+    the object, and the faces are built on the click."""
     box = _box(window.scene)
     window.selection.toggle_subobject(box.id, "face", _face(box.shape, (0, 0, 1)))
     _start(window.processor, "move", (0., 0., 0.))
@@ -354,10 +380,13 @@ def test_cursor_movement_delivers_the_full_parent_preview_to_viewports(window):
         window.viewport.mouseWorldMoved.emit((0., 0., height))
         for viewport in window.all_viewports():
             mesh = viewport._ghost
-            assert mesh is not None, "moving the cursor must show a rendered parent ghost"
-            assert mesh.has_faces and len(mesh.triangles) >= 12
-            assert np.min(mesh.vertices[:, 2]) == pytest.approx(0., abs=1e-5)
-            assert np.max(mesh.vertices[:, 2]) == pytest.approx(10. + height, abs=1e-5)
+            assert mesh is not None, "moving the cursor must show the moving edges"
+            assert not mesh.has_faces
+            ends = mesh.edge_segments.reshape(-1, 3)
+            assert np.min(ends[:, 2]) == pytest.approx(0., abs=1e-5)
+            assert np.max(ends[:, 2]) == pytest.approx(10. + height, abs=1e-5)
+            assert len(mesh.points) == 4
+            assert np.allclose(mesh.points[:, 2], 10. + height)
         _assert_points(window.scene.get(box.id).shape, _BOX_POINTS)
 
     window.processor.cancel()

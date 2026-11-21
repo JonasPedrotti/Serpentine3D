@@ -63,6 +63,12 @@ def _ctrl_held(modifiers) -> bool:
     return bool(int(m) & int(Qt.KeyboardModifier.ControlModifier.value))
 
 
+def _ctrl_down() -> bool:
+    """Whether Ctrl is held right now, asked of the application."""
+    from PySide6.QtWidgets import QApplication
+    return _ctrl_held(QApplication.keyboardModifiers())
+
+
 # The filled box on the shaft grows the thing; scale is the hollow box on the
 # far side of the pivot, on a dashed leader that mirrors the shaft. Each axis
 # then reads as one handle with an end of its own either way, and two boxes
@@ -332,12 +338,79 @@ class Gumball:
         if self.drag is not None:            # a drag stays live to its end
             return True
         return (bool(vp.selection.ids)
+                or self._tf_target() is not None
                 or self._cv_target() is not None
                 or self._pushpull_target() is not None
                 or self._multiface_target() is not None
                 or self._parts_target() is not None
                 or self._segment_target() is not None
                 or self._fillet_target() is not None)
+
+    def _tf_target(self):
+        """({obj_id: (faces, edges, corners)}, anchor) for held faces, edges
+        and corners of surfaces and solids, which the whole gumball moves,
+        turns and scales as Rhino's does; else None. Holding Ctrl asks for
+        the other gumball instead: push/pull for a face, fillet for an
+        edge. Only when nothing else is held alongside them."""
+        if _ctrl_down():
+            return None
+        subs = getattr(self.vp.selection, "subobjects", None)
+        if not subs:
+            return None
+        return self._remembered(("tf", tuple(subs)), self._tf_target_of)
+
+    def _tf_target_of(self):
+        subs = list(getattr(self.vp.selection, "subobjects", ()))
+        names = {"face": 0, "edge": 1, "vertex": 2}
+        held, at = {}, []
+        for oid, kind, idx in subs:
+            obj = self.vp.scene.get(oid)
+            if (kind not in names or obj is None
+                    or obj.kind not in ("surface", "solid")):
+                return None
+            held.setdefault(oid, ([], [], []))[names[kind]].append(int(idx))
+        try:
+            for oid, (fidx, eidx, vidx) in held.items():
+                shape = self.vp.scene.get(oid).shape
+                flist, elist = g.faces_of(shape), g.edges_of(shape)
+                corners = g.vertex_points(shape) if vidx else []
+                at += [np.asarray(g.centroid(flist[i]), float) for i in fidx]
+                at += [np.asarray(g.centroid(elist[i]), float) for i in eidx]
+                at += [np.asarray(corners[i], float) for i in vidx]
+        except (g.GeometryError, IndexError):
+            return None
+        if not at:
+            return None
+        return held, np.mean(at, axis=0)
+
+    def alternative_hint(self) -> str | None:
+        """What holding Ctrl would offer instead, while the transform
+        gumball is on held parts: a line for the corner of the view."""
+        if self.drag is not None or not self.active():
+            return None
+        tf = self._tf_target()
+        if tf is None:
+            return None
+        held = tf[0]
+        if len(held) != 1:
+            return None
+        oid = next(iter(held))
+        fidx, eidx, vidx = held[oid]
+        if len(fidx) == 1 and not eidx and not vidx:
+            # push/pull is for a flat face; a curved one only offsets
+            obj = self.vp.scene.get(oid)
+            try:
+                face = g.faces_of(obj.shape)[fidx[0]]
+                flat = (g.flat_normal(face) is not None
+                        or g._trimmed_flat(face))
+            except (g.GeometryError, IndexError, AttributeError):
+                flat = False
+            return "Hold Ctrl for the push/pull gumball" if flat else None
+        if eidx and not fidx and not vidx:
+            return "Hold Ctrl for the fillet gumball"
+        if fidx and not vidx:
+            return "Hold Ctrl for the face offset gumball"
+        return None
 
     def _cv_target(self):
         """({obj_id: [index]}, mean position) for the held control points.
@@ -732,6 +805,10 @@ class Gumball:
         straight edge between two flat faces.
         """
         d = self.drag
+        if (d is not None and d.get("tf") is not None) or (
+                d is None and self._tf_target() is not None):
+            return ({(kind, i) for kind in ("move", "pad", "rot", "scale")
+                     for i in range(3)} | {("center", 0)})
         if d is not None and d.get("pp"):
             return self._face_handles(bool(d.get("pp_planar", True)),
                                       d["axes"])
@@ -934,6 +1011,8 @@ class Gumball:
         """Is the gumball acting as a face push/pull or offset handle now?"""
         if self.drag is not None:
             return bool(self.drag.get("pp") or self.drag.get("multiface"))
+        if self._tf_target() is not None:    # the transform gumball instead
+            return False
         return (self._pushpull_target() is not None
                 or self._multiface_target() is not None)
 
@@ -941,10 +1020,19 @@ class Gumball:
         """Is the gumball acting as an edge fillet handle right now?"""
         if self.drag is not None:
             return bool(self.drag.get("fillet") or self.drag.get("edge_move"))
+        if self._tf_target() is not None:    # the transform gumball instead
+            return False
         return (self._pushpull_target() is None
                 and self._fillet_target() is not None)
 
     def anchor_and_axes(self):
+        d = self.drag
+        if d is not None and d.get("tf") is not None:
+            return (np.asarray(d["anchor"], float)
+                    + np.asarray(d["offset"], float)), d["axes"]
+        tf = self._tf_target() if d is None else None
+        if tf is not None:                   # held parts: a whole gumball
+            return self._aligned(tf[1])
         if self.drag is None:
             cv = self._cv_target()
             if cv is not None:               # a held control point comes first
@@ -1000,6 +1088,20 @@ class Gumball:
             axes = self._object_axes(objs[0], cp)
             if axes is not None:
                 return anchor, axes
+        return anchor, (np.asarray(cp.xdir), np.asarray(cp.ydir),
+                        np.asarray(cp.normal))
+
+    def _aligned(self, anchor):
+        """`anchor` with the axes the alignment setting asks for, as for
+        a whole object."""
+        if self.align == "world" and self.vp._detail_eye() is None:
+            return anchor, (np.array([1.0, 0.0, 0.0]),
+                            np.array([0.0, 1.0, 0.0]),
+                            np.array([0.0, 0.0, 1.0]))
+        if self.align == "view" and self.vp._detail_eye() is None:
+            right, up = self.vp._eye().right_up()
+            return anchor, (right, up, np.cross(right, up))
+        cp = self._plane()
         return anchor, (np.asarray(cp.xdir), np.asarray(cp.ydir),
                         np.asarray(cp.normal))
 
@@ -1606,23 +1708,33 @@ class Gumball:
             if np.linalg.norm(vec) < 1e-9:
                 return False
             ref = vec / np.linalg.norm(vec)
-        cv = self._cv_target()
-        seg = None if cv is not None else self._segment_target()
-        pp = None if (cv is not None or seg is not None) \
+        tf = None if _ctrl_held(modifiers) else self._tf_target()
+        if _ctrl_held(modifiers) and self._tf_target_of() is not None:
+            # On held parts Ctrl is what brought up this gumball, so it is
+            # not also asking to grow: the filled box extrudes, the arrow
+            # does what this gumball's arrow does (fillet, push/pull).
+            modifiers = Qt.KeyboardModifier(
+                int(getattr(modifiers, "value", modifiers))
+                & ~int(Qt.KeyboardModifier.ControlModifier.value))
+        cv = None if tf is not None else self._cv_target()
+        seg = None if (cv is not None or tf is not None) \
+            else self._segment_target()
+        pp = None if (cv is not None or seg is not None or tf is not None) \
             else self._pushpull_target()
-        parts = (None if (cv is not None or seg is not None or pp is not None)
+        parts = (None if (cv is not None or seg is not None or pp is not None
+                          or tf is not None)
                  else self._parts_target())
         mf = (None if (cv is not None or seg is not None or pp is not None
-                       or parts is not None)
+                       or parts is not None or tf is not None)
               else self._multiface_target())
         ex = (None if (cv is not None or pp is not None or mf is not None
-                       or parts is not None)
+                       or parts is not None or tf is not None)
               else self._extrude_target(handle, modifiers,
                                        axes[handle[1]]))
         if ex is not None:
             seg = None                        # the box grows the segment
         ft = (None if (cv is not None or seg is not None or pp is not None
-                       or mf is not None or ex is not None)
+                       or mf is not None or ex is not None or tf is not None)
               else self._fillet_target())
         if handle[0] == "ext" and ex is None and pp is None:
             # Nothing here grows. Doing nothing beats quietly moving the
@@ -1630,7 +1742,22 @@ class Gumball:
             return False
         grow = False                          # a face growing new walls
         em = None                             # a held edge being moved
-        if cv is not None:                    # held control points
+        tf_draft = None
+        if tf is not None:                    # held parts, transformed
+            if handle[0] not in ("move", "pad", "rot", "scale", "center"):
+                return False
+            originals = {}
+            for oid in tf[0]:
+                obj = vp.scene.get(oid)
+                if obj is not None:
+                    originals[oid] = obj.shape
+            if not originals:
+                return False
+            tf_draft = self._tf_draft(tf[0], _alt_held(modifiers))
+            if tf_draft is None:
+                return False
+            self.vp.window_checkpoint("gumball " + handle[0])
+        elif cv is not None:                  # held control points
             originals = {}
             for oid in cv[0]:
                 obj = vp.scene.get(oid)
@@ -1744,6 +1871,10 @@ class Gumball:
                             else None),
             "turned": 0.0, "reshaped": False, "tilt_axis": None,
             "extrude": ex, "made": {}, "copies": copies,
+            "tf": ({k: tuple(list(x) for x in v) for k, v in tf[0].items()}
+                   if tf is not None else None),
+            "tf_copy": tf is not None and _alt_held(modifiers),
+            "tf_draft": tf_draft, "tf_matrix": None, "tf_moved": None,
             "center_normal": center_normal,
             "ref": ref, "last_label": "", "offset": np.zeros(3),
             "typed": "", "armed": False, "moved": False,
@@ -1980,6 +2111,7 @@ class Gumball:
                 orig = d["originals"].get(oid)
                 radius = float(value)
                 chamfer = bool(d.get("chamfer"))
+                failed = None
                 if orig is not None and vp.scene.get(oid) is not None:
                     if radius > 1e-4:
                         try:
@@ -1987,13 +2119,19 @@ class Gumball:
                             vp.scene.replace_shape(
                                 oid, g.fillet_edges(orig, radius, edges=edges,
                                                     chamfer=chamfer))
-                        except (g.GeometryError, IndexError):
-                            pass          # too big — keep last good
+                            d["fillet_done"] = True
+                        except (g.GeometryError, IndexError) as exc:
+                            failed = str(exc)   # too big — keep last good
                     else:
                         vp.scene.replace_shape(oid, orig)   # 0 → no fillet
                 d["offset"] = np.asarray(axes[i] * max(radius, 0.0), float)
                 verb = "chamfer" if chamfer else "fillet"
                 label = verb + " " + vp.scene.format_length(float(radius))
+                if failed is not None and not d.get("fillet_done"):
+                    # nothing has rounded yet: say why rather than a size
+                    # that is not there
+                    d["fillet_failed"] = failed
+                    label = verb + ": " + failed.split(" — ")[0]
             else:
                 delta = axes[i] * value
                 d["offset"] = np.asarray(delta, float)
@@ -2111,12 +2249,151 @@ class Gumball:
         """Held control points and held curve segments take the transform
         as a point map `at`; whole objects take it as the shape transform
         `whole`."""
-        if self.drag.get("cvs"):
+        if self.drag.get("tf") is not None:
+            self._apply_tf(whole)
+        elif self.drag.get("cvs"):
             self._apply_cvs(at)
         elif self.drag.get("segments") is not None:
             self._apply_segments(at)
         else:
             self._apply(whole)
+
+    def _tf_draft(self, held, copying):
+        """The fast stand-in a held-parts drag shows: a function from a 3x4
+        matrix to what every pane draws, the moving edges and corners, or
+        for an Alt copy the detached parts. None if there is nothing to draw."""
+        from types import SimpleNamespace
+
+        from ..commands.transform import _detached_parts, _parts_draft
+        from ..core.tessellate import DisplayMesh, tessellate
+        ctx = SimpleNamespace(scene=self.vp.scene)
+        named = {"face": {}, "edge": {}, "point": {}}
+        for oid, (fidx, eidx, vidx) in held.items():
+            for key, idxs in zip(("face", "edge", "point"), (fidx, eidx, vidx)):
+                if idxs:
+                    named[key][oid] = list(idxs)
+        named = {k: v for k, v in named.items() if v}
+        if not copying:
+            return _parts_draft(ctx, named, lambda matrix: matrix)
+        pieces = _detached_parts(ctx, named)
+        if not pieces:
+            return None
+        drawn = tessellate(g.make_compound([shape for shape, _ in pieces]))
+        tris = drawn.triangles.copy()
+        verts = np.asarray(drawn.vertices, float)
+        ends = np.asarray(drawn.edge_segments, float)
+
+        def draft(matrix):
+            linear, shift = matrix[:, :3], matrix[:, 3]
+            mesh = DisplayMesh()
+            mesh.place(vertices=verts @ linear.T + shift,
+                       edge_segments=ends @ linear.T + shift)
+            mesh.triangles = tris
+            mesh.normals = np.zeros_like(verts, np.float32)
+            return mesh
+        return draft
+
+    def _panes(self):
+        panes = getattr(getattr(self.vp, "window", lambda: None)(),
+                        "all_viewports", None)
+        return list(panes()) if panes else [self.vp]
+
+    def _apply_tf(self, whole):
+        """Show where the held parts go: the transform read as a matrix
+        near them and drawn as edges in every pane. The faces are rebuilt
+        on release (end_drag), not on every mouse move."""
+        d = self.drag
+        matrix = g.affine_of(whole, tuple(d["anchor"]))
+        d["tf_matrix"] = matrix
+        d["tf_whole"] = whole
+        d["reshaped"] = True
+        ghost = d["tf_draft"](matrix)
+        for pane in self._panes():
+            if hasattr(pane, "set_ghost"):
+                pane.set_ghost(ghost)
+
+    def _clear_tf_ghost(self):
+        for pane in self._panes():
+            if hasattr(pane, "set_ghost"):
+                pane.set_ghost(None)
+
+    def _finish_tf(self, d):
+        """Build what a held-parts drag showed: the parts reshaped into
+        place, or with Alt copies of them as objects of their own. What is
+        held is found again on the rebuilt objects."""
+        from types import SimpleNamespace
+
+        from ..commands.transform import (
+            _add_pieces, _detached_parts, _solid_parts_shape)
+        vp = self.vp
+        whole = d.get("tf_whole")
+        matrix = d.get("tf_matrix")
+        if whole is None or matrix is None:
+            return
+        named = {"face": {}, "edge": {}, "point": {}}
+        for oid, (fidx, eidx, vidx) in d["tf"].items():
+            for key, idxs in zip(("face", "edge", "point"), (fidx, eidx, vidx)):
+                if idxs:
+                    named[key][oid] = list(idxs)
+        named = {k: v for k, v in named.items() if v}
+        if d.get("tf_copy"):
+            ctx = SimpleNamespace(scene=vp.scene)
+            _add_pieces(ctx, _detached_parts(ctx, named), whole)
+            return
+        moving = d["handle"][0] in ("move", "pad", "center")
+        refused = []
+        rebuilt = {}
+        for oid, (fidx, eidx, vidx) in d["tf"].items():
+            original = d["originals"].get(oid)
+            if original is None or vp.scene.get(oid) is None:
+                continue
+            action = (("move", tuple(float(c) for c in d["offset"]))
+                      if moving else None)
+            try:
+                shape = _solid_parts_shape(original, fidx, eidx, whole, action,
+                                           vidx=vidx)
+            except g.GeometryError as exc:
+                refused.append(str(exc))
+                continue
+            vp.scene.replace_shape(oid, shape)
+            rebuilt[oid] = (original, shape, fidx, eidx, vidx)
+        self._resync_tf(rebuilt, matrix)
+        if refused:
+            window = getattr(vp, "window", lambda: None)()
+            line = getattr(window, "command_line", None)
+            if line is not None:
+                for why in refused:
+                    line.echo(why + ".")
+
+    def _resync_tf(self, rebuilt, matrix):
+        """Hold each part again on its rebuilt object: the face, edge or
+        corner nearest where the drag carried it."""
+        sel = self.vp.selection
+        linear, shift = matrix[:, :3], matrix[:, 3]
+        held = [e for e in sel.subobjects if e[0] not in rebuilt]
+        for oid, (orig, now, fidx, eidx, vidx) in rebuilt.items():
+            try:
+                for kind, idxs, was_of, now_of in (
+                        ("face", fidx, lambda s: [np.asarray(g.centroid(f))
+                                                  for f in g.faces_of(s)],
+                         None),
+                        ("edge", eidx, lambda s: [np.asarray(g.centroid(e))
+                                                  for e in g.edges_of(s)],
+                         None),
+                        ("vertex", vidx, lambda s: [np.asarray(p) for p in
+                                                    g.vertex_points(s)],
+                         None)):
+                    if not idxs:
+                        continue
+                    before = was_of(orig)
+                    after = np.asarray(was_of(now), float)
+                    for i in idxs:
+                        want = linear @ before[i] + shift
+                        held.append((oid, kind, int(np.argmin(
+                            np.linalg.norm(after - want, axis=1)))))
+            except (g.GeometryError, IndexError, ValueError):
+                continue
+        sel.set_subobjects(list(dict.fromkeys(held)))
 
     def _move_by(self, delta):
         d = self.drag
@@ -2390,6 +2667,15 @@ class Gumball:
             float(np.linalg.norm(d["offset"])) > 1e-9
             or abs(float(d.get("turned", 0.0))) > 1e-9
             or bool(d.get("reshaped")))
+        if d is not None and d.get("tf") is not None:
+            self._clear_tf_ghost()
+            if changed:
+                self._finish_tf(d)
+            else:
+                self.vp.window_discard_checkpoint()
+            self.vp.selection.rebuilding = None
+            self.drag = None
+            return
         if changed:
             if d.get("pp") and d.get("pp_planar", True):
                 self._resync_face(d)         # curved offsets keep their index
@@ -2400,7 +2686,13 @@ class Gumball:
             elif d.get("parts"):
                 self._resync_parts(d)
             elif d.get("fillet"):
-                self._clear_filleted_edges(d)
+                if d.get("fillet_done"):
+                    self._clear_filleted_edges(d)
+                elif d.get("fillet_failed"):
+                    window = getattr(self.vp, "window", lambda: None)()
+                    line = getattr(window, "command_line", None)
+                    if line is not None:
+                        line.echo(d["fillet_failed"])
             elif d.get("made"):
                 # You are holding what you just grew, not the line you grew it
                 # from: the next thing anyone does is to the new surface.
@@ -2616,6 +2908,8 @@ class Gumball:
         if d is None:
             return
         vp = self.vp
+        if d.get("tf") is not None:
+            self._clear_tf_ghost()
         for obj_id in (d.get("made") or {}).values():
             vp.scene.remove(obj_id)          # nothing grew, so nothing stays
         for obj_id, original in d["originals"].items():

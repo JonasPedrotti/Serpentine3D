@@ -187,21 +187,26 @@ def test_rotate_tilts_a_held_solid_face(env):
     assert g.volume(shape) != pytest.approx(before), "the face leaned over"
 
 
-def test_a_face_square_to_the_axis_says_turning_it_would_do_nothing(env):
-    """Turning a plane about its own normal leaves the same plane. Saying
-    "Rotated 1 face" there would be a lie."""
+def test_a_face_turned_about_its_own_normal_twists_the_sides(env):
+    """Turning a plane about its own normal spins its corners within it,
+    and the sides twist to follow, as in Rhino."""
     scene, sel, proc, said = env
     box = _box(scene)
-    before = g.volume(box.shape)
     sel.toggle_subobject(box.id, "face", _top_face(box.shape))
 
     proc.run("rotate")
     proc.provide((5.0, 5.0, 10.0))
     proc.provide(10.0)
 
-    assert g.volume(scene.get(box.id).shape) == pytest.approx(before)
-    assert any("square to the axis" in m for m in said), said
-    assert sel.subobjects, "nothing was touched, so it is still held"
+    shape = scene.get(box.id).shape
+    assert g.is_valid(shape) and g.shape_kind(shape) == "solid"
+    a = math.radians(10)
+    after = {tuple(round(c, 6) for c in p) for p in g.vertex_points(shape)}
+    for x, y in ((0, 0), (10, 0), (10, 10), (0, 10)):
+        u, v = x - 5, y - 5
+        assert (round(5 + u * math.cos(a) - v * math.sin(a), 6),
+                round(5 + u * math.sin(a) + v * math.cos(a), 6), 10.0) in after
+        assert (x, y, 0.0) in after, "the bottom stays"
 
 
 # --- scale -----------------------------------------------------------------
@@ -239,20 +244,26 @@ def test_scale_resizes_a_held_solid_face(env):
 
 # --- what cannot be done says so -------------------------------------------
 
-def test_an_edge_cannot_be_turned_and_says_so(env):
+def test_an_edge_turns_and_its_faces_follow(env):
     scene, sel, proc, said = env
     box = _box(scene)
-    before = g.volume(box.shape)
+    ends = g.curve_endpoints(g.edges_of(box.shape)[0])
     sel.toggle_subobject(box.id, "edge", 0)
 
     proc.run("rotate")
     proc.provide((5.0, 5.0, 5.0))
-    proc.provide(45.0)
+    proc.provide(15.0)
 
-    assert g.volume(scene.get(box.id).shape) == pytest.approx(before), (
-        "refusing must not fall back to turning the whole solid")
-    assert any("edge" in m.lower() for m in said), said
-    assert sel.subobjects, "the edge stays held, so you can try something else"
+    shape = scene.get(box.id).shape
+    assert g.is_valid(shape) and g.shape_kind(shape) == "solid"
+    a = math.radians(15)
+    after = {tuple(round(c, 6) for c in p) for p in g.vertex_points(shape)}
+    for p in ends:
+        u, v = p[0] - 5, p[1] - 5
+        assert (round(5 + u * math.cos(a) - v * math.sin(a), 6),
+                round(5 + u * math.sin(a) + v * math.cos(a), 6),
+                round(p[2], 6)) in after
+    assert len(after) == 8, "only the edge's corners moved"
 
 
 # --- nothing that worked before stops working ------------------------------

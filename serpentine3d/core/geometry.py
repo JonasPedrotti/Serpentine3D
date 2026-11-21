@@ -3867,8 +3867,67 @@ def _face_bspline_surface(shape):
                 f"Surface cannot be converted to NURBS: {exc}") from exc
 
 
-def surface_control_points(shape) -> tuple[list[Point], tuple[int, int]]:
-    """Control points of a single-face surface, row-major (u, then v)."""
+def _trimmed_corners(shape):
+    """For a single face cut out of a bigger surface (a trim, or holes):
+    its corners in the order its boundary runs, outer loop first, and how
+    many of them make the outer loop. None for a face that is its whole
+    surface, whose control points are the ones to show."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepTools import BRepTools, BRepTools_WireExplorer
+    faces = faces_of(shape)
+    if len(faces) != 1:
+        return None
+    face = faces[0]
+    wires = []
+    exp = TopExp_Explorer(face, occ.WIRE)
+    while exp.More():
+        wires.append(occ.to_wire(exp.Current()))
+        exp.Next()
+    if len(wires) == 1:
+        if BRep_Tool.NaturalRestriction_s(face):
+            return None
+        try:
+            bs, _ = _face_bspline_surface(shape)
+            whole = BRepBuilderAPI_MakeFace(bs, tol()).Face()
+            u0, u1, v0, v1 = bs.Bounds()
+            ends = [pnt_tuple(bs.Value(u, v)) for u in (u0, u1)
+                    for v in (v0, v1)]
+            at_ends = all(min(math.dist(pnt_tuple(occ.point_of_vertex(v)), e)
+                              for e in ends) <= tol()
+                          for v in vertices_of(face))
+            if at_ends and abs(surface_area(whole) - abs(surface_area(face)))                     <= max(tol() ** 2, 1e-6 * surface_area(whole)):
+                # the whole surface: corners only where the surface's are
+                return None
+        except GeometryError:
+            return None
+    outer = BRepTools.OuterWire_s(face)
+    loops = [outer] + [w for w in wires if not w.IsSame(outer)]
+    corners, seen, outer_count = [], set(), 0
+    for n, wire in enumerate(loops):
+        walk = BRepTools_WireExplorer(wire, face)
+        while walk.More():
+            v = walk.CurrentVertex()
+            if hash(v) not in seen:
+                seen.add(hash(v))
+                corners.append(v)
+            walk.Next()
+        if n == 0:
+            outer_count = len(corners)
+    return corners, outer_count
+
+
+def surface_control_points(shape) -> tuple[list[Point], tuple]:
+    """Control points of a single-face surface, row-major (u, then v).
+
+    A face cut out of a bigger surface shows its corners instead, in the
+    order its boundary runs, with ("ring", n) for the n of them that make
+    the outer loop: the four points of the plane it was cut from say
+    nothing about its shape, and moving one would lose the cut."""
+    trimmed = _trimmed_corners(shape)
+    if trimmed is not None:
+        corners, outer = trimmed
+        return ([pnt_tuple(occ.point_of_vertex(v)) for v in corners],
+                ("ring", outer))
     bs, _ = _face_bspline_surface(shape)
     nu, nv = bs.NbUPoles(), bs.NbVPoles()
     pts = []
@@ -3882,8 +3941,21 @@ def move_surface_control_point(shape, flat_index: int,
                                new_point: Point) -> TopoDS_Shape:
     """New surface with control point `flat_index` (u-major) moved.
 
-    Trimmed faces lose their trims (the rebuilt face is natural-bounds).
-    """
+    On a face cut out of a bigger surface the points are its corners
+    (surface_control_points), and the corner moves with the face keeping
+    its cut, the edges either side following."""
+    trimmed = _trimmed_corners(shape)
+    if trimmed is not None:
+        import numpy as np
+        corners, _outer = trimmed
+        if not 0 <= flat_index < len(corners):
+            raise GeometryError("Control point index out of range")
+        vertex = corners[flat_index]
+        every = vertices_of(shape)
+        index = next(i for i, v in enumerate(every) if v.IsSame(vertex))
+        shift = np.subtract(new_point, pnt_tuple(occ.point_of_vertex(vertex)))
+        matrix = np.column_stack((np.eye(3), shift))
+        return deform_parts(shape, [], [], [index], matrix)
     bs, _ = _face_bspline_surface(shape)
     nu, nv = bs.NbUPoles(), bs.NbVPoles()
     if not (0 <= flat_index < nu * nv):
@@ -5676,14 +5748,45 @@ class _CurvedParts(GeometryError):
 
 
 def set_part_points(shape, faces, edges, target: Point,
-                    axes: tuple[bool, bool, bool] = (False, False, True)):
-    """Set the chosen coordinates of held faces and their boundaries,
+                    axes: tuple[bool, bool, bool] = (False, False, True),
+                    vertices=()):
+    """Set the chosen coordinates of held faces, edges and corners,
     exactly where the faces are planar and through their control points
     where they are curved."""
-    try:
-        return _set_part_points_exact(shape, faces, edges, target, axes)
-    except _CurvedParts:
-        return _set_part_points_freeform(shape, faces, edges, target, axes)
+    if not vertices:
+        try:
+            return _set_part_points_exact(shape, faces, edges, target, axes)
+        except _CurvedParts:
+            pass
+    if not any(axes):
+        raise GeometryError("Pick at least one axis to set")
+    return deform_parts(shape, faces, edges, vertices,
+                        setting_matrix(target, axes))
+
+
+def setting_matrix(target: Point, axes):
+    """The affine map, as a 3x4 matrix, that SetPt is: the chosen
+    coordinates replaced by the target's, the others kept."""
+    import numpy as np
+    m = np.zeros((3, 4))
+    for i, on in enumerate(axes):
+        if on:
+            m[i, 3] = float(target[i])
+        else:
+            m[i, i] = 1.0
+    return m
+
+
+def affine_of(fn, near: Point = (0.0, 0.0, 0.0)):
+    """The affine map a shape transform `fn` makes, as a 3x4 matrix, read
+    off what it does to four points around `near` (taken near the work, so
+    a map far from the origin keeps its digits)."""
+    import numpy as np
+    base = np.asarray(near, float)
+    probes = [tuple(base)] + [tuple(base + np.eye(3)[i]) for i in range(3)]
+    moved = np.asarray(transform_points(probes, fn), float)
+    linear = np.column_stack([moved[i + 1] - moved[0] for i in range(3)])
+    return np.column_stack((linear, moved[0] - linear @ base))
 
 
 # What a held-parts SetPt needs that does not depend on the target, kept
@@ -5691,15 +5794,17 @@ def set_part_points(shape, faces, edges, target: Point,
 _FREEFORM_PLANS: list = []
 
 
-def _freeform_plan(shape, faces, edges):
-    """Everything about a freeform SetPt that the target does not change."""
+def _freeform_plan(shape, faces, edges, vertices=()):
+    """Everything about a held-parts deformation that the map does not
+    change."""
     key = (hash(shape), tuple(sorted(int(i) for i in faces)),
-           tuple(sorted(int(i) for i in edges)))
+           tuple(sorted(int(i) for i in edges)),
+           tuple(sorted(int(i) for i in vertices)))
     for entry in _FREEFORM_PLANS:
         if (entry["key"] == key and entry["shape"].IsSame(shape)
                 and entry["shape"].Orientation() == shape.Orientation()):
             return entry
-    entry = _make_freeform_plan(shape, faces, edges)
+    entry = _make_freeform_plan(shape, faces, edges, vertices)
     entry["key"] = key
     entry["shape"] = shape
     _FREEFORM_PLANS.insert(0, entry)
@@ -5716,14 +5821,21 @@ def _corners_of(sub) -> list:
     return out
 
 
-def _setpt_reach(shape, faces, edges):
-    """Which corners a held-parts SetPt moves, and how far a point
+def _setpt_reach(shape, faces, edges, vertices=()):
+    """Which corners a held-parts transform moves, and how far a point
     between moving and fixed boundaries follows them: the share it lies
     nearer the moving boundary than the fixed one, for (N, 3) points."""
     import numpy as np
     from OCP.BRep import BRep_Tool
     flist, elist = faces_of(shape), edges_of(shape)
-    moving = set()
+    corners_all = vertices_of(shape)
+    if any(not 0 <= int(i) < len(flist) for i in faces):
+        raise GeometryError("Face index out of range")
+    if any(not 0 <= int(i) < len(elist) for i in edges):
+        raise GeometryError("Edge index out of range")
+    if any(not 0 <= int(i) < len(corners_all) for i in vertices):
+        raise GeometryError("Point index out of range")
+    moving = {hash(corners_all[int(i)]) for i in vertices}
     for sub in ([flist[int(i)] for i in faces]
                 + [elist[int(i)] for i in edges]):
         moving.update(hash(v) for v in _corners_of(sub))
@@ -5765,11 +5877,11 @@ def _setpt_reach(shape, faces, edges):
     return moving, shares_at
 
 
-def setpt_moving_corners(shape, faces, edges):
-    """The corners a held-parts SetPt moves, as an (N, 3) array."""
+def setpt_moving_corners(shape, faces, edges, vertices=()):
+    """The corners a held-parts transform moves, as an (N, 3) array."""
     import numpy as np
     from OCP.BRep import BRep_Tool
-    moving, _shares = _setpt_reach(shape, faces, edges)
+    moving, _shares = _setpt_reach(shape, faces, edges, vertices)
     seen, out = set(), []
     for edge in edges_of(shape):
         for v in _corners_of(edge):
@@ -5779,14 +5891,15 @@ def setpt_moving_corners(shape, faces, edges):
     return np.asarray(out, float).reshape(-1, 3)
 
 
-def setpt_edge_shares(shape, faces, edges, points, point_edges):
+def setpt_edge_shares(shape, faces, edges, points, point_edges,
+                      vertices=()):
     """For a SetPt draft drawn as edges alone: how far each point of the
     edge polylines follows the target, 1 on edges whose corners all move,
     0 on edges none of whose corners do, and in between where a moving
     corner pulls an edge from a fixed one. `points` is (..., 3) and
     `point_edges` gives each point's edge index."""
     import numpy as np
-    moving, shares_at = _setpt_reach(shape, faces, edges)
+    moving, shares_at = _setpt_reach(shape, faces, edges, vertices)
     points = np.asarray(points, float)
     flat = points.reshape(-1, 3)
     owner = np.asarray(point_edges).reshape(-1)
@@ -5803,7 +5916,7 @@ def setpt_edge_shares(shape, faces, edges, points, point_edges):
     return out.reshape(points.shape[:-1])
 
 
-def _make_freeform_plan(shape, faces, edges):
+def _make_freeform_plan(shape, faces, edges, vertices=()):
     import numpy as np
     from OCP.BRep import BRep_Tool
     from OCP.BRepTools import BRepTools, BRepTools_WireExplorer
@@ -5826,7 +5939,7 @@ def _make_freeform_plan(shape, faces, edges):
             exp.Next()
         return out
 
-    moving, shares_at = _setpt_reach(shape, faces, edges)
+    moving, shares_at = _setpt_reach(shape, faces, edges, vertices)
 
     def _share(p):
         return float(shares_at(np.asarray([p], float))[0])
@@ -5880,7 +5993,7 @@ def _make_freeform_plan(shape, faces, edges):
             continue
         forward = occ.to_face(face.Oriented(forward_of))
         if BRep_Tool.Surface_s(forward) is None:
-            raise GeometryError("SetPt needs faces with surfaces")
+            raise GeometryError("Reshaping needs faces with surfaces")
         bs, _ = _face_bspline_surface(forward)
         full = index in held_f
         us = _greville(bs.UKnotSequence(), bs.UDegree(), bs.NbUPoles())
@@ -6096,34 +6209,39 @@ def _folds(step, new_edges) -> bool:
     return False
 
 
-def _set_part_points_freeform(shape, faces, edges, target, axes):
-    """SetPt for held parts whose faces or neighbours are curved.
+def deform_parts(shape, faces, edges, vertices, matrix):
+    """Put held faces, edges and corners of a surface or solid through an
+    affine map (a 3x4 matrix), the rest of it following.
 
-    A held face has every control point set, which is exact since the
-    mapping is affine. A neighbour meeting both moving and fixed
-    boundaries is stretched between them: each control point moves by the
-    share its Greville point lies nearer the moving boundary than the
-    fixed one. Where that cannot meet the new boundary, the boundary's
-    displacement is spread smoothly across the face, and a flat
-    straight-edged face can fall back to planar triangles.
+    A held face has every control point mapped, which is exact since the
+    map is affine, so a curved face is carried as well as a flat one. A
+    neighbour meeting both moving and fixed boundaries is stretched between
+    them: each control point moves by the share its Greville point lies
+    nearer the moving boundary than the fixed one. Where that cannot meet
+    the new boundary, the boundary's displacement is spread smoothly
+    across the face, and a flat straight-edged face can fall back to planar
+    triangles. Works the same however far from the origin.
     """
-
+    import numpy as np
     kind = shape_kind(shape)
-    if kind not in ("solid", "surface") or not any(axes):
-        raise GeometryError("SetPt needs a surface or solid and an axis")
+    if kind not in ("solid", "surface"):
+        raise GeometryError("Only parts of surfaces and solids can be reshaped")
+    if not len(faces) and not len(edges) and not len(vertices):
+        raise GeometryError("Nothing held to reshape")
+    matrix = np.asarray(matrix, float).reshape(3, 4)
     # Each face and edge is copied on its own: converting the whole shape
     # can leave a face without a surface, and the scene's shape must never
     # be changed in place, not even by a preview.
-    plan = _freeform_plan(shape, faces, edges)
-    # The click that accepts a preview asks for the same target again.
-    asked = (tuple(float(c) for c in target), tuple(bool(a) for a in axes))
+    plan = _freeform_plan(shape, faces, edges, vertices)
+    # The click that accepts a preview asks for the same map again.
+    asked = tuple(round(float(c), 12) for c in matrix.ravel())
     last = plan.get("last")
     if last is not None and last[0] == asked:
         if isinstance(last[1], GeometryError):
             raise last[1]
         return last[1]
     try:
-        out = _apply_freeform_plan(plan, kind, target, axes)
+        out = _apply_freeform_plan(plan, kind, matrix)
     except GeometryError as exc:
         plan["last"] = (asked, exc)
         raise
@@ -6131,7 +6249,7 @@ def _set_part_points_freeform(shape, faces, edges, target, axes):
     return out
 
 
-def _apply_freeform_plan(plan, kind, target, axes):
+def _apply_freeform_plan(plan, kind, matrix):
     import numpy as np
     from OCP.BRep import BRep_Tool
     from OCP.BRepBuilderAPI import (
@@ -6145,8 +6263,10 @@ def _apply_freeform_plan(plan, kind, target, axes):
     from OCP.TColgp import TColgp_Array2OfPnt
     from OCP.TopAbs import TopAbs_State
 
+    linear, shift = matrix[:, :3], matrix[:, 3]
+
     def _set(p):
-        return tuple(float(t) if on else c for c, t, on in zip(p, target, axes))
+        return tuple(float(c) for c in linear @ np.asarray(p, float) + shift)
 
     def _moved(pole, share):
         p = pnt_tuple(pole)
@@ -6174,14 +6294,14 @@ def _apply_freeform_plan(plan, kind, target, axes):
             bs.SetPole(i, _moved(bs.Pole(i), share))
         spread = [pnt_tuple(bs.Pole(i)) for i in range(1, bs.NbPoles() + 1)]
         if max(math.dist(spread[0], p) for p in spread) < tight():
-            raise GeometryError("SetPt would collapse an edge")
+            raise GeometryError("This would collapse an edge")
         mk = BRepBuilderAPI_MakeEdge(bs, _corner(step["start"]),
                                      _corner(step["end"]),
                                      step["first"], step["last"])
         if not mk.IsDone():
-            raise GeometryError("SetPt could not rebuild an edge")
+            raise GeometryError("Could not rebuild an edge")
         if curve_length(mk.Edge()) < tight():
-            raise GeometryError("SetPt would collapse an edge")
+            raise GeometryError("This would collapse an edge")
         new_edges[key] = mk.Edge()
 
     def _made(mk, inner):
@@ -6248,11 +6368,11 @@ def _apply_freeform_plan(plan, kind, target, axes):
             for key, orientation, _vertex in loop:
                 mk.Add(occ.to_edge(new_edges[key].Oriented(orientation)))
             if not mk.IsDone():
-                raise GeometryError("SetPt could not rebuild a boundary")
+                raise GeometryError("Could not rebuild a boundary")
             new_wires.append(mk.Wire())
         full = step["full"]
         if step["frame"] is not None and _folds(step, new_edges):
-            raise GeometryError("SetPt would fold a face")
+            raise GeometryError("This would fold a face")
 
         # Every attempt works on its own copy of the boundary: a repair
         # loosens edge tolerances in place, which would spoil the next
@@ -6295,7 +6415,7 @@ def _apply_freeform_plan(plan, kind, target, axes):
         if new_face is None:
             pieces = _triangles(step) if not full and step["nearly"] else None
             if not pieces:
-                raise GeometryError("SetPt could not rebuild a face")
+                raise GeometryError("Could not rebuild a face")
             rebuilt.extend(pieces)
             continue
         # a boundary running the wrong way round makes the face its outside
@@ -6312,15 +6432,15 @@ def _apply_freeform_plan(plan, kind, target, axes):
         rebuilt.append(new_face)
     out = join_surfaces(rebuilt)
     if shape_kind(out) != kind or not is_valid(out):
-        raise GeometryError(f"SetPt would collapse or break the {kind}")
+        raise GeometryError(f"This would collapse or break the {kind}")
     if kind == "solid":
         size = _rough_volume(out)
         if abs(size) < tight() or free_boundaries(out):
-            raise GeometryError("SetPt would collapse or break the solid")
+            raise GeometryError("This would collapse or break the solid")
         if size < 0:
             out = out.Reversed()
     elif surface_area(out) < tight():
-        raise GeometryError("SetPt would collapse or break the surface")
+        raise GeometryError("This would collapse or break the surface")
     return out
 
 
