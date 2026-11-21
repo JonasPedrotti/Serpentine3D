@@ -1245,6 +1245,76 @@ def cmd_rotate3d(ctx):
              "around the picked axis.")
 
 
+def _edge_draft(ctx, held, axes_of):
+    """What SetPt shows while the cursor moves over held faces and edges
+    of polysurfaces: the edges that move, the held ones set and their
+    neighbours drawn along, and the corners that move marked where they go,
+    worked out from the edges already on screen.
+    Rebuilding the faces is left to the click. None when something else
+    is held, which keeps its own preview."""
+    if not held or not set(held) <= {"face", "edge"}:
+        return None
+    import numpy as np
+    from ..core.tessellate import DisplayMesh
+    owners = list(dict.fromkeys(list(held.get("face", {}))
+                                + list(held.get("edge", {}))))
+    parts = []
+
+    def _parts():
+        for obj_id in owners:
+            obj = ctx.scene.get(obj_id)
+            if obj is None:
+                continue
+            mesh = obj.mesh
+            points = np.asarray(mesh.edge_segments, float)
+            if not len(points):
+                continue
+            ids = np.repeat(np.asarray(mesh.edge_of_segment)[:, None], 2, axis=1)
+            shares = g.setpt_edge_shares(
+                obj.shape, held.get("face", {}).get(obj_id, []),
+                held.get("edge", {}).get(obj_id, []), points, ids)
+            corners = g.setpt_moving_corners(
+                obj.shape, held.get("face", {}).get(obj_id, []),
+                held.get("edge", {}).get(obj_id, []))
+            # only what moves: the object itself still shows the rest
+            moving = shares.max(axis=1) > 0
+            if moving.any():
+                parts.append((points[moving], shares[moving][..., None],
+                              corners))
+
+    def draft(point):
+        axes = axes_of()
+        if not any(axes):
+            return None
+        if not parts:
+            _parts()
+        if not parts:
+            return None
+        on = np.asarray(axes, bool)
+        goal = np.asarray(point, float)
+        moved, dots = [], []
+        for points, shares, corners in parts:
+            out = points.copy()
+            out[..., on] += shares * (goal[on] - points[..., on])
+            moved.append(out)
+            # the corners that move, where they go, as Rhino marks them
+            spot = corners.copy()
+            spot[:, on] = goal[on]
+            dots.append(spot)
+        mesh = DisplayMesh()
+        mesh.place(edge_segments=np.concatenate(moved),
+                   points=np.concatenate(dots))
+        return mesh
+
+    # Worked out once, as the command starts, so no move waits for it; but
+    # only from edges already drawn, since meshing an object for the first
+    # time is not something a command that may be refused should leave on it.
+    if all(ctx.scene.get(i) is None or ctx.scene.get(i).mesh_ready
+           for i in owners):
+        _parts()
+    return draft
+
+
 @command("setpt", aliases=("setpoints",))
 def cmd_setpt(ctx):
     """Force chosen coordinates of every control point to one value —
@@ -1270,7 +1340,8 @@ def cmd_setpt(ctx):
     target = yield PointReq(
         "Target point",
         choices={"X": ["No", "Yes"], "Y": ["No", "Yes"],
-                 "Z": ["Yes", "No"]}, preview_fn=_preview)
+                 "Z": ["Yes", "No"]}, preview_fn=_preview,
+        draft_fn=_edge_draft(ctx, held, _axes))
     axes = _axes()
     if not any(axes):
         ctx.echo("All axes set to No — nothing to do.")

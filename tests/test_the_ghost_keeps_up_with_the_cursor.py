@@ -67,3 +67,21 @@ def test_a_pick_in_the_model_is_made_with_a_drawn_crosshair(window):
     assert vp.cursor().shape() == Qt.CursorShape.BlankCursor
     w.processor.cancel()
     assert vp.cursor().shape() == Qt.CursorShape.ArrowCursor
+
+
+def test_a_slow_ghost_waits_for_the_cursor_to_rest(window):
+    """A ghost slower than a frame would hold the cursor up at every move,
+    so while the cursor moves it is not drawn, and once it rests it is."""
+    from PySide6.QtCore import QCoreApplication, QElapsedTimer
+    w, asked = window
+    w._on_mouse_world((1.0, 0.0, 0.0))
+    w._ghost_cost_ms = 200.0                # as if it took that long
+    w._ghost_timer = None
+    for x in (2.0, 3.0, 4.0):
+        w._on_mouse_world((x, 0.0, 0.0))
+    assert asked == [(1.0, 0.0, 0.0)], "Nothing is worked out mid-move"
+    clock = QElapsedTimer()
+    clock.start()
+    while len(asked) < 2 and clock.elapsed() < 2000:
+        QCoreApplication.processEvents()
+    assert asked == [(1.0, 0.0, 0.0), (4.0, 0.0, 0.0)]

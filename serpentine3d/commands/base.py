@@ -49,6 +49,9 @@ class PointReq(Req):
     extra_options: tuple = ()             # typed keywords returned verbatim
     choices: dict | None = None
     preview_fn: object = None             # value/point -> ghost shape
+    # point -> a quick ghost (a DisplayMesh) shown while the cursor moves,
+    # where preview_fn would be too slow to follow it
+    draft_fn: object = None
     axis_lock: tuple | None = None        # (base, dir): pick along this axis
     number_from: object = None            # (base, dir) or point-fn: '10' ->
                                           # base+10*dir / number_from(10.0)
