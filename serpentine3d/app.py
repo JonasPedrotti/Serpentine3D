@@ -345,6 +345,15 @@ class MainWindow(QMainWindow):
             self.scene.add_listener(
                 lambda: self._journal_timer.start(), ("objects",))
 
+        # Holding Ctrl swaps the gumball on held parts for push/pull or
+        # fillet, wherever the keyboard focus is, so its state is watched
+        # rather than waited for in one widget's key events.
+        self._ctrl_was = False
+        self._ctrl_watch = QTimer(self)
+        self._ctrl_watch.setInterval(60)
+        self._ctrl_watch.timeout.connect(self._watch_ctrl)
+        self._ctrl_watch.start()
+
         from .ui.spacemouse import SpaceMouseNavigator
         self.spacemouse = SpaceMouseNavigator(self)
 
@@ -1206,7 +1215,8 @@ class MainWindow(QMainWindow):
             [("Move", "move", ("Copy", "copy")), ("Rotate", "rotate", ("Rotate 3D", "rotate3d")),
              ("Scale", "scale"), ("Mirror", "mirror"),
              ("Orient: from 2 points", "orient",
-              ("from 3 points", "orient3pt"))],
+              ("from 3 points", "orient3pt")),
+             ("Set points", "setpt")],
             [("Point", "point", ("Multiple points", "points")),
              ("Line", "line"), ("Polyline", "polyline"),
              ("Curve", "curve", ("Curve through points", "interpcrv")),
@@ -1556,6 +1566,9 @@ class MainWindow(QMainWindow):
             shape = self.processor.preview_shape(text)
         elif (use_cursor and self._cursor_preview is not None
               and self._cursor_preview[0] is req):
+            if getattr(req, "draft_fn", None):
+                self._show_draft(req, self._cursor_preview[1])
+                return
             shape = self.processor.preview_for(self._cursor_preview[1])
         else:
             shape = self._standing_ghost()
@@ -1600,6 +1613,7 @@ class MainWindow(QMainWindow):
             vp.set_ghost(ghost)
         # Let a new request show its first pointer preview immediately.
         self._ghost_timer = None
+        self._ghost_cost_ms = 0.0
         self.command_line.point_pending = isinstance(req, PointReq)
         # Space submits like Enter everywhere but a free-text prompt
         self.command_line.text_pending = isinstance(req, TextReq)
@@ -2070,6 +2084,11 @@ class MainWindow(QMainWindow):
         # you can leave the one you started in without clicking on the way
         self._refresh_rubber(point, source=self.sender())
         req = self.processor.request
+        if isinstance(req, PointReq) and getattr(req, "draft_fn", None):
+            # a draft is cheap enough to follow every move
+            self._cursor_preview = (req, point)
+            self._show_draft(req, point)
+            return
         if isinstance(req, PointReq) and getattr(req, "preview_fn", None):
             self._cursor_preview = (req, point)
             # A cheap ghost follows every move. An expensive one is capped
@@ -2086,12 +2105,36 @@ class MainWindow(QMainWindow):
                 trail = self._ghost_trail = QTimer(self)
                 trail.setSingleShot(True)
                 trail.timeout.connect(self._trailing_ghost)
+            if getattr(self, "_ghost_cost_ms", 0.0) > 60.0:
+                # Too slow to follow the cursor without holding it up: the
+                # ghost waits until the cursor rests.
+                trail.start(120)
+                return
             if due:
                 trail.stop()
                 timer.restart()
                 self._show_cursor_ghost(point)
             else:
                 trail.start(max(1, gap - timer.elapsed()))
+
+    def _watch_ctrl(self):
+        from PySide6.QtWidgets import QApplication
+        down = bool(QApplication.keyboardModifiers()
+                    & Qt.KeyboardModifier.ControlModifier)
+        if down == self._ctrl_was:
+            return
+        self._ctrl_was = down
+        if getattr(self.selection, "subobjects", None):
+            for vp in self.all_viewports():
+                vp.update()
+
+    def _show_draft(self, req, point):
+        try:
+            ghost = req.draft_fn(point)
+        except Exception:                                  # noqa: BLE001
+            ghost = None
+        for vp in self.all_viewports():
+            vp.set_ghost(ghost)
 
     def _show_cursor_ghost(self, point):
         from time import perf_counter
@@ -2206,12 +2249,23 @@ class MainWindow(QMainWindow):
             self.ctx.echo(f"Copied {len(lv.selected)} sheet item(s).")
             return
         objs = self.selection.objects()
-        if not objs:
+        items = [(o.name, o.shape, o.layer_id) for o in objs]
+        parts = 0
+        if getattr(self.selection, "subobjects", None):
+            # a held part copies as an object of its own
+            from .commands.transform import _detached_parts
+            pieces = _detached_parts(self.ctx, self.ctx.held_parts())
+            items += [(src.name, shape, src.layer_id) for shape, src in pieces]
+            parts = len(pieces)
+        if not items:
             return
-        self._clipboard = ("model", [(o.name, o.shape, o.layer_id)
-                                     for o in objs])
-        self._claim_clipboard(len(objs), "object")
-        self.ctx.echo(f"Copied {len(objs)} object(s).")
+        self._clipboard = ("model", items)
+        self._claim_clipboard(len(items), "object")
+        if parts:
+            self.ctx.echo(f"Copied {len(objs)} object(s) and {parts} part(s) "
+                          "as objects of their own.")
+        else:
+            self.ctx.echo(f"Copied {len(objs)} object(s).")
 
     def _claim_clipboard(self, count: int, noun: str):
         """Make a copy of objects what the system clipboard holds.

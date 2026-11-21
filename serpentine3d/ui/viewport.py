@@ -1966,6 +1966,7 @@ class Viewport(QOpenGLWidget):
         self._update_draw_readout()
         self._paint_dots(w, h)
         self._paint_marker_labels(w, h)
+        self._paint_gumball_hint(w, h)
 
     def _ground_z(self) -> float:
         """The height plaster stands its model on: z=0, or lower when
@@ -2114,6 +2115,45 @@ class Viewport(QOpenGLWidget):
         GL.glUniform1i(self._uloc(self._wall_prog, "uTex"), 0)
         GL.glBindVertexArray(self._bg_vao)
         GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
+
+    def gumball_hint(self) -> str | None:
+        """The line in the corner saying what Ctrl would give the gumball
+        on what is held instead, or None."""
+        gb = getattr(self, "gumball", None)
+        if gb is None or self.space != "model":
+            return None
+        try:
+            return gb.alternative_hint()
+        except Exception:                                   # noqa: BLE001
+            return None
+
+    def _paint_gumball_hint(self, w, h):
+        text = self.gumball_hint()
+        if not text:
+            return
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QColor, QFont, QPainter
+        GL.glBindVertexArray(0)
+        self._use(0)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        font = QFont(self.font())
+        font.setPointSizeF(8.5)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        pad = 6.0
+        tw, th = fm.horizontalAdvance(text), fm.height()
+        rect = QRectF(w - tw - 2 * pad - 10, h - th - 2 * pad - 10,
+                      tw + 2 * pad, th + 2 * pad)
+        painter.setPen(QColor(0, 0, 0, 0))
+        painter.setBrush(QColor(31, 32, 35, 190))
+        painter.drawRoundedRect(rect, 4, 4)
+        painter.setPen(QColor(225, 225, 228))
+        painter.drawText(rect, 0x84, text)  # AlignHCenter | AlignVCenter
+        painter.end()
+        GL.glEnable(GL.GL_DEPTH_TEST)
+        self._reset_gl_state()      # QPainter bound its own program
 
     def _paint_marker_labels(self, w, h):
         """The numbers by picked points that a command names, as Orient
@@ -2918,9 +2958,11 @@ class Viewport(QOpenGLWidget):
             live.add(obj.id)
             gpu = self._gpu.get(obj.id)
             if not obj.mesh_ready and self._schedule_tess(obj):
+                # What was drawn stays drawn until its replacement is meshed:
+                # a gumball drag rebuilding a big polysurface on every move
+                # would otherwise show nothing but its box the whole time.
                 if gpu is not None:
-                    gpu.release()
-                    del self._gpu[obj.id]
+                    live_meshes.add(gpu.mesh_key)
                 continue
             self._tess_pending.pop(obj.id, None)
             live_meshes.add(obj.mesh.uid)
@@ -2992,6 +3034,11 @@ class Viewport(QOpenGLWidget):
         pending = self._tess_pending.get(obj.id)
         if pending is not None and pending[0] is obj.shape:
             return True
+        if getattr(self.selection, "rebuilding", None) == obj.id:
+            # A gumball drag rebuilds it on every move: meshed in the
+            # background it would never catch up, and the drag would show
+            # nothing happening until the button came up.
+            return False
         from ..core.mesh import MeshShape
         from ..core.pointcloud import PointCloudShape
         if isinstance(obj.shape, PointCloudShape):
@@ -4371,6 +4418,9 @@ class Viewport(QOpenGLWidget):
             segs = []
             if grid is None:
                 segs.append(np.stack([pts[:-1], pts[1:]], axis=1))
+            elif grid[0] == "ring":           # a trimmed face's outline
+                ring = pts[:grid[1]]
+                segs.append(np.stack([ring, np.roll(ring, -1, axis=0)], axis=1))
             else:
                 nu, nv = grid
                 net = pts.reshape(nu, nv, 3)

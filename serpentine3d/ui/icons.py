@@ -435,6 +435,17 @@ def _orient(p):
         _dot(p, q.x(), q.y())
 
 
+def _setpt(p):
+    """A point dropped onto the level it is set to."""
+    p.drawLine(QPointF(11, 3), QPointF(11, 13))
+    head = QPainterPath(QPointF(7.8, 9.8))
+    head.lineTo(QPointF(11, 13))
+    head.lineTo(QPointF(14.2, 9.8))
+    p.drawPath(head)
+    p.drawLine(QPointF(3, 18), QPointF(19, 18))
+    _dot(p, 11, 18, 2.2)
+
+
 def _mirror(p):
     """A shape, and its mirror image across the dashed line."""
     p.save()
@@ -1008,7 +1019,7 @@ _DRAWERS = {
     "plane": _plane, "plane3pt": _plane3pt, "srfpt": _srfpt,
     "box": _box, "sphere": _sphere, "cylinder": _cylinder, "torus": _torus,
     "move": _move, "copy": _copy, "rotate": _rotate, "scale": _scale,
-    "mirror": _mirror, "orient": _orient, "booleanunion": _union,
+    "mirror": _mirror, "orient": _orient, "setpt": _setpt, "booleanunion": _union,
     "booleandifference": _difference, "booleanintersection": _intersection, "booleansplit": _booleansplit,
     "join": _join, "delete": _delete, "trim": _trim, "split": _split,
     "offset": _offset, "fillet": _fillet, "explode": _explode,

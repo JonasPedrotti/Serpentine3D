@@ -292,3 +292,135 @@ def test_switching_all_axes_off_keeps_the_held_solid_parts_unchanged(env):
 
     _assert_solid(scene, obj, BASE, TOP, 600)
     assert {item.id for item in scene.all()} == {obj.id}
+
+
+@pytest.mark.parametrize("offset", [0.0, 100000.0], ids=["near", "far"])
+def test_a_polysurface_made_of_nurbs_faces_is_leveled_near_and_far(env, offset):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_NurbsConvert
+
+    scene, selection, _history, _ctx, proc = env
+    shift = lambda ring, z=None: [(x + offset, y + offset, c if z is None else z)
+                                  for x, y, c in ring]
+    shape = BRepBuilderAPI_NurbsConvert(
+        g.make_box((offset, offset, 0), 10, 6, 10), True).Shape()
+    obj = scene.add(shape, name="Imported")
+    selection.toggle_subobject(obj.id, "face", _face_with(obj.shape, shift(TOP)))
+
+    _setpt(proc, target=(0.0, 0.0, 15.0))
+
+    _assert_solid(scene, obj, shift(BASE), shift(TOP, 15), 900)
+
+
+def test_a_flat_face_cut_from_a_bent_surface_can_be_set():
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.Geom import Geom_BSplineSurface
+    from OCP.gp import gp_Pnt
+    from OCP.TColgp import TColgp_Array2OfPnt
+    from OCP.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal
+
+    poles = TColgp_Array2OfPnt(1, 3, 1, 2)
+    for i, (x, y) in enumerate([(0, 0), (10, 0), (20, 1)], start=1):
+        poles.SetValue(i, 1, gp_Pnt(x, y, 0))
+        poles.SetValue(i, 2, gp_Pnt(x, y, 10))
+    uk, um = TColStd_Array1OfReal(1, 3), TColStd_Array1OfInteger(1, 3)
+    for i, (k, m) in enumerate([(0, 2), (1, 1), (2, 2)], start=1):
+        uk.SetValue(i, k)
+        um.SetValue(i, m)
+    vk, vm = TColStd_Array1OfReal(1, 2), TColStd_Array1OfInteger(1, 2)
+    for i in (1, 2):
+        vk.SetValue(i, i - 1)
+        vm.SetValue(i, 2)
+    bent = Geom_BSplineSurface(poles, uk, vk, um, vm, 1, 1)
+    wall = BRepBuilderAPI_MakeFace(bent, 0.0, 0.8, 0.0, 1.0, 1e-7).Face()
+    roof = g.planar_face(g.make_polyline(
+        [(0, 0, 10), (8, 0, 10), (8, 5, 10), (0, 5, 10)], closed=True))
+    shape = g.join_surfaces([wall, roof])
+    held = _face_with(shape, [(0, 0, 10), (8, 0, 10), (8, 5, 10), (0, 5, 10)])
+
+    out = g.set_part_points(shape, [held], [], (0, 0, 4), (False, False, True))
+
+    assert g.is_valid(out)
+    assert max(p[2] for e in g.edges_of(out) for p in g.curve_endpoints(e)) == pytest.approx(4)
+
+
+def _vaulted(offset):
+    arc = g.make_arc_3pt((offset, offset, 10), (offset + 5, offset, 13),
+                         (offset + 10, offset, 10))
+    walls = g.make_polyline([(offset + 10, offset, 10), (offset + 10, offset, 0),
+                             (offset, offset, 0), (offset, offset, 10)])
+    return g.extrude(g.join_curves([arc, walls]), (0, 1, 0), 6, cap=True)
+
+
+def _d_shape(offset):
+    arc = g.make_arc_3pt((offset, offset, 0), (offset + 5, offset + 5, 0),
+                         (offset + 10, offset, 0))
+    chord = g.make_polyline([(offset + 10, offset, 0), (offset, offset, 0)])
+    return g.extrude(g.join_curves([arc, chord]), (0, 0, 1), 10, cap=True)
+
+
+@pytest.mark.parametrize("offset", [0.0, 100000.0], ids=["near", "far"])
+@pytest.mark.parametrize("build, z, volume", [
+    (_vaulted, 15.0, 900.0),
+    (_vaulted, 8.0, 480.0),
+    (_d_shape, 15.0, 15 * math.pi * 25 / 2),
+], ids=["vault-up", "vault-down", "curved-wall"])
+def test_curved_faces_and_neighbours_are_set_near_and_far(
+        env, offset, build, z, volume):
+    scene, selection, _history, _ctx, proc = env
+    obj = scene.add(build(offset), name="Curved")
+    faces = g.faces_of(obj.shape)
+    top = max(range(len(faces)), key=lambda i: g.centroid(faces[i])[2])
+    selection.toggle_subobject(obj.id, "face", top)
+
+    _setpt(proc, target=(0.0, 0.0, z))
+
+    shape = scene.get(obj.id).shape
+    assert g.shape_kind(shape) == "solid" and g.is_valid(shape)
+    assert g.volume(shape) == pytest.approx(volume, rel=1e-6)
+    heights = [p[2] for e in g.edges_of(shape) for p in g.curve_endpoints(e)]
+    assert min(heights) == pytest.approx(0.0, abs=1e-6)
+    assert max(heights) == pytest.approx(z, abs=1e-6)
+
+
+def _leaning(offset):
+    def top(x, y):
+        return 8 + 0.2 * x + 0.3 * y
+
+    def lean(y):
+        # where the leaning wall x = 10 - z / 10 meets the sloped top
+        z = (10 + 0.3 * y) / 1.02
+        return 10 - z / 10, z
+
+    (x0, z0), (x6, z6) = lean(0), lean(6)
+    corners = {
+        "a": (0, 0, 0), "b": (10, 0, 0), "c": (10, 6, 0), "d": (0, 6, 0),
+        "e": (0, 0, top(0, 0)), "f": (x0, 0, z0), "g": (x6, 6, z6),
+        "h": (0, 6, top(0, 6)),
+    }
+    corners = {k: (x + offset, y + offset, z) for k, (x, y, z) in corners.items()}
+    rings = ["abcd", "efgh", "abfe", "bcgf", "cdhg", "daeh"]
+    faces = [g.planar_face(g.make_polyline([corners[k] for k in ring], closed=True))
+             for ring in rings]
+    return g.join_surfaces(faces), corners
+
+
+@pytest.mark.parametrize("offset", [0.0, 100000.0], ids=["near", "far"])
+def test_a_leaning_wall_twists_when_the_sloped_top_is_leveled(env, offset):
+    scene, selection, _history, _ctx, proc = env
+    shape, corners = _leaning(offset)
+    assert g.shape_kind(shape) == "solid"
+    obj = scene.add(shape, name="Leaning")
+    selection.toggle_subobject(
+        obj.id, "face", _face_with(obj.shape, [corners[k] for k in "efgh"]))
+
+    _setpt(proc, target=(0.0, 0.0, 12.0))
+
+    out = scene.get(obj.id).shape
+    assert g.shape_kind(out) == "solid" and g.is_valid(out)
+    assert g.volume(out) > g.volume(shape)
+    points = {_key(p) for e in g.edges_of(out) for p in g.curve_endpoints(e)}
+    for k in "abcd":
+        assert _key(corners[k]) in points, "The base stays put"
+    for k in "efgh":
+        x, y, _z = corners[k]
+        assert _key((x, y, 12.0)) in points, "The top corners rise straight up"

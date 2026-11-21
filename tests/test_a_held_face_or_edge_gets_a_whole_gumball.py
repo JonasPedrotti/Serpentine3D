@@ -25,6 +25,13 @@ from serpentine3d.core.scene import Scene
 from serpentine3d.core.selection import SelectionManager
 from serpentine3d.ui.gumball import Gumball
 
+
+@pytest.fixture(autouse=True)
+def _ctrl_for_the_other_gumball(monkeypatch):
+    """Held parts get the transform gumball; these are the ones holding
+    Ctrl asks for instead, so Ctrl is held throughout."""
+    monkeypatch.setattr("serpentine3d.ui.gumball._ctrl_down", lambda: True)
+
 CTRL = Qt.KeyboardModifier.ControlModifier
 NONE = Qt.KeyboardModifier.NoModifier
 
@@ -458,17 +465,24 @@ def test_the_box_extrudes_the_face_instead():
     assert g.volume(out) == pytest.approx(1235.0, abs=1e-3)
 
 
-def test_ctrl_and_the_arrow_extrude_too():
-    """The same shortcut the rest of the gumball has, for a hand that
-    already knows it from Rhino."""
+def test_ctrl_only_chooses_this_gumball_so_the_arrow_still_pushes():
+    """On a held face Ctrl is what brings this gumball up, so it cannot
+    also mean grow: the arrow pushes the face, the box extrudes it."""
     cham = _chamfered_box()
+    faces = len(g.faces_of(cham))
     gb, vp, obj = _holding(cham, "face",
                            _face_where(cham, lambda n: n[2] > 0.99))
 
     assert gb.begin_drag(("move", 2), 5.0, 10.0, CTRL)
     gb.apply_scalar(4.0)
+    gb.end_drag()
+    assert len(g.faces_of(vp.scene.get(obj.id).shape)) == faces
 
-    assert len(g.faces_of(vp.scene.get(obj.id).shape)) == 11
+    gb, vp, obj = _holding(cham, "face",
+                           _face_where(cham, lambda n: n[2] > 0.99))
+    assert gb.begin_drag(("ext", 2), 5.0, 10.0, CTRL)
+    gb.apply_scalar(4.0)
+    assert len(g.faces_of(vp.scene.get(obj.id).shape)) == faces + 4
 
 
 def test_carving_with_the_arrow_still_works():

@@ -253,26 +253,35 @@ def test_move_says_what_it_moved_in_one_breath(env):
     assert any("1 face" in m and "4 solid edge" in m for m in said), said
 
 
-def test_a_refused_set_stays_held_and_untouched(env):
+def test_a_set_slid_sideways_bends_the_faces_beside_it(env):
+    """Two faces slid along their shared edge leave the walls beside them
+    no plane to lean to; they bend to follow rather than refuse."""
     scene, sel, proc, said = env
     box = scene.add(_box(), name="Box")
+    before = {tuple(round(c, 6) for c in p) for p in g.vertex_points(box.shape)}
     sel.toggle_subobject(box.id, "face", _face_where(box.shape, (0, 0, 1)))
     sel.toggle_subobject(box.id, "face", _face_where(box.shape, (0, -1, 0)))
 
     _move(proc, (3, 0, 0))
 
-    assert g.volume(scene.get(box.id).shape) == pytest.approx(1000)
-    assert _size(scene.get(box.id).shape) == (10, 10, 10)
-    assert len(sel.subobjects) == 2
-    assert any("bend" in m for m in said), said
+    shape = scene.get(box.id).shape
+    assert g.is_valid(shape) and g.shape_kind(shape) == "solid"
+    after = {tuple(round(c, 6) for c in p) for p in g.vertex_points(shape)}
+    moved = {p for p in before if p[2] == 10 or p[1] == 0}
+    assert {(x + 3, y, z) for x, y, z in moved} <= after
+    assert before - moved <= after, "the corners of neither face stay put"
 
 
-def test_rotating_two_faces_of_one_solid_is_refused_not_botched(env):
-    """Turning faces one after another double counts the same way; until
-    a set can be turned as one, say so and leave the solid alone."""
+def test_two_faces_of_one_solid_turn_as_one(env):
+    """Turning faces one after another would double count the corners
+    they share, so the set turns as one: every corner of either face is
+    turned once, the rest stay."""
     scene, sel, proc, said = env
     box = scene.add(_box(), name="Box")
-    before = g.volume(box.shape)
+    flist = g.faces_of(box.shape)
+    held = {tuple(round(c, 6) for c in p)
+            for i in (0, 2) for e in g.edges_of(flist[i])
+            for p in g.curve_endpoints(e)}
     sel.toggle_subobject(box.id, "face", 0)
     sel.toggle_subobject(box.id, "face", 2)
 
@@ -280,9 +289,17 @@ def test_rotating_two_faces_of_one_solid_is_refused_not_botched(env):
     proc.provide((5.0, 5.0, 5.0))
     proc.provide(10.0)
 
-    assert g.volume(scene.get(box.id).shape) == pytest.approx(before)
-    assert any("one face at a time" in m for m in said), said
-    assert len(sel.subobjects) == 2
+    shape = scene.get(box.id).shape
+    assert g.is_valid(shape) and g.shape_kind(shape) == "solid"
+    a = math.radians(10)
+
+    def turned(p):
+        x, y = p[0] - 5, p[1] - 5
+        return (round(5 + x * math.cos(a) - y * math.sin(a), 6),
+                round(5 + x * math.sin(a) + y * math.cos(a), 6), p[2])
+
+    after = {tuple(round(c, 6) for c in p) for p in g.vertex_points(shape)}
+    assert {turned(p) for p in held} <= after
 
 
 def test_every_face_held_turns_as_the_whole_object(env):

@@ -31,6 +31,13 @@ from serpentine3d.ui.gumball import Gumball
 from tests.test_a_held_face_or_edge_gets_a_whole_gumball import (
     _VP, _edge_at, _face_where, _holding)
 
+
+@pytest.fixture(autouse=True)
+def _ctrl_for_the_other_gumball(monkeypatch):
+    """Held parts get the transform gumball; these are the ones holding
+    Ctrl asks for instead, so Ctrl is held throughout."""
+    monkeypatch.setattr("serpentine3d.ui.gumball._ctrl_down", lambda: True)
+
 NONE = Qt.KeyboardModifier.NoModifier
 TILTED = CPlane((0, 0, 0), normal=(0, 1, 0), xdir=(1, 0, 0))   # y is up
 

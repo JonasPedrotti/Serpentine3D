@@ -149,7 +149,8 @@ def test_turning_a_side_swings_its_neighbours():
             (0.0, 6.0, 0.0), (10.0, 6.0, 0.0)} <= ends
 
 
-def test_a_solid_edge_is_still_a_fillet_handle():
+def test_a_solid_edge_is_still_a_fillet_handle_with_ctrl(monkeypatch):
+    monkeypatch.setattr("serpentine3d.ui.gumball._ctrl_down", lambda: True)
     scene = Scene()
     box = scene.add(g.make_box((0, 0, 0), 10, 10, 10))
     sel = SelectionManager(scene)

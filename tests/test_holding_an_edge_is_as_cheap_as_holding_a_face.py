@@ -26,6 +26,13 @@ from serpentine3d.core.selection import SelectionManager
 from serpentine3d.ui.gumball import Gumball
 
 
+
+@pytest.fixture(autouse=True)
+def _ctrl_for_the_fillet_gumball(monkeypatch):
+    """A held edge gets the transform gumball; the fillet one these weigh
+    is what holding Ctrl asks for, so Ctrl is held throughout."""
+    monkeypatch.setattr("serpentine3d.ui.gumball._ctrl_down", lambda: True)
+
 class _Cam:
     def ray_through(self, px, py, w, h):
         return np.array([px, py, 100.0]), np.array([0.0, 0.0, -1.0])
